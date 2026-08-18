@@ -140,7 +140,11 @@ public:
 
     void exchange(const vgi_rpc::AnnotatedBatch& input, vgi_rpc::OutputCollector& out,
                   vgi_rpc::CallContext&) override {
-        auto result = fn_->process(params_, input.batch);
+        auto params = params_;
+        params.client_log = [&out](LogLevel level, const std::string& message) {
+            out.client_log(to_rpc_level(level), message);
+        };
+        auto result = fn_->process(params, input.batch);
         if (!result) {
             throw std::runtime_error("scalar function '" + fn_->name() +
                                      "' returned no batch");
@@ -199,16 +203,6 @@ int score_overload(const std::vector<ArgSpec>& specs,
         }
     }
     return score;
-}
-
-vgi_rpc::LogLevel to_rpc_level(LogLevel level) {
-    switch (level) {
-        case LogLevel::Debug: return vgi_rpc::LogLevel::DEBUG;
-        case LogLevel::Warning: return vgi_rpc::LogLevel::WARN;
-        case LogLevel::Error: return vgi_rpc::LogLevel::ERROR;
-        case LogLevel::Info: break;
-    }
-    return vgi_rpc::LogLevel::INFO;
 }
 
 class TableProduce : public vgi_rpc::ProducerState {
@@ -288,6 +282,11 @@ public:
         // exchange is asked once per input chunk and the engine may hold a
         // cached answer for some of them and not others.
         auto params = params_;
+        // Bound per tick, since the collector is created per tick: a function
+        // holding one from an earlier tick would write into a dead sink.
+        params.client_log = [&out](LogLevel level, const std::string& message) {
+            out.client_log(to_rpc_level(level), message);
+        };
         params.if_none_match = tick_metadata(input, keys::kIfNoneMatch);
         params.if_modified_since = tick_metadata(input, keys::kIfModifiedSince);
 
@@ -619,8 +618,11 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
                                               : arguments.named_is_null(spec.name);
         // Named-only parameters are read as constants too, even though they
         // carry no `vgi_const` marker; a column argument is exempt, since a
-        // column may legitimately be null in some rows.
-        if ((spec.constant || !spec.index) && supplied_null) {
+        // column may legitimately be null in some rows. So is a varargs
+        // parameter: it stands for a whole tail of arguments, of which a NULL
+        // is an ordinary member — `constant_columns(3, NULL::INTEGER)` asks
+        // for a NULL column, not for the default.
+        if ((spec.constant || !spec.index) && !spec.varargs && supplied_null) {
             throw std::invalid_argument("function '" + function_name + "' argument '" +
                                         spec.name + "' cannot be NULL");
         }
@@ -788,6 +790,7 @@ vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& r
     TableCardinality cardinality;
     if (auto table = find_table(function_name, bind_params.schema_name, &bind_params)) {
         ProcessParams params;
+        params.client_log = client_log_sink(nullptr);
         params.arguments = bind_params.arguments;
         params.settings = bind_params.settings;
         params.secrets = bind_params.secrets;
@@ -827,6 +830,7 @@ vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& re
     std::optional<std::vector<ColumnStatistics>> statistics;
     if (auto table = find_table(function_name, bind_params.schema_name, &bind_params)) {
         ProcessParams params;
+        params.client_log = client_log_sink(nullptr);
         params.arguments = bind_params.arguments;
         params.settings = bind_params.settings;
         params.secrets = bind_params.secrets;
@@ -928,6 +932,9 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.at_unit = bind_params.at_unit;
     params.at_value = bind_params.at_value;
     params.storage = default_storage();
+    // Replaced per tick by the exchange and producer drivers, which are the
+    // only calls with a channel; a no-op until then.
+    params.client_log = client_log_sink(nullptr);
 
     // The engine may supply the execution id (it does for a follow-on worker,
     // and for the buffering finalize phase); otherwise this is the primary

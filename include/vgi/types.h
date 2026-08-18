@@ -117,6 +117,12 @@ enum class NullHandling {
     Special,
 };
 
+// Severity of a message a function sends back to the client.
+//
+// In-band, because a worker has nowhere else to put it: stdout is the Arrow
+// channel and stderr is swallowed by the engine.
+enum class LogLevel { Debug, Info, Warning, Error };
+
 // Whether the engine may reuse a result.
 enum class Stability {
     // Same arguments, same answer, always. The engine may fold or cache.

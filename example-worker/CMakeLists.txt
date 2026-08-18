@@ -27,6 +27,7 @@ add_executable(vgi-example-worker
     table/static_scan.cpp
     table/rff.cpp
     table/filters.cpp
+    table/logging.cpp
     table/cache_more.cpp
     table/cache_partitions.cpp
     table/partitioned.cpp

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -125,6 +126,11 @@ struct ProcessParams {
     // reasoning: the path comes from the statement, not from an option.
     std::optional<std::string> copy_from_format;
     std::optional<std::string> copy_from_path;
+    // Where a message to the client goes. Always set, and a no-op on the
+    // calls the transport gives no channel for, so a function may call it
+    // without asking which call it is in.
+    std::function<void(LogLevel, const std::string&)> client_log;
+
     // Cross-process state, scoped by `execution_id`. Set for every call.
     //
     // Needed rather than optional: the engine parallelizes a buffering sink

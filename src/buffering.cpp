@@ -4,9 +4,11 @@
 // The table-buffering half of the protocol: sink every input batch, then
 // produce.
 
+#include <functional>
 #include <stdexcept>
 
 #include <arrow/array.h>
+#include <vgi_rpc/call_context.h>
 #include <vgi_rpc/request.h>
 #include <vgi_rpc/result.h>
 
@@ -45,8 +47,30 @@ std::vector<std::string> read_state_ids(const std::shared_ptr<arrow::RecordBatch
 
 }  // namespace
 
-ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBatch>& dto) const {
+vgi_rpc::LogLevel to_rpc_level(LogLevel level) {
+    switch (level) {
+        case LogLevel::Debug: return vgi_rpc::LogLevel::DEBUG;
+        case LogLevel::Warning: return vgi_rpc::LogLevel::WARN;
+        case LogLevel::Error: return vgi_rpc::LogLevel::ERROR;
+        case LogLevel::Info: break;
+    }
+    return vgi_rpc::LogLevel::INFO;
+}
+
+std::function<void(LogLevel, const std::string&)> client_log_sink(
+    vgi_rpc::CallContext* context) {
+    // A no-op rather than an empty function when there is no channel, so a
+    // function may log without first asking which call it is in.
+    if (!context) return [](LogLevel, const std::string&) {};
+    return [context](LogLevel level, const std::string& message) {
+        context->client_log(to_rpc_level(level), message);
+    };
+}
+
+ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBatch>& dto,
+                                           vgi_rpc::CallContext* context) const {
     ProcessParams params;
+    params.client_log = client_log_sink(context);
     params.catalog_name = catalog_.name;
     params.schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
     params.execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
@@ -70,7 +94,8 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
     return params;
 }
 
-vgi_rpc::Result Dispatcher::table_buffering_process(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::table_buffering_process(const vgi_rpc::Request& request,
+                                                    vgi_rpc::CallContext& context) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("table_buffering_process: empty request");
 
@@ -79,7 +104,7 @@ vgi_rpc::Result Dispatcher::table_buffering_process(const vgi_rpc::Request& requ
     auto fn = require_buffering(function_name, schema_name);
 
     auto batch = wire::decode_ipc(wire::get_binary(dto, "input_batch"));
-    auto params = buffering_params(dto);
+    auto params = buffering_params(dto, &context);
     auto state_id = batch ? fn->process(params, batch) : std::string{};
 
     return envelope_of(wire::ResultBuilder(payload_schema_of("table_buffering_process"))
@@ -88,7 +113,8 @@ vgi_rpc::Result Dispatcher::table_buffering_process(const vgi_rpc::Request& requ
                            .finish());
 }
 
-vgi_rpc::Result Dispatcher::table_buffering_combine(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::table_buffering_combine(const vgi_rpc::Request& request,
+                                                    vgi_rpc::CallContext& context) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("table_buffering_combine: empty request");
 
@@ -96,7 +122,7 @@ vgi_rpc::Result Dispatcher::table_buffering_combine(const vgi_rpc::Request& requ
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
     auto fn = require_buffering(function_name, schema_name);
 
-    auto params = buffering_params(dto);
+    auto params = buffering_params(dto, &context);
     auto finalize_ids = fn->combine(params, read_state_ids(dto, "state_ids"));
 
     return envelope_of(wire::ResultBuilder(payload_schema_of("table_buffering_combine"))

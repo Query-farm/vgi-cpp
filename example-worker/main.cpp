@@ -53,6 +53,7 @@ int main(int argc, char** argv) {
     example::register_secret_fixtures(worker);
     example::register_series(worker);
     example::register_filter_fixtures(worker);
+    example::register_logging_fixtures(worker);
     example::register_copy_to(worker);
     example::register_copy_from(worker);
     example::register_cached(worker);

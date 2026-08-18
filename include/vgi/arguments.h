@@ -77,6 +77,7 @@ public:
     std::optional<int64_t> named_int64(const std::string& name) const;
     std::optional<std::string> named_string(const std::string& name) const;
     std::optional<double> named_double(const std::string& name) const;
+    std::optional<bool> named_bool(const std::string& name) const;
 
 private:
     std::vector<std::shared_ptr<arrow::Array>> positional_;

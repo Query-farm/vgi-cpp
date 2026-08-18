@@ -198,6 +198,11 @@ public:
             }
             return params.execution_id;
         }
+        if (params.arguments.named_bool("logging").value_or(false)) {
+            params.client_log(vgi::LogLevel::Info,
+                              "Processing batch with " +
+                                  std::to_string(batch ? batch->num_rows() : 0) + " rows");
+        }
         if (batch && batch->num_rows() > 0) {
             auto schema = derive_output_schema(*batch->schema());
             params.storage->append(params.execution_id, kNamespace, "",
@@ -207,7 +212,14 @@ public:
     }
 
     std::vector<std::string> combine(const vgi::ProcessParams& params,
-                                     const std::vector<std::string>&) override {
+                                     const std::vector<std::string>& state_ids) override {
+        // Logged from here too, and deliberately: combine is a unary RPC with
+        // no streaming collector, so it is the call that proves the in-band
+        // channel is not the producer's alone.
+        if (params.arguments.named_bool("logging").value_or(false)) {
+            params.client_log(vgi::LogLevel::Info,
+                              "Combining " + std::to_string(state_ids.size()) + " state_ids");
+        }
         return {params.execution_id};
     }
 

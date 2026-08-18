@@ -23,6 +23,14 @@
 
 namespace vgi {
 
+// The framework's severity for one of ours.
+vgi_rpc::LogLevel to_rpc_level(LogLevel level);
+
+// A sink that writes a function's messages into `context`'s in-band channel.
+std::function<void(LogLevel, const std::string&)> client_log_sink(
+    vgi_rpc::CallContext* context);
+
+
 // The `init` stream's header schema (`GlobalInitResponse`). Defined in
 // function_dispatch.cpp; registration needs it, and so does the handler.
 const std::shared_ptr<arrow::Schema>& global_init_response_schema();
@@ -71,6 +79,11 @@ public:
     void install(vgi_rpc::ServerBuilder& builder);
 
     using UnaryHandler = vgi_rpc::Result (Dispatcher::*)(const vgi_rpc::Request&);
+    // The few handlers that need the call's own channel back to the client.
+    // Kept separate rather than widening every signature: only a method that
+    // actually logs has any use for it, and the rest read better without it.
+    using UnaryContextHandler = vgi_rpc::Result (Dispatcher::*)(const vgi_rpc::Request&,
+                                                                vgi_rpc::CallContext&);
     using VoidHandler = void (Dispatcher::*)(const vgi_rpc::Request&);
 
     // ── Handlers ──────────────────────────────────────────────────────────
@@ -96,8 +109,10 @@ public:
     vgi_rpc::Result aggregate_window(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_window_batch(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_window_destructor(const vgi_rpc::Request& request);
-    vgi_rpc::Result table_buffering_process(const vgi_rpc::Request& request);
-    vgi_rpc::Result table_buffering_combine(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_buffering_process(const vgi_rpc::Request& request,
+                                            vgi_rpc::CallContext& context);
+    vgi_rpc::Result table_buffering_combine(const vgi_rpc::Request& request,
+                                            vgi_rpc::CallContext& context);
     vgi_rpc::Result table_buffering_destructor(const vgi_rpc::Request& request);
     vgi_rpc::Stream init(const vgi_rpc::Request& request);
 
@@ -182,7 +197,8 @@ private:
                                                            const std::string& schema) const;
     std::shared_ptr<TableBufferingFunction> require_buffering(const std::string& name,
                                                               const std::string& schema) const;
-    ProcessParams buffering_params(const std::shared_ptr<arrow::RecordBatch>& dto) const;
+    ProcessParams buffering_params(const std::shared_ptr<arrow::RecordBatch>& dto,
+                                   vgi_rpc::CallContext* context) const;
     vgi_rpc::Result window_result(const std::shared_ptr<arrow::RecordBatch>& dto, bool batched);
 
     // The overload of `name` that matches `params`, or a clear error.

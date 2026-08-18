@@ -38,6 +38,7 @@ void register_settings_tables(vgi::Worker& worker);
 void register_secret_fixtures(vgi::Worker& worker);
 void register_series(vgi::Worker& worker);
 void register_filter_fixtures(vgi::Worker& worker);
+void register_logging_fixtures(vgi::Worker& worker);
 void register_copy_to(vgi::Worker& worker);
 void register_copy_from(vgi::Worker& worker);
 void register_cached(vgi::Worker& worker);

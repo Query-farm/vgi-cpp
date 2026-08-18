@@ -21,10 +21,6 @@
 
 namespace vgi {
 
-// Severity of a message sent to the client.
-enum class LogLevel { Debug, Info, Warning, Error };
-
-
 // A table function's estimated output size, used by the planner.
 //
 // Both are optional because "I do not know" is a legitimate and common answer,

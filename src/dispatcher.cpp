@@ -140,8 +140,6 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         {"aggregate_window", &Dispatcher::aggregate_window},
         {"aggregate_window_batch", &Dispatcher::aggregate_window_batch},
         {"aggregate_window_destructor", &Dispatcher::aggregate_window_destructor},
-        {"table_buffering_process", &Dispatcher::table_buffering_process},
-        {"table_buffering_combine", &Dispatcher::table_buffering_combine},
         {"table_buffering_destructor", &Dispatcher::table_buffering_destructor},
         {"catalog_attach", &Dispatcher::catalog_attach},
         {"catalog_version", &Dispatcher::catalog_version},
@@ -161,6 +159,11 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         {"catalog_schema_contents_macros", &Dispatcher::catalog_schema_contents_macros},
         {"catalog_schema_contents_indexes", &Dispatcher::catalog_schema_contents_indexes},
         {"catalog_copy_from_formats", &Dispatcher::catalog_copy_from_formats},
+    };
+    // The handlers that also take the call's log channel.
+    const std::unordered_map<std::string, UnaryContextHandler> unary_with_context = {
+        {"table_buffering_process", &Dispatcher::table_buffering_process},
+        {"table_buffering_combine", &Dispatcher::table_buffering_combine},
     };
     const std::unordered_map<std::string, VoidHandler> voids = {
         {"catalog_detach", &Dispatcher::catalog_detach},
@@ -225,6 +228,16 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
                                  refuse();
                              });
         } else {
+            if (auto it = unary_with_context.find(name); it != unary_with_context.end()) {
+                auto handler = it->second;
+                builder.add_unary(name, spec.params, envelope_schema(),
+                                  [this, handler, name](const vgi_rpc::Request& req,
+                                                        vgi_rpc::CallContext& ctx) {
+                                      trace(name);
+                                      return (this->*handler)(req, ctx);
+                                  });
+                continue;
+            }
             if (auto it = unary.find(name); it != unary.end()) {
                 auto handler = it->second;
                 builder.add_unary(name, spec.params, envelope_schema(),
