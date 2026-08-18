@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -33,6 +34,19 @@ struct CatalogBranch {
     std::optional<std::string> source_table;
 };
 
+// One version of a time-travelling table.
+//
+// A version carries its own columns, because schema evolution is the point:
+// `AT (VERSION => 1)` sees the columns version 1 had, not today's.
+struct TimeTravelVersion {
+    int64_t version = 0;
+    std::shared_ptr<arrow::Schema> columns;
+    std::string scan_function;
+    std::string scan_arguments;
+    // The calendar year this version became current, for `AT (TIMESTAMP => …)`.
+    std::optional<int> timestamp_year;
+};
+
 // A table the catalog advertises.
 //
 // A VGI table is not storage: it is a *name* bound to a table function that
@@ -52,6 +66,10 @@ struct CatalogTable {
     std::optional<std::string> comment;
     std::optional<int64_t> cardinality;
     std::vector<std::pair<std::string, std::string>> tags;
+
+    // Versions, newest last. Empty means the table does not time-travel and an
+    // AT clause against it is an error rather than a no-op.
+    std::vector<TimeTravelVersion> time_travel;
 
     // Sources this table is stitched from.
     //
@@ -133,6 +151,11 @@ struct CatalogModel {
     std::optional<std::string> data_version_spec;
     std::optional<std::string> comment;
     std::vector<std::pair<std::string, std::string>> tags;
+
+    // Whether this catalog answers AT clauses at all. A function-backed table
+    // may read the clause itself rather than declaring versions, which is why
+    // this is a catalog-level flag and not derived from the tables.
+    bool supports_time_travel = false;
 
     // Settings this catalog introduces to the engine.
     std::vector<SettingSpec> settings;

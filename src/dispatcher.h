@@ -123,8 +123,10 @@ private:
                                              const std::string& schema_name);
     std::vector<std::string> encode_settings() const;
     std::vector<std::string> encode_secret_types() const;
+    bool supports_time_travel() const;
     static std::string encode_table_info(const CatalogTable& table,
-                                         const std::string& schema_name);
+                                         const std::string& schema_name,
+                                         const TimeTravelVersion* version = nullptr);
     static std::string encode_view_info(const CatalogView& view,
                                         const std::string& schema_name);
 

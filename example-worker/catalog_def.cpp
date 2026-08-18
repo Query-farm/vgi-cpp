@@ -16,6 +16,8 @@
 
 #include <vgi/worker.h>
 
+#include "registry.h"
+
 namespace example {
 namespace {
 
@@ -145,6 +147,27 @@ void declare_catalog(vgi::Worker& worker) {
         large.cardinality = 1000000;
         data.tables.push_back(std::move(large));
     }
+
+    {
+        // Inlined, and that is what makes AT work here: `catalog_table_get`
+        // already carries the AT clause, so the record it returns can name the
+        // version's own scan arguments. Left un-inlined the engine never asked
+        // for the scan separately, and every AT ran version 3.
+        vgi::CatalogTable versioned;
+        versioned.name = "versioned_data";
+        versioned.time_travel = versioned_data_versions();
+        versioned.columns = versioned.time_travel.back().columns;
+        versioned.scan_function = "versioned_data_scan";
+        versioned.scan_arguments = versioned.time_travel.back().scan_arguments;
+        versioned.inline_scan = true;
+        versioned.comment =
+            "Versioned data table demonstrating time travel with schema evolution";
+        data.tables.push_back(std::move(versioned));
+    }
+
+    data.views.push_back({"first_ten", "SELECT * FROM sequence(10)", std::nullopt});
+    data.views.push_back(
+        {"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0", std::nullopt});
 
     data.tables.push_back(backed_by("cache_projection", "cache_projection",
                                     columns({{"a", arrow::int64()},

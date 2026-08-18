@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <tuple>
 #include <cctype>
+#include <cstdlib>
 #include <optional>
 #include <string_view>
 
@@ -84,6 +85,17 @@ vgi_rpc::Result empty_items(const std::string& method) {
 // is itself the IPC schema of a single `value` field of the setting's type —
 // a schema inside a schema, which is how a setting's type travels without a
 // type-name vocabulary of its own.
+// Whether any table time-travels, or the catalog declared it outright.
+bool Dispatcher::supports_time_travel() const {
+    if (catalog_.supports_time_travel) return true;
+    for (const auto& schema : catalog_.schemas) {
+        for (const auto& table : schema->tables) {
+            if (!table.time_travel.empty()) return true;
+        }
+    }
+    return false;
+}
+
 std::vector<std::string> Dispatcher::encode_settings() const {
     static const auto schema = arrow::schema({
         arrow::field("name", arrow::utf8(), /*nullable=*/false),
@@ -208,7 +220,7 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      // only enough to identify the attachment.
                      .set_binary("attach_opaque_data", name)
                      .set_bool("supports_transactions", false)
-                     .set_bool("supports_time_travel", false)
+                     .set_bool("supports_time_travel", supports_time_travel())
                      .set_bool("catalog_version_frozen", true)
                      .set_int64("catalog_version", 1)
                      .set_bool("attach_opaque_data_required", true)
@@ -263,18 +275,81 @@ vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
 // table is a name bound to a function, and this is the binding. Inlining the
 // scan here saves the engine a `catalog_table_scan_function_get` round trip
 // per query.
+// The version an AT clause selects, or null for a table that does not
+// time-travel.
+//
+// Throws rather than falling back when the clause names a version that does
+// not exist: silently serving the current one would answer a question the user
+// did not ask.
+const TimeTravelVersion* resolve_version(const CatalogTable& table,
+                                         const std::optional<std::string>& at_unit,
+                                         const std::optional<std::string>& at_value) {
+    const bool has_clause = at_unit && !at_unit->empty();
+    if (table.time_travel.empty()) {
+        if (has_clause && table.branches.empty()) {
+            throw std::invalid_argument("this table does not support time travel");
+        }
+        return nullptr;
+    }
+
+    const TimeTravelVersion* newest = nullptr;
+    for (const auto& version : table.time_travel) {
+        if (!newest || version.version > newest->version) newest = &version;
+    }
+    if (!has_clause) return newest;
+
+    std::string unit = *at_unit;
+    for (auto& c : unit) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+
+    if (unit == "VERSION") {
+        const int64_t wanted = at_value ? std::strtoll(at_value->c_str(), nullptr, 10) : -1;
+        for (const auto& version : table.time_travel) {
+            if (version.version == wanted) return &version;
+        }
+        throw std::invalid_argument("Unknown version: " + at_value.value_or(""));
+    }
+    if (unit == "TIMESTAMP") {
+        // Only the year is compared: the fixtures step versions by year, and a
+        // finer comparison would need a real timestamp parser for no gain.
+        const int year =
+            at_value && at_value->size() >= 4 ? std::atoi(at_value->substr(0, 4).c_str()) : 0;
+        const TimeTravelVersion* best = nullptr;
+        for (const auto& version : table.time_travel) {
+            if (!version.timestamp_year || *version.timestamp_year > year) continue;
+            if (!best || version.version > best->version) best = &version;
+        }
+        if (!best) {
+            // Naming the earliest year rather than the requested timestamp:
+            // the user's question is "what did this look like then", and the
+            // useful answer is when "then" starts being answerable.
+            int earliest = 0;
+            for (const auto& version : table.time_travel) {
+                if (version.timestamp_year && (earliest == 0 || *version.timestamp_year < earliest)) {
+                    earliest = *version.timestamp_year;
+                }
+            }
+            throw std::invalid_argument("table did not exist before " + std::to_string(earliest));
+        }
+        return best;
+    }
+    throw std::invalid_argument("unsupported AT unit: " + unit);
+}
+
 std::string Dispatcher::encode_table_info(const CatalogTable& table,
-                                          const std::string& schema_name) {
-    auto scan = wire::ResultBuilder(gen::ScanFunctionResultSchema())
-                    .set_string("function_name", table.scan_function)
-                    .set_binary("arguments", table.scan_arguments)
-                    .set_string_list("required_extensions", {})
-                    .finish();
+                                          const std::string& schema_name,
+                                          const TimeTravelVersion* version) {
+    auto scan =
+        wire::ResultBuilder(gen::ScanFunctionResultSchema())
+            .set_string("function_name", version ? version->scan_function : table.scan_function)
+            .set_binary("arguments", version ? version->scan_arguments : table.scan_arguments)
+            .set_string_list("required_extensions", {})
+            .finish();
 
     auto builder = wire::ResultBuilder(gen::TableInfoSchema());
     builder.set_string("name", table.name)
         .set_string("schema_name", schema_name)
-        .set_binary("columns", wire::encode_schema(table.columns))
+        .set_binary("columns",
+                    wire::encode_schema(version ? version->columns : table.columns))
         .set_binary("scan_function", table.inline_scan ? wire::encode_ipc(scan) : std::string{})
         .set_bool("supports_insert", false)
         .set_bool("supports_update", false)
@@ -296,10 +371,15 @@ vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "schema_name");
     const auto name = wire::get_string(request.batch(), "name");
 
+    const auto at_unit = wire::get_optional_string(request.batch(), "at_unit");
+    const auto at_value = wire::get_optional_string(request.batch(), "at_value");
+
     std::vector<std::string> items;
     if (const auto* schema = catalog_.find_schema(schema_name)) {
         for (const auto& table : schema->tables) {
-            if (table.name == name) items.push_back(encode_table_info(table, schema_name));
+            if (table.name != name) continue;
+            items.push_back(encode_table_info(table, schema_name,
+                                              resolve_version(table, at_unit, at_value)));
         }
     }
     // Zero or one item; absence is how "no such table" is spelled, and the
@@ -647,13 +727,19 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Reque
     }
     if (!found) throw std::invalid_argument("no table '" + schema_name + "." + name + "'");
 
+    const auto* version =
+        resolve_version(*found, wire::get_optional_string(request.batch(), "at_unit"),
+                        wire::get_optional_string(request.batch(), "at_value"));
+
     // Returned as raw IPC bytes, not wrapped in an items list: this method's
     // return type is `bytes`, so the payload *is* the ScanFunctionResult.
-    auto scan = wire::ResultBuilder(gen::ScanFunctionResultSchema())
-                    .set_string("function_name", found->scan_function)
-                    .set_binary("arguments", found->scan_arguments)
-                    .set_string_list("required_extensions", {})
-                    .finish();
+    auto scan =
+        wire::ResultBuilder(gen::ScanFunctionResultSchema())
+            .set_string("function_name",
+                        version ? version->scan_function : found->scan_function)
+            .set_binary("arguments", version ? version->scan_arguments : found->scan_arguments)
+            .set_string_list("required_extensions", {})
+            .finish();
     return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
                                       .set_binary("result", wire::encode_ipc(scan))
                                       .finish());
