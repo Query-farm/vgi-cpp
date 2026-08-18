@@ -282,6 +282,44 @@ const CatalogSchema* Dispatcher::schema_for(const vgi_rpc::Request& request,
     return nullptr;
 }
 
+std::vector<std::string> Dispatcher::encode_global_functions() const {
+    // Published from `main`, because a global name is an alias the engine
+    // resolves back to a schema-resident registration — bind dispatch is keyed
+    // on (schema, name), and there is nowhere else for it to look.
+    std::vector<std::string> items;
+    items.reserve(catalog_.global_functions.size());
+    for (const auto& name : catalog_.global_functions) {
+        if (auto fn = find_buffering(name, "main")) {
+            items.push_back(encode_buffering_info(*fn, "main"));
+            continue;
+        }
+        if (auto transform = find_table_in_out(name, "main")) {
+            items.push_back(encode_table_in_out_info(*transform, "main"));
+            continue;
+        }
+        if (auto table = find_table(name, "main")) {
+            items.push_back(encode_table_function_info(*table, "main"));
+            continue;
+        }
+        const auto aggregates = aggregates_in_schema("main");
+        const auto aggregate = std::find_if(aggregates.begin(), aggregates.end(),
+                                            [&](const auto& fn) { return fn->name() == name; });
+        if (aggregate != aggregates.end()) {
+            items.push_back(encode_aggregate_info(**aggregate, "main"));
+            continue;
+        }
+        // An overload set publishes under one name, so the first registration
+        // is the one the engine is told about.
+        const auto scalars = scalars_named(name);
+        if (scalars.empty()) {
+            throw std::invalid_argument("catalog publishes '" + name +
+                                        "' globally but no function of that name is registered");
+        }
+        items.push_back(encode_function_info(*scalars.front(), "main"));
+    }
+    return items;
+}
+
 vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     // The request dataclass rides in one binary column as a self-describing
     // IPC stream; the params schema is only ever {request: binary}.
@@ -363,7 +401,8 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      // declared statistic, so leaving it off silently
                      // discarded them all.
                      .set_bool("supports_column_statistics", true)
-                     .set_string("global_function_prefix", "")
+                     .set_binary_list("global_functions", encode_global_functions())
+                     .set_string("global_function_prefix", catalog_.global_function_prefix)
                      .set_string_map("tags", catalog_.tags)
                      .set_optional_string("resolved_data_version", resolved_data)
                      .set_optional_string("resolved_implementation_version", resolved_impl)
@@ -1009,38 +1048,62 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
 // error that says nothing about the enum.
 //
 // Empty means no filter.
+bool Dispatcher::advertised_to(const Scope& scope, const vgi_rpc::Request& request) const {
+    if (scope.catalog == catalog_.name) return true;
+    // `<resolved data version>\0<attach name>`, as sealed at ATTACH.
+    const auto sealed = wire::get_optional_binary(request.batch(), "attach_opaque_data");
+    if (!sealed) return false;
+    const auto separator = sealed->find('\0');
+    if (separator == std::string::npos) return false;
+    return sealed->substr(separator + 1) == scope.catalog;
+}
+
 vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "name");
     const auto filter = normalize_function_type(wire::get_enum(request.batch(), "type"));
 
     std::vector<std::string> items;
-    // Only what is declared in this schema. Advertising everything under every
-    // schema would make a two-schema collision look like one flat entry with
-    // two overloads, which is what the engine then reports.
+    // Only what is declared in this schema *and* in this attachment's catalog.
+    // Advertising everything under every schema would make a two-schema
+    // collision look like one flat entry with two overloads, which is what the
+    // engine then reports.
+    const auto mine = [&](const Scope& scope) { return advertised_to(scope, request); };
     if (!filter || *filter == enums::function_type::kScalar) {
-        for (const auto& fn : scalars_in_schema(schema_name)) {
-            items.push_back(encode_function_info(*fn, schema_name));
+        for (size_t i = 0; i < scalars_.size(); ++i) {
+            if (scalar_scopes_[i].schema != schema_name || !mine(scalar_scopes_[i])) continue;
+            items.push_back(encode_function_info(*scalars_[i], schema_name));
         }
     }
     if (!filter || *filter == enums::function_type::kTable) {
-        for (const auto& fn : tables_in_schema(schema_name)) {
-            items.push_back(encode_table_function_info(*fn, schema_name));
+        for (size_t i = 0; i < tables_.size(); ++i) {
+            if (table_scopes_[i].schema != schema_name || !mine(table_scopes_[i])) continue;
+            items.push_back(encode_table_function_info(*tables_[i], schema_name));
         }
-        for (const auto& fn : table_in_outs_in_schema(schema_name)) {
-            items.push_back(encode_table_in_out_info(*fn, schema_name));
+        for (size_t i = 0; i < table_in_outs_.size(); ++i) {
+            if (table_in_out_scopes_[i].schema != schema_name ||
+                !mine(table_in_out_scopes_[i])) {
+                continue;
+            }
+            items.push_back(encode_table_in_out_info(*table_in_outs_[i], schema_name));
         }
         // Buffering functions are advertised under the *table* filter, not a
         // filter of their own. The engine only ever asks for scalar, table or
         // aggregate — `table_buffering` is what the record calls itself, not
         // something the engine knows to ask for — so listing them under their
         // own name means they are never returned and never resolve.
-        for (const auto& fn : bufferings_in_schema(schema_name)) {
-            items.push_back(encode_buffering_info(*fn, schema_name));
+        for (size_t i = 0; i < bufferings_.size(); ++i) {
+            if (buffering_scopes_[i].schema != schema_name || !mine(buffering_scopes_[i])) {
+                continue;
+            }
+            items.push_back(encode_buffering_info(*bufferings_[i], schema_name));
         }
     }
     if (!filter || *filter == enums::function_type::kAggregate) {
-        for (const auto& fn : aggregates_in_schema(schema_name)) {
-            items.push_back(encode_aggregate_info(*fn, schema_name));
+        for (size_t i = 0; i < aggregates_.size(); ++i) {
+            if (aggregate_scopes_[i].schema != schema_name || !mine(aggregate_scopes_[i])) {
+                continue;
+            }
+            items.push_back(encode_aggregate_info(*aggregates_[i], schema_name));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_functions"))

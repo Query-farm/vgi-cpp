@@ -158,6 +158,8 @@ private:
     // One `SchemaInfo` entry, with the object counts the engine treats as a
     // hard guarantee: a declared zero lets it skip both the bulk listing and
     // every per-name lookup for that kind.
+    // The `FunctionInfo` for each name this catalog publishes globally.
+    std::vector<std::string> encode_global_functions() const;
     std::string encode_schema_info(const CatalogSchema& schema,
                                    const CatalogSchema* contents) const;
     static std::string encode_macro_info(const CatalogMacro& macro,
@@ -233,6 +235,15 @@ private:
     // schema, which is how "no such name" is spelled to the engine.
     const CatalogSchema* schema_for(const vgi_rpc::Request& request,
                                     const std::string& name) const;
+
+    // Whether a function declared in `scope` belongs to the attachment this
+    // request was made under.
+    //
+    // One binary may serve a second catalog — a reproducer "app" registered
+    // with `register_*_in(<other catalog>, …)` — and its functions are not
+    // part of the primary catalog's surface. Everything registered without an
+    // explicit catalog is, whatever name the attachment used.
+    bool advertised_to(const Scope& scope, const vgi_rpc::Request& request) const;
 
     CatalogModel catalog_;
     std::vector<std::shared_ptr<ScalarFunction>> scalars_;

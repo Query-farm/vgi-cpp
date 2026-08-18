@@ -298,6 +298,12 @@ void declare_catalog(vgi::Worker& worker) {
          })},
     };
 
+    // Published into the engine's global namespace as `vgi_example_<name>`.
+    // Each stays schema-resident — the global name is an alias, and bind
+    // dispatch is still keyed on (schema, name).
+    worker.catalog().global_functions = {"global_scalar", "global_table", "global_agg",
+                                         "global_buffered"};
+    worker.catalog().global_function_prefix = "vgi_example";
     worker.catalog().comment = "Example VGI catalog for testing";
     worker.catalog().tags = {{"source", "vgi-fixture-worker"}, {"version", "1"}};
 

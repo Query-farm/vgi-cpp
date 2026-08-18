@@ -29,10 +29,12 @@ add_executable(vgi-example-worker
     table/rff.cpp
     table/filters.cpp
     table/logging.cpp
+    table/global.cpp
     table/cache_more.cpp
     table/cache_partitions.cpp
     table/partitioned.cpp
     table/partition_broken.cpp
+    table/proj_repro.cpp
     copy_to/lines.cpp
     copy_from/lines.cpp
     catalog_def.cpp

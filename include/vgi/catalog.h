@@ -223,6 +223,15 @@ struct CatalogModel {
     std::optional<std::string> comment;
     std::vector<std::pair<std::string, std::string>> tags;
 
+    // Function names this catalog asks the engine to publish into its global,
+    // catalog-independent namespace, each under `global_function_prefix`.
+    //
+    // A published function stays schema-resident: bind dispatch is keyed on
+    // (schema, name), so the global name is an alias the engine resolves, not
+    // a second registration. Every name here must also be registered.
+    std::vector<std::string> global_functions;
+    std::string global_function_prefix;
+
     // Whether this catalog answers AT clauses at all. A function-backed table
     // may read the clause itself rather than declaring versions, which is why
     // this is a catalog-level flag and not derived from the tables.

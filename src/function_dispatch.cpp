@@ -18,6 +18,7 @@
 #include <stdexcept>
 
 #include <arrow/record_batch.h>
+#include <arrow/array/util.h>
 #include <arrow/table.h>
 #include <arrow/util/base64.h>
 #include <arrow/util/key_value_metadata.h>
@@ -235,10 +236,34 @@ private:
     size_t next_ = 0;
 };
 
+// Narrow `batch` to `schema` by name, for the producer that ignored the
+// projection and emitted every column.
+//
+// Reading the wide batch positionally against the engine's shorter list is
+// exactly what makes an all-NULL column come back non-NULL, so the columns are
+// matched by name; anything that does not line up is left alone, and the
+// emit-time schema check reports it.
+std::shared_ptr<arrow::RecordBatch> narrow_to(
+    const std::shared_ptr<arrow::RecordBatch>& batch,
+    const std::shared_ptr<arrow::Schema>& schema) {
+    if (!schema || batch->schema()->Equals(*schema)) return batch;
+    std::vector<std::shared_ptr<arrow::Array>> columns;
+    columns.reserve(static_cast<size_t>(schema->num_fields()));
+    for (const auto& field : schema->fields()) {
+        auto column = batch->GetColumnByName(field->name());
+        if (!column || !column->type()->Equals(*field->type())) return batch;
+        columns.push_back(std::move(column));
+    }
+    return arrow::RecordBatch::Make(schema, batch->num_rows(), columns);
+}
+
 class TableProduce : public vgi_rpc::ProducerState {
 public:
-    TableProduce(std::unique_ptr<TableProducer> producer, PushdownFilters filters = {})
-        : producer_(std::move(producer)), filters_(std::move(filters)) {}
+    TableProduce(std::unique_ptr<TableProducer> producer, PushdownFilters filters = {},
+                 std::shared_ptr<arrow::Schema> output_schema = nullptr)
+        : producer_(std::move(producer))
+        , filters_(std::move(filters))
+        , output_schema_(std::move(output_schema)) {}
 
     // Conditional-request validators from the init request, which is where
     // they arrive for a producer: over HTTP the first tick is folded into the
@@ -304,6 +329,7 @@ public:
         if (auto status = batch->ValidateFull(); !status.ok()) {
             throw std::runtime_error("producer emitted an invalid batch: " + status.ToString());
         }
+        batch = narrow_to(batch, output_schema_);
         const auto metadata = producer_->last_metadata();
         if (metadata.empty()) {
             out.emit_batch(batch);
@@ -323,6 +349,9 @@ public:
 private:
     std::unique_ptr<TableProducer> producer_;
     PushdownFilters filters_;
+    // What the engine asked for, which a producer that ignores the projection
+    // does not emit.
+    std::shared_ptr<arrow::Schema> output_schema_;
     std::optional<std::string> if_none_match_;
     std::optional<std::string> if_modified_since_;
     // Asked once, before the first batch: a producer that answered
@@ -397,7 +426,14 @@ private:
             for (const auto& [key, value] : item.metadata) metadata[key] = value;
             batches.push_back(item.batch);
         }
-        if (batches.empty()) return;
+        // Exactly one data batch per turn, always: an exchange tick that
+        // answered with nothing would leave the caller waiting on a reply that
+        // never comes. A function that emits nothing this tick — one that
+        // accumulates and flushes at finalize — answers with no rows.
+        if (batches.empty()) {
+            out.emit_batch(make_empty(params_.output_schema));
+            return;
+        }
 
         auto batch = batches.size() == 1 ? batches.front() : concatenate(batches);
         if (have_parents) metadata[keys::kParentRow] = encode_parent_rows(parent_rows);
@@ -426,6 +462,18 @@ private:
             merged_values.push_back(value);
         }
         out.emit_batch(batch, arrow::key_value_metadata(merged_keys, merged_values));
+    }
+
+    static std::shared_ptr<arrow::RecordBatch> make_empty(
+        const std::shared_ptr<arrow::Schema>& schema) {
+        std::vector<std::shared_ptr<arrow::Array>> columns;
+        columns.reserve(static_cast<size_t>(schema->num_fields()));
+        for (const auto& field : schema->fields()) {
+            auto column = arrow::MakeArrayOfNull(field->type(), 0);
+            if (!column.ok()) throw std::runtime_error("table-in-out: " + column.status().ToString());
+            columns.push_back(column.MoveValueUnsafe());
+        }
+        return arrow::RecordBatch::Make(schema, 0, columns);
     }
 
     static std::shared_ptr<arrow::RecordBatch> concatenate(
@@ -1115,8 +1163,8 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         stream.input_schema = arrow::schema({});
         auto auto_apply = table->metadata().auto_apply_filters ? params.pushdown_filters
                                                               : PushdownFilters{};
-        auto produce =
-            std::make_shared<TableProduce>(table->init(params), std::move(auto_apply));
+        auto produce = std::make_shared<TableProduce>(table->init(params), std::move(auto_apply),
+                                                     output_schema);
         produce->set_validators(request_metadata(request, keys::kIfNoneMatch),
                                 request_metadata(request, keys::kIfModifiedSince));
         stream.state = std::move(produce);

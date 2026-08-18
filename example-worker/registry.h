@@ -39,6 +39,7 @@ void register_secret_fixtures(vgi::Worker& worker);
 void register_series(vgi::Worker& worker);
 void register_filter_fixtures(vgi::Worker& worker);
 void register_logging_fixtures(vgi::Worker& worker);
+void register_global_probes(vgi::Worker& worker);
 void register_copy_to(vgi::Worker& worker);
 void register_copy_from(vgi::Worker& worker);
 void register_cached(vgi::Worker& worker);
@@ -66,6 +67,7 @@ void register_partitioned(vgi::Worker& worker);
 void register_partition_broken(vgi::Worker& worker);
 void register_accumulate(vgi::Worker& worker);
 void register_cached_scalars(vgi::Worker& worker);
+void register_projection_repro(vgi::Worker& worker);
 std::vector<vgi::CatalogTable> rff_tables();
 std::vector<vgi::TimeTravelVersion> versioned_data_versions();
 // Declares the catalog's tables and views. Runs after the function

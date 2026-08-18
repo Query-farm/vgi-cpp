@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
     example::register_series(worker);
     example::register_filter_fixtures(worker);
     example::register_logging_fixtures(worker);
+    example::register_global_probes(worker);
     example::register_copy_to(worker);
     example::register_copy_from(worker);
     example::register_cached(worker);
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
     example::register_partition_broken(worker);
     example::register_accumulate(worker);
     example::register_cached_scalars(worker);
+    example::register_projection_repro(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.
