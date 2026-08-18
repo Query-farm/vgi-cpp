@@ -174,11 +174,27 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
             continue;
         }
 
-        // std::runtime_error, not a kinded error: "not implemented" is not
-        // part of the wire contract, and a client should see it as the plain
-        // RuntimeError it is rather than branch on it.
-        const auto refuse = [name] {
-            trace(name + " (unimplemented)");
+        // Two different refusals, and the distinction is user-visible.
+        //
+        // A `catalog_*_create` / `_drop` / `_rename` on a worker that serves a
+        // read-only catalog is not an unimplemented method — it is a DDL
+        // statement against something that does not accept DDL, and the engine
+        // surfaces "catalog is read-only" to the user. Reporting it as
+        // unimplemented instead sends them looking for a missing feature.
+        const bool is_ddl = name.rfind("catalog_", 0) == 0 &&
+                            (name.find("_create") != std::string::npos ||
+                             name.find("_drop") != std::string::npos ||
+                             name.find("_rename") != std::string::npos ||
+                             name.find("_set") != std::string::npos ||
+                             name.find("_add") != std::string::npos ||
+                             name.find("_change") != std::string::npos ||
+                             name.find("transaction") != std::string::npos);
+        const auto refuse = [name, is_ddl] {
+            trace(name + (is_ddl ? " (read-only)" : " (unimplemented)"));
+            if (is_ddl) {
+                throw std::invalid_argument("catalog is read-only: " + name +
+                                            " is not supported");
+            }
             throw std::runtime_error("vgi-c++ has not implemented " + name + " yet");
         };
 

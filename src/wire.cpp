@@ -398,6 +398,11 @@ ResultBuilder& ResultBuilder::set_string_map(
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_optional_string(
+    const std::string& field, const std::optional<std::string>& value) {
+    return value ? set_string(field, *value) : set_null(field);
+}
+
 ResultBuilder& ResultBuilder::set_enum(const std::string& field, const std::string& value) {
     const int index = field_index(field);
     const auto& type = schema_->field(index)->type();

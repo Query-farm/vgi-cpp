@@ -120,6 +120,10 @@ public:
     ResultBuilder& set_bool(const std::string& field, bool value);
     ResultBuilder& set_int64(const std::string& field, int64_t value);
     ResultBuilder& set_null(const std::string& field);
+    // Sets the value, or null when there is none. The pair appears often
+    // enough that spelling it out at each site invites getting one wrong.
+    ResultBuilder& set_optional_string(const std::string& field,
+                                       const std::optional<std::string>& value);
     // A dictionary<int16, utf8> column.  The protocol spells its enums that
     // way — DuckDB reads them as dictionary-encoded strings — so a plain utf8
     // here is rejected by the consumer rather than coerced.

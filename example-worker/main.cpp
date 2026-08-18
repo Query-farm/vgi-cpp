@@ -20,6 +20,16 @@ int main(int argc, char** argv) {
     vgi::CatalogModel catalog;
     const char* name = std::getenv("VGI_WORKER_CATALOG_NAME");
     catalog.name = (name && *name) ? name : "example";
+    if (catalog.name == "versioned") {
+        // The versioned fixture: three data versions, one implementation, and
+        // an advertised range. ATTACH resolves against these.
+        catalog.implementation_version = "1.0.0";
+        catalog.data_version_spec = ">=1.0.0,<2.0.0";
+        catalog.supported_data_versions = {"1.0.0", "1.1.0", "1.2.0"};
+        catalog.default_data_version = "1.2.0";
+        catalog.comment =
+            "Example catalog demonstrating data_version_spec validation and cookie stickiness";
+    }
     worker.set_catalog(std::move(catalog));
 
     example::register_arithmetic(worker);

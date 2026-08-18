@@ -7,6 +7,7 @@
 #include <vgi_rpc/request.h>
 #include <vgi_rpc/result.h>
 
+#include <algorithm>
 #include <cctype>
 #include <optional>
 #include <string_view>
@@ -33,6 +34,16 @@ std::shared_ptr<arrow::Schema> advertised_aggregate_schema(const AggregateFuncti
         // bind needs an input schema it cannot have at registration time.
     }
     return build_scalar_output_schema(nullptr);
+}
+
+// `"a", "b", "c"` — for an error naming what a worker does serve.
+std::string join_quoted(const std::vector<std::string>& values) {
+    std::string out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i) out += ", ";
+        out += "\"" + values[i] + "\"";
+    }
+    return out;
 }
 
 const char* stability_wire_value(Stability stability) {
@@ -133,6 +144,46 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     // which attachment they belong to.
     const auto name = wire::get_string(attach, "name");
 
+    // Version negotiation. An exact match against what this worker serves,
+    // rather than a range check: a caller asking for something the worker
+    // cannot serve should be told at ATTACH, not discover it mid-query.
+    const auto requested_data = wire::get_optional_string(attach, "data_version_spec");
+    const auto requested_impl = wire::get_optional_string(attach, "implementation_version");
+
+    std::optional<std::string> resolved_data;
+    if (!catalog_.supported_data_versions.empty()) {
+        if (requested_data) {
+            const auto& supported = catalog_.supported_data_versions;
+            if (std::find(supported.begin(), supported.end(), *requested_data) ==
+                supported.end()) {
+                throw std::invalid_argument("Unsupported data_version_spec \"" +
+                                            *requested_data + "\"; this worker serves one of " +
+                                            join_quoted(supported));
+            }
+            resolved_data = requested_data;
+        } else {
+            resolved_data = catalog_.default_data_version;
+        }
+    }
+
+    std::optional<std::string> resolved_impl;
+    if (!catalog_.implementation_version.empty()) {
+        const auto& supported = catalog_.supported_implementation_versions.empty()
+                                    ? std::vector<std::string>{catalog_.implementation_version}
+                                    : catalog_.supported_implementation_versions;
+        if (requested_impl) {
+            if (std::find(supported.begin(), supported.end(), *requested_impl) ==
+                supported.end()) {
+                throw std::invalid_argument("Unsupported implementation_version \"" +
+                                            *requested_impl + "\"; this worker serves " +
+                                            join_quoted(supported));
+            }
+            resolved_impl = requested_impl;
+        } else {
+            resolved_impl = catalog_.implementation_version;
+        }
+    }
+
     auto batch = wire::ResultBuilder(payload_schema_of("catalog_attach"))
                      // Opaque to the engine, which only stores and echoes it.
                      // The canonical worker seals a UUID plus catalog bytes; a
@@ -147,6 +198,8 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      .set_string("default_schema", "main")
                      .set_bool("supports_column_statistics", false)
                      .set_string("global_function_prefix", "")
+                     .set_optional_string("resolved_data_version", resolved_data)
+                     .set_optional_string("resolved_implementation_version", resolved_impl)
                      .set_binary_list("settings", encode_settings())
                      .set_binary_list("secret_types", encode_secret_types())
                      .fill_defaults()
@@ -167,10 +220,21 @@ void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
 vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
     // One catalog: the one this worker serves. A MetaWorker serving several
     // would list them all here.
-    auto info = wire::ResultBuilder(gen::CatalogInfoSchema())
-                    .set_string("name", catalog_.name)
-                    .fill_defaults()
-                    .finish();
+    auto builder = wire::ResultBuilder(gen::CatalogInfoSchema());
+    builder.set_string("name", catalog_.name);
+    // Discovery, before any ATTACH: what this catalog *is*, not what a
+    // particular attachment resolved to.
+    builder.set_optional_string("implementation_version",
+                                catalog_.implementation_version.empty()
+                                    ? std::nullopt
+                                    : std::optional<std::string>(
+                                          catalog_.implementation_version));
+    builder.set_optional_string("data_version_spec", catalog_.data_version_spec);
+    builder.set_optional_string("source_url", catalog_.source_url.empty()
+                                                  ? std::nullopt
+                                                  : std::optional<std::string>(
+                                                        catalog_.source_url));
+    auto info = builder.fill_defaults().finish();
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_catalogs"))
                         .set_binary_list("items", {wire::encode_ipc(info)})
                         .finish());

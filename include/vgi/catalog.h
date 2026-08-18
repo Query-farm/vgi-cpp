@@ -121,6 +121,19 @@ struct CatalogModel {
     std::string implementation_version;
     std::string source_url;
 
+    // The data versions this worker can serve, and which it picks when the
+    // caller does not say. Empty means the catalog is unversioned and
+    // `resolved_data_version` is null.
+    std::vector<std::string> supported_data_versions;
+    std::optional<std::string> default_data_version;
+    // The implementation versions it can serve. Empty means only
+    // `implementation_version` above.
+    std::vector<std::string> supported_implementation_versions;
+    // The version range this catalog's data satisfies, advertised at discovery.
+    std::optional<std::string> data_version_spec;
+    std::optional<std::string> comment;
+    std::vector<std::pair<std::string, std::string>> tags;
+
     // Settings this catalog introduces to the engine.
     std::vector<SettingSpec> settings;
     // Secret types this catalog introduces.
