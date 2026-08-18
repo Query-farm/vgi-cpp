@@ -10,6 +10,7 @@
 // and output schemas are per-call and cannot be declared at registration time.
 
 #include <atomic>
+#include <functional>
 #include <stdexcept>
 
 #include <arrow/record_batch.h>
@@ -19,7 +20,9 @@
 #include <vgi_rpc/stream.h>
 
 #include "dispatcher.h"
+#include "arg_schema.h"
 #include "enums.h"
+#include "arg_schema.h"
 #include "enums.h"
 #include "methods.h"
 #include "vgi/storage.h"
@@ -93,6 +96,35 @@ private:
 // The engine ticks a producer stream with an empty batch and reads whatever
 // comes back, so "no more rows" has to be signalled explicitly — a producer
 // that simply stops emitting would hang the scan.
+// Score one candidate's declared argument types against the types the engine
+// resolved. Returns -1 when the candidate cannot serve this call.
+//
+// The engine has already narrowed to something callable, so this only breaks
+// the remaining tie. A polymorphic parameter matches anything and scores
+// nothing, which is what makes a concrete overload win over an `any` one
+// rather than the other way round.
+int score_overload(const std::vector<ArgSpec>& specs,
+                   const std::function<std::shared_ptr<arrow::DataType>(size_t)>& actual_type) {
+    int score = 0;
+    for (size_t i = 0; i < specs.size(); ++i) {
+        // An exact Arrow type wins, but a VGI type *name* is just as much a
+        // declaration — `constant_arg(..., "varchar", ...)` names utf8 and has
+        // to take part in resolution, or two overloads that differ only by
+        // their named types are indistinguishable and the first always wins.
+        auto declared = specs[i].arrow_type;
+        if (!declared) declared = arg_type_to_arrow(specs[i].type);
+        if (!declared || declared->id() == arrow::Type::NA) continue;
+        auto actual = actual_type(i);
+        if (!actual) continue;
+        if (declared->Equals(*actual)) {
+            ++score;
+        } else {
+            return -1;
+        }
+    }
+    return score;
+}
+
 class TableProduce : public vgi_rpc::ProducerState {
 public:
     explicit TableProduce(std::unique_ptr<TableProducer> producer)
@@ -235,14 +267,40 @@ std::vector<std::shared_ptr<TableFunction>> Dispatcher::tables_in_schema(
 
 std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
                                                       const std::string& schema) const {
+    return find_table(name, schema, nullptr);
+}
+
+std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
+                                                      const std::string& schema,
+                                                      const BindParams* params) const {
     auto it = table_by_name_.find(name);
     if (it == table_by_name_.end()) return nullptr;
-    // Prefer the schema the call named; fall back to the first registration,
-    // since an unqualified call carries no schema to match on.
+
+    // Prefer the schema the call named; an unqualified call carries none.
+    std::vector<std::shared_ptr<TableFunction>> candidates;
     for (size_t index : it->second) {
-        if (schema.empty() || table_scopes_[index].schema == schema) return tables_[index];
+        if (schema.empty() || table_scopes_[index].schema == schema) {
+            candidates.push_back(tables_[index]);
+        }
     }
-    return tables_[it->second.front()];
+    if (candidates.empty()) candidates.push_back(tables_[it->second.front()]);
+    if (candidates.size() == 1 || !params) return candidates.front();
+
+    // Table functions overload exactly as scalars do — `repeat_value` is
+    // registered once per element type — so the same scoring applies. Without
+    // it the first registration wins and a varchar call reaches the int64
+    // overload, failing inside the cast rather than at resolution.
+    std::shared_ptr<TableFunction> best;
+    int best_score = -1;
+    for (const auto& candidate : candidates) {
+        const int score = score_overload(candidate->argument_specs(),
+                                         [&](size_t i) { return params->input_type(i); });
+        if (score > best_score) {
+            best_score = score;
+            best = candidate;
+        }
+    }
+    return best ? best : candidates.front();
 }
 
 std::vector<std::shared_ptr<ScalarFunction>> Dispatcher::scalars_in_schema(
@@ -289,30 +347,13 @@ std::shared_ptr<ScalarFunction> Dispatcher::resolve_scalar(const std::string& na
 
     if (candidates.size() == 1) return candidates.front();
 
-    // Score each overload by how many declared argument types the engine's
-    // resolved types match exactly. The engine has already narrowed to
-    // something callable, so this only has to break the remaining tie — and a
-    // polymorphic parameter matches anything, which is what makes `any_mixed`
-    // lose to a concrete overload rather than shadow it.
     std::shared_ptr<ScalarFunction> best;
     int best_score = -1;
     for (const auto& candidate : candidates) {
-        const auto specs = candidate->argument_specs();
-        int score = 0;
-        bool viable = true;
-        for (size_t i = 0; i < specs.size(); ++i) {
-            const auto declared = specs[i].arrow_type;
-            auto actual = params.input_type(i);
-            if (!declared || declared->id() == arrow::Type::NA) continue;  // polymorphic
-            if (!actual) continue;
-            if (declared->Equals(*actual)) {
-                ++score;
-            } else {
-                viable = false;
-                break;
-            }
-        }
-        if (viable && score > best_score) {
+        const int score = score_overload(
+            candidate->argument_specs(),
+            [&](size_t i) { return params.input_type(i); });
+        if (score > best_score) {
             best_score = score;
             best = candidate;
         }
@@ -374,7 +415,7 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
         output_schema = sink->bind(params);
     } else if (auto transform = find_table_in_out(function_name, params.schema_name)) {
         output_schema = transform->bind(params);
-    } else if (auto table = find_table(function_name, params.schema_name)) {
+    } else if (auto table = find_table(function_name, params.schema_name, &params)) {
         output_schema = table->bind(params);
     } else {
         auto fn = resolve_scalar(function_name, params);
@@ -464,7 +505,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         return stream;
     }
 
-    if (auto table = find_table(function_name, params.schema_name)) {
+    if (auto table = find_table(function_name, params.schema_name, &bind_params)) {
         stream.input_schema = arrow::schema({});
         stream.state = std::make_shared<TableProduce>(table->init(params));
         return stream;

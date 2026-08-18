@@ -271,9 +271,66 @@ public:
     }
 };
 
+// `concat_values(...)` over integers — the int overload of the same name.
+//
+// Two overloads of a varargs function, distinguished only by element type.
+// Registering just the string one makes `concat_values(1, 10)` fail to bind
+// rather than fall back, because DuckDB resolves before calling.
+class ConcatValuesInt : public vgi::ScalarFunction {
+public:
+    std::string name() const override { return "concat_values"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Sum integer varargs and return as string";
+        md.return_type = arrow::utf8();
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        auto values = vgi::ArgSpec::column("values", 0, "int64", "Integer values to sum");
+        values.with_varargs();
+        return {values};
+    }
+
+    std::shared_ptr<arrow::RecordBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        std::vector<std::shared_ptr<arrow::Int64Array>> columns;
+        columns.reserve(static_cast<size_t>(batch->num_columns()));
+        for (int i = 0; i < batch->num_columns(); ++i) {
+            columns.push_back(std::static_pointer_cast<arrow::Int64Array>(
+                cast_to(batch->column(i), arrow::int64())));
+        }
+
+        arrow::StringBuilder out;
+        (void)out.Reserve(batch->num_rows());
+        for (int64_t row = 0; row < batch->num_rows(); ++row) {
+            bool any_null = false;
+            int64_t total = 0;
+            for (const auto& column : columns) {
+                if (column->IsNull(row)) {
+                    any_null = true;
+                    break;
+                }
+                total += column->Value(row);
+            }
+            if (any_null) {
+                (void)out.AppendNull();
+            } else {
+                (void)out.Append(std::to_string(total));
+            }
+        }
+        std::shared_ptr<arrow::Array> array;
+        (void)out.Finish(&array);
+        return result(params, array);
+    }
+};
+
 }  // namespace
 
 void register_strings(vgi::Worker& worker) {
+    worker.register_scalar(std::make_shared<ConcatValuesInt>());
     worker.register_scalar(std::make_shared<UpperCase>());
     worker.register_scalar(std::make_shared<Passthru>());
     worker.register_scalar(std::make_shared<Sha256Hex>());

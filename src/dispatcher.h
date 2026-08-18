@@ -137,6 +137,10 @@ private:
         const std::string& schema) const;
     std::shared_ptr<TableFunction> find_table(const std::string& name,
                                               const std::string& schema) const;
+    // With `params`, resolves overloads by argument type as scalars do.
+    std::shared_ptr<TableFunction> find_table(const std::string& name,
+                                              const std::string& schema,
+                                              const BindParams* params) const;
     std::vector<std::shared_ptr<TableInOutFunction>> table_in_outs_in_schema(
         const std::string& schema) const;
     std::shared_ptr<TableInOutFunction> find_table_in_out(const std::string& name,

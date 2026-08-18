@@ -12,6 +12,7 @@
 #include <arrow/array.h>
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
+#include <arrow/compute/api.h>
 
 #include <vgi/worker.h>
 
@@ -180,9 +181,144 @@ private:
     };
 };
 
+// Repeat a one-row array `count` times, preserving its exact type — which is
+// what makes the DuckDB-lossless extension types survive the round trip.
+std::shared_ptr<arrow::Array> repeat_value(const std::shared_ptr<arrow::Array>& value,
+                                           int64_t count) {
+    arrow::UInt32Builder indices;
+    (void)indices.Reserve(count);
+    for (int64_t i = 0; i < count; ++i) (void)indices.Append(0);
+    std::shared_ptr<arrow::Array> index_array;
+    (void)indices.Finish(&index_array);
+
+    auto taken = arrow::compute::Take(*value, *index_array);
+    if (!taken.ok()) throw std::runtime_error("repeat: " + taken.status().message());
+    return taken.MoveValueUnsafe();
+}
+
+// A producer that emits one prepared batch and stops.
+class OneShot : public vgi::TableProducer {
+public:
+    explicit OneShot(std::shared_ptr<arrow::RecordBatch> batch) : batch_(std::move(batch)) {}
+
+    std::shared_ptr<arrow::RecordBatch> next_batch() override {
+        auto batch = batch_;
+        batch_ = nullptr;
+        return batch;
+    }
+
+private:
+    std::shared_ptr<arrow::RecordBatch> batch_;
+};
+
+// `constant_columns(count, values...)` — one column per vararg, every row the
+// same value. The schema is dynamic: it comes from the arguments, so the
+// column *types* are whatever the caller passed.
+class ConstantColumns : public vgi::TableFunction {
+public:
+    std::string name() const override { return "constant_columns"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return generator_metadata("Generates rows with constant values from varargs");
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        auto values = vgi::ArgSpec::any_column("values", 1, "Values to fill each column");
+        values.with_varargs();
+        values.constant = true;
+        return {vgi::ArgSpec::constant_arg("count", 0, "int64", "Number of rows to generate"),
+                values};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
+        std::vector<std::shared_ptr<arrow::Field>> fields;
+        for (size_t i = 1; i < params.arguments.positional_count(); ++i) {
+            auto value = params.arguments.positional(i);
+            if (!value) continue;
+            fields.push_back(arrow::field("col_" + std::to_string(i - 1), value->type(),
+                                          /*nullable=*/true));
+        }
+        return arrow::schema(std::move(fields));
+    }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        vgi::TableCardinality estimate;
+        if (auto count = params.arguments.const_int64(0)) {
+            estimate.estimate = *count;
+            estimate.max = *count;
+        }
+        return estimate;
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        const int64_t count =
+            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0));
+        std::vector<std::shared_ptr<arrow::Array>> columns;
+        for (size_t i = 1; i < params.arguments.positional_count(); ++i) {
+            if (auto value = params.arguments.positional(i)) {
+                columns.push_back(repeat_value(value, count));
+            }
+        }
+        if (columns.empty()) return std::make_unique<OneShot>(nullptr);
+        return std::make_unique<OneShot>(
+            arrow::RecordBatch::Make(params.output_schema, count, columns));
+    }
+};
+
+// `repeat_value(count, values...)` — like constant_columns, but the columns
+// are named v0, v1, … and the element type is fixed per overload.
+class RepeatValue : public vgi::TableFunction {
+public:
+    RepeatValue(std::string type_name, std::shared_ptr<arrow::DataType> type)
+        : type_name_(std::move(type_name)), type_(std::move(type)) {}
+
+    std::string name() const override { return "repeat_value"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return generator_metadata("Repeat values for N rows");
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        auto values =
+            vgi::ArgSpec::constant_arg("values", 1, type_name_, "Values to repeat");
+        values.with_varargs();
+        return {vgi::ArgSpec::constant_arg("count", 0, "int64", "Number of rows"), values};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
+        std::vector<std::shared_ptr<arrow::Field>> fields;
+        for (size_t i = 1; i < params.arguments.positional_count(); ++i) {
+            fields.push_back(
+                arrow::field("v" + std::to_string(i - 1), type_, /*nullable=*/true));
+        }
+        return arrow::schema(std::move(fields));
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        const int64_t count =
+            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0));
+        std::vector<std::shared_ptr<arrow::Array>> columns;
+        for (size_t i = 1; i < params.arguments.positional_count(); ++i) {
+            auto value = params.arguments.positional(i);
+            if (!value) continue;
+            columns.push_back(repeat_value(cast_to(value, type_), count));
+        }
+        if (columns.empty()) return std::make_unique<OneShot>(nullptr);
+        return std::make_unique<OneShot>(
+            arrow::RecordBatch::Make(params.output_schema, count, columns));
+    }
+
+private:
+    std::string type_name_;
+    std::shared_ptr<arrow::DataType> type_;
+};
+
 }  // namespace
 
 void register_more_tables(vgi::Worker& worker) {
+    worker.register_table(std::make_shared<ConstantColumns>());
+    worker.register_table(std::make_shared<RepeatValue>("int64", arrow::int64()));
+    worker.register_table(std::make_shared<RepeatValue>("varchar", arrow::utf8()));
     worker.register_table(std::make_shared<ProjectedData>());
     worker.register_table(std::make_shared<TenThousand>());
 }
