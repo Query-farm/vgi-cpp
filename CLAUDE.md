@@ -41,33 +41,33 @@ one binary is routed into several catalogs by wrapper scripts and the
 
 ## Protocol code is generated, not written
 
-The Arrow schemas, constants, protocol version, and request builders in
-`src/generated/` come from generators in `vgi-python`. **Never hand-edit
-them.** Regenerate:
+The Arrow schemas, constants and protocol version in `src/generated/` come
+from generators in `vgi-python`. **Never hand-edit them.** Regenerate with:
 
 ```bash
-cd ~/Development/vgi-python
-uv run python -m vgi.codegen.cpp_schemas          > ~/Development/vgi-c++/src/generated/vgi_protocol_schemas.hpp
-uv run python -m vgi.codegen.cpp_constants        > ~/Development/vgi-c++/src/generated/vgi_protocol_constants.hpp
-uv run python -m vgi.codegen.cpp_protocol_version > ~/Development/vgi-c++/src/generated/vgi_protocol_version.hpp
-uv run python -m vgi.codegen.cpp_request_builders > ~/Development/vgi-c++/src/generated/vgi_request_builders.hpp
+scripts/regenerate_protocol.sh
 ```
 
-There is no `vgi-gen-cpp-*` console script — those entry points are not
-registered in `vgi-python`'s `pyproject.toml`, so run the modules with
-`python -m` as above.
+That wraps the three `python -m vgi.codegen.cpp_*` generators, passes
+`--namespace vgi::generated`, and prints the resulting `VGI_PROTOCOL_VERSION`.
 
-Two things to know about the generated headers:
+Two things to know:
 
-- **They are namespaced `duckdb::vgi::generated`**, because their original
-  consumer was the DuckDB extension. That namespace is meaningless here. The
-  SDK aliases it rather than post-processing generated output. Adding a
-  `--namespace` flag to `vgi/codegen/cpp_schemas.py` upstream would be the
-  clean fix; it is deliberately not done yet, to avoid a fifth repo in flight.
-- **`vgi_request_builders.hpp` builds *client* requests.** A worker parses
-  requests and builds *responses*, so it is reference material for field
-  layout, not something to call. The schemas, by contrast, are
-  direction-agnostic and used directly.
+- **The generators default to `duckdb::vgi::generated`**, because their first
+  consumer was the DuckDB extension. VGI is a wire protocol, not a DuckDB
+  feature, and a worker built on this SDK links no DuckDB — so this repo
+  passes `--namespace vgi::generated`. Leaving the default alone is what keeps
+  the extension's own copies byte-identical.
+- **Regenerating adopts whatever protocol version vgi-python is at.** If that
+  is ahead of the engine you test against, the version gate refuses every
+  request and the whole suite fails at once. The script prints the version for
+  exactly this reason; check it against the engine before trusting a red run.
+
+`vgi_request_builders.hpp` used to be vendored here. It builds *client*
+requests — a worker parses requests and builds responses — and it
+`#include`s a DuckDB header this repo does not have, so it could never have
+compiled. It was dropped. Read it in `~/Development/vgi` if you need it as
+reference for field layout.
 
 ## The protocol surface
 
@@ -98,6 +98,25 @@ cmake --build build
 together, and an installed copy goes stale silently). Override with
 `-DVGI_RPC_SOURCE_DIR=<path>`, or `-DVGI_USE_INSTALLED_RPC=ON` to
 `find_package` an installed one.
+
+`-Wall -Wextra` are on for our own targets. They are not decoration:
+`-Wreturn-stack-address` caught a reference bound into the temporary
+`shared_ptr` that `ArrayBuilder::type()` returns, in code the whole
+integration suite ran past. Do not silence one without understanding it.
+
+## Formatting
+
+```bash
+scripts/format.sh          # rewrite in place
+scripts/format.sh --check  # name what differs, exit non-zero
+```
+
+clang-format, Google style with 4-space indent and a 100-column limit — the
+two deviations this codebase already had by hand. The script pins the major
+version, because clang-format's output changes between releases and two
+contributors on different versions reformat each other's files on every
+commit. `src/generated/` is excluded; formatting it only guarantees the next
+regeneration produces a diff.
 
 ## Testing philosophy
 
