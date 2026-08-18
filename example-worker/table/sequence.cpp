@@ -53,7 +53,8 @@ public:
 
         arrow::Int64Builder builder;
         (void)builder.Reserve(end - offset_);
-        for (int64_t i = offset_; i < end; ++i) (void)builder.Append(values_[static_cast<size_t>(i)]);
+        for (int64_t i = offset_; i < end; ++i)
+            (void)builder.Append(values_[static_cast<size_t>(i)]);
         std::shared_ptr<arrow::Array> array;
         (void)builder.Finish(&array);
 

@@ -58,8 +58,7 @@ std::shared_ptr<arrow::Schema> result_schema(std::shared_ptr<arrow::DataType> ty
     return arrow::schema({arrow::field("result", std::move(type), /*nullable=*/true)});
 }
 
-vgi::FunctionMetadata aggregate_metadata(std::string description,
-                                         vgi::NullHandling null_handling) {
+vgi::FunctionMetadata aggregate_metadata(std::string description, vgi::NullHandling null_handling) {
     vgi::FunctionMetadata md;
     md.description = std::move(description);
     md.null_handling = null_handling;
@@ -87,8 +86,8 @@ public:
     void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
                 const std::vector<std::shared_ptr<arrow::Array>>& columns) const override {
         if (columns.empty()) return;
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(columns[0], arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(columns[0], arrow::int64()));
         for (int64_t i = 0; i < group_ids.length(); ++i) {
             // Skipping nulls *before* touching `states` is what keeps an
             // all-NULL group stateless, and so NULL rather than 0.
@@ -103,8 +102,7 @@ public:
     }
 
     std::shared_ptr<arrow::RecordBatch> finalize(
-        const std::shared_ptr<arrow::Schema>& output_schema,
-        const arrow::Int64Array& group_ids,
+        const std::shared_ptr<arrow::Schema>& output_schema, const arrow::Int64Array& group_ids,
         const std::vector<std::optional<std::string>>& states) const override {
         arrow::Int64Builder out;
         (void)out.Reserve(group_ids.length());
@@ -151,8 +149,7 @@ public:
     }
 
     std::shared_ptr<arrow::RecordBatch> finalize(
-        const std::shared_ptr<arrow::Schema>& output_schema,
-        const arrow::Int64Array& group_ids,
+        const std::shared_ptr<arrow::Schema>& output_schema, const arrow::Int64Array& group_ids,
         const std::vector<std::optional<std::string>>& states) const override {
         arrow::Int64Builder out;
         (void)out.Reserve(group_ids.length());
@@ -187,8 +184,8 @@ public:
     void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
                 const std::vector<std::shared_ptr<arrow::Array>>& columns) const override {
         if (columns.empty()) return;
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(columns[0], arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(columns[0], arrow::int64()));
         for (int64_t i = 0; i < group_ids.length(); ++i) {
             if (values->IsNull(i)) continue;
             auto& state = states[group_ids.Value(i)];
@@ -204,8 +201,7 @@ public:
     }
 
     std::shared_ptr<arrow::RecordBatch> finalize(
-        const std::shared_ptr<arrow::Schema>& output_schema,
-        const arrow::Int64Array& group_ids,
+        const std::shared_ptr<arrow::Schema>& output_schema, const arrow::Int64Array& group_ids,
         const std::vector<std::optional<std::string>>& states) const override {
         arrow::DoubleBuilder out;
         (void)out.Reserve(group_ids.length());

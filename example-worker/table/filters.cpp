@@ -76,8 +76,7 @@ public:
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         return std::make_unique<Producer>(
-            params.output_schema,
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
+            params.output_schema, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
             std::max<int64_t>(1, params.arguments.named_int64("batch_size").value_or(2048)),
             params.pushdown_filters.format());
     }
@@ -320,13 +319,13 @@ private:
             std::vector<int64_t> chunk(keys_.begin() + cursor_, keys_.begin() + cursor_ + size);
             cursor_ += size;
 
-            return assemble(schema_, size,
-                            [&](const std::string& column,
-                                int64_t rows) -> std::shared_ptr<arrow::Array> {
-                                if (column == "n") return int64_array(chunk);
-                                if (column == "resolved") return repeat_string(resolved_, rows);
-                                return nullptr;
-                            });
+            return assemble(
+                schema_, size,
+                [&](const std::string& column, int64_t rows) -> std::shared_ptr<arrow::Array> {
+                    if (column == "n") return int64_array(chunk);
+                    if (column == "resolved") return repeat_string(resolved_, rows);
+                    return nullptr;
+                });
         }
 
     private:
@@ -412,38 +411,38 @@ private:
             cursor_ += size;
             remaining_ -= size;
 
-            return assemble(schema_, size,
-                            [&](const std::string& column,
-                                int64_t rows) -> std::shared_ptr<arrow::Array> {
-                                if (column == "n") {
-                                    std::vector<int64_t> values;
-                                    values.reserve(static_cast<size_t>(rows));
-                                    for (int64_t i = 0; i < rows; ++i) values.push_back(start + i);
-                                    return int64_array(values);
-                                }
-                                if (column == "tag") {
-                                    arrow::StringBuilder builder;
-                                    for (int64_t i = 0; i < rows; ++i) {
-                                        (void)builder.Append("t" + std::to_string(start + i));
-                                    }
-                                    std::shared_ptr<arrow::Array> array;
-                                    (void)builder.Finish(&array);
-                                    return array;
-                                }
-                                if (column == "filtered_cols") {
-                                    return repeat_string(diagnostics_.filtered_cols, rows);
-                                }
-                                if (column == "has_n") {
-                                    return repeat_bool(diagnostics_.has_n, rows);
-                                }
-                                if (column == "has_tag") {
-                                    return repeat_bool(diagnostics_.has_tag, rows);
-                                }
-                                if (column == "tag_values") {
-                                    return repeat_string(diagnostics_.tag_values, rows);
-                                }
-                                return nullptr;
-                            });
+            return assemble(
+                schema_, size,
+                [&](const std::string& column, int64_t rows) -> std::shared_ptr<arrow::Array> {
+                    if (column == "n") {
+                        std::vector<int64_t> values;
+                        values.reserve(static_cast<size_t>(rows));
+                        for (int64_t i = 0; i < rows; ++i) values.push_back(start + i);
+                        return int64_array(values);
+                    }
+                    if (column == "tag") {
+                        arrow::StringBuilder builder;
+                        for (int64_t i = 0; i < rows; ++i) {
+                            (void)builder.Append("t" + std::to_string(start + i));
+                        }
+                        std::shared_ptr<arrow::Array> array;
+                        (void)builder.Finish(&array);
+                        return array;
+                    }
+                    if (column == "filtered_cols") {
+                        return repeat_string(diagnostics_.filtered_cols, rows);
+                    }
+                    if (column == "has_n") {
+                        return repeat_bool(diagnostics_.has_n, rows);
+                    }
+                    if (column == "has_tag") {
+                        return repeat_bool(diagnostics_.has_tag, rows);
+                    }
+                    if (column == "tag_values") {
+                        return repeat_string(diagnostics_.tag_values, rows);
+                    }
+                    return nullptr;
+                });
         }
 
     private:
@@ -468,8 +467,7 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
-        md.description =
-            "Emits a dictionary-encoded VARCHAR column for filter-pushdown testing";
+        md.description = "Emits a dictionary-encoded VARCHAR column for filter-pushdown testing";
         md.categories = {"generator", "diagnostic", "testing"};
         md.filter_pushdown = true;
         md.auto_apply_filters = true;
@@ -513,18 +511,18 @@ private:
             cursor_ += size;
             remaining_ -= size;
 
-            return assemble(schema_, size,
-                            [&](const std::string& column,
-                                int64_t rows) -> std::shared_ptr<arrow::Array> {
-                                if (column == "n") {
-                                    std::vector<int64_t> values;
-                                    values.reserve(static_cast<size_t>(rows));
-                                    for (int64_t i = 0; i < rows; ++i) values.push_back(start + i);
-                                    return int64_array(values);
-                                }
-                                if (column == "s") return colors(start, rows);
-                                return nullptr;
-                            });
+            return assemble(
+                schema_, size,
+                [&](const std::string& column, int64_t rows) -> std::shared_ptr<arrow::Array> {
+                    if (column == "n") {
+                        std::vector<int64_t> values;
+                        values.reserve(static_cast<size_t>(rows));
+                        for (int64_t i = 0; i < rows; ++i) values.push_back(start + i);
+                        return int64_array(values);
+                    }
+                    if (column == "s") return colors(start, rows);
+                    return nullptr;
+                });
         }
 
     private:
@@ -618,35 +616,34 @@ private:
             remaining_ -= size;
 
             const auto report = report_;
-            return assemble(schema_, size,
-                            [&](const std::string& column,
-                                int64_t count) -> std::shared_ptr<arrow::Array> {
-                                if (column == "n") {
-                                    // Descending, so a Top-N over `n` ASC has
-                                    // to keep tightening rather than settling
-                                    // on the first batch.
-                                    std::vector<int64_t> values;
-                                    values.reserve(static_cast<size_t>(count));
-                                    for (int64_t i = 0; i < count; ++i) {
-                                        values.push_back(total_ - 1 - (start + i));
-                                    }
-                                    return int64_array(values);
-                                }
-                                if (column == "s") {
-                                    arrow::StringBuilder builder;
-                                    for (int64_t i = 0; i < count; ++i) {
-                                        (void)builder.Append(
-                                            "row_" + std::to_string(total_ - 1 - (start + i)));
-                                    }
-                                    std::shared_ptr<arrow::Array> array;
-                                    (void)builder.Finish(&array);
-                                    return array;
-                                }
-                                if (column == "pushed_filters") {
-                                    return repeat_string(report, count);
-                                }
-                                return nullptr;
-                            });
+            return assemble(
+                schema_, size,
+                [&](const std::string& column, int64_t count) -> std::shared_ptr<arrow::Array> {
+                    if (column == "n") {
+                        // Descending, so a Top-N over `n` ASC has
+                        // to keep tightening rather than settling
+                        // on the first batch.
+                        std::vector<int64_t> values;
+                        values.reserve(static_cast<size_t>(count));
+                        for (int64_t i = 0; i < count; ++i) {
+                            values.push_back(total_ - 1 - (start + i));
+                        }
+                        return int64_array(values);
+                    }
+                    if (column == "s") {
+                        arrow::StringBuilder builder;
+                        for (int64_t i = 0; i < count; ++i) {
+                            (void)builder.Append("row_" + std::to_string(total_ - 1 - (start + i)));
+                        }
+                        std::shared_ptr<arrow::Array> array;
+                        (void)builder.Finish(&array);
+                        return array;
+                    }
+                    if (column == "pushed_filters") {
+                        return repeat_string(report, count);
+                    }
+                    return nullptr;
+                });
         }
 
     private:
@@ -710,38 +707,37 @@ private:
             cursor_ += size;
             remaining_ -= size;
 
-            return assemble(schema_, size,
-                            [&](const std::string& column,
-                                int64_t count) -> std::shared_ptr<arrow::Array> {
-                                if (column == "id") {
-                                    std::vector<int64_t> values;
-                                    values.reserve(static_cast<size_t>(count));
-                                    for (int64_t i = 0; i < count; ++i) values.push_back(start + i);
-                                    return int64_array(values);
-                                }
-                                if (column == "name") {
-                                    arrow::StringBuilder builder;
-                                    for (int64_t i = 0; i < count; ++i) {
-                                        (void)builder.Append("item_" + std::to_string(start + i));
-                                    }
-                                    std::shared_ptr<arrow::Array> array;
-                                    (void)builder.Finish(&array);
-                                    return array;
-                                }
-                                if (column == "score") {
-                                    arrow::DoubleBuilder builder;
-                                    (void)builder.Reserve(count);
-                                    for (int64_t i = 0; i < count; ++i) {
-                                        (void)builder.Append(
-                                            static_cast<double>(start + i) * 1.1);
-                                    }
-                                    std::shared_ptr<arrow::Array> array;
-                                    (void)builder.Finish(&array);
-                                    return array;
-                                }
-                                if (column == "tags") return tags(start, count);
-                                return nullptr;
-                            });
+            return assemble(
+                schema_, size,
+                [&](const std::string& column, int64_t count) -> std::shared_ptr<arrow::Array> {
+                    if (column == "id") {
+                        std::vector<int64_t> values;
+                        values.reserve(static_cast<size_t>(count));
+                        for (int64_t i = 0; i < count; ++i) values.push_back(start + i);
+                        return int64_array(values);
+                    }
+                    if (column == "name") {
+                        arrow::StringBuilder builder;
+                        for (int64_t i = 0; i < count; ++i) {
+                            (void)builder.Append("item_" + std::to_string(start + i));
+                        }
+                        std::shared_ptr<arrow::Array> array;
+                        (void)builder.Finish(&array);
+                        return array;
+                    }
+                    if (column == "score") {
+                        arrow::DoubleBuilder builder;
+                        (void)builder.Reserve(count);
+                        for (int64_t i = 0; i < count; ++i) {
+                            (void)builder.Append(static_cast<double>(start + i) * 1.1);
+                        }
+                        std::shared_ptr<arrow::Array> array;
+                        (void)builder.Finish(&array);
+                        return array;
+                    }
+                    if (column == "tags") return tags(start, count);
+                    return nullptr;
+                });
         }
 
     private:
@@ -791,10 +787,10 @@ public:
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
         // The extension type markers are what make DuckDB read the blob as a
         // GEOMETRY rather than as bytes.
-        auto geom = arrow::field("geom", arrow::binary(), true)
-                        ->WithMetadata(arrow::key_value_metadata(
-                            {"ARROW:extension:name", "ARROW:extension:metadata"},
-                            {"geoarrow.wkb", "{}"}));
+        auto geom =
+            arrow::field("geom", arrow::binary(), true)
+                ->WithMetadata(arrow::key_value_metadata(
+                    {"ARROW:extension:name", "ARROW:extension:metadata"}, {"geoarrow.wkb", "{}"}));
         return arrow::schema({arrow::field("n", arrow::int64(), true),
                               arrow::field("x", arrow::float64(), true),
                               arrow::field("y", arrow::float64(), true), geom});
@@ -831,38 +827,37 @@ private:
             cursor_ += size;
             remaining_ -= size;
 
-            return assemble(schema_, size,
-                            [&](const std::string& column,
-                                int64_t count) -> std::shared_ptr<arrow::Array> {
-                                if (column == "n") {
-                                    std::vector<int64_t> values;
-                                    values.reserve(static_cast<size_t>(count));
-                                    for (int64_t i = 0; i < count; ++i) values.push_back(start + i);
-                                    return int64_array(values);
-                                }
-                                if (column == "x" || column == "y") {
-                                    arrow::DoubleBuilder builder;
-                                    (void)builder.Reserve(count);
-                                    for (int64_t i = 0; i < count; ++i) {
-                                        (void)builder.Append(coordinate(start + i, column == "x"));
-                                    }
-                                    std::shared_ptr<arrow::Array> array;
-                                    (void)builder.Finish(&array);
-                                    return array;
-                                }
-                                if (column == "geom") {
-                                    arrow::BinaryBuilder builder;
-                                    for (int64_t i = 0; i < count; ++i) {
-                                        (void)builder.Append(
-                                            wkb_point(coordinate(start + i, true),
-                                                      coordinate(start + i, false)));
-                                    }
-                                    std::shared_ptr<arrow::Array> array;
-                                    (void)builder.Finish(&array);
-                                    return array;
-                                }
-                                return nullptr;
-                            });
+            return assemble(
+                schema_, size,
+                [&](const std::string& column, int64_t count) -> std::shared_ptr<arrow::Array> {
+                    if (column == "n") {
+                        std::vector<int64_t> values;
+                        values.reserve(static_cast<size_t>(count));
+                        for (int64_t i = 0; i < count; ++i) values.push_back(start + i);
+                        return int64_array(values);
+                    }
+                    if (column == "x" || column == "y") {
+                        arrow::DoubleBuilder builder;
+                        (void)builder.Reserve(count);
+                        for (int64_t i = 0; i < count; ++i) {
+                            (void)builder.Append(coordinate(start + i, column == "x"));
+                        }
+                        std::shared_ptr<arrow::Array> array;
+                        (void)builder.Finish(&array);
+                        return array;
+                    }
+                    if (column == "geom") {
+                        arrow::BinaryBuilder builder;
+                        for (int64_t i = 0; i < count; ++i) {
+                            (void)builder.Append(wkb_point(coordinate(start + i, true),
+                                                           coordinate(start + i, false)));
+                        }
+                        std::shared_ptr<arrow::Array> array;
+                        (void)builder.Finish(&array);
+                        return array;
+                    }
+                    return nullptr;
+                });
         }
 
     private:

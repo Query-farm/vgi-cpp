@@ -71,8 +71,8 @@ public:
     // Longest-prefix, not first-match: two secrets may both cover a path — one
     // scoped to a bucket and one to a prefix within it — and the more specific
     // is the one the user meant.
-    const std::map<std::string, std::string>* for_scope_of_type(
-        const std::string& path, const std::string& type) const;
+    const std::map<std::string, std::string>* for_scope_of_type(const std::string& path,
+                                                                const std::string& type) const;
 
     bool empty() const noexcept { return by_name_.empty(); }
 

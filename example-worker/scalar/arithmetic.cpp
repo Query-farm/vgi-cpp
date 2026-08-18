@@ -32,8 +32,7 @@ public:
         md.description = "Doubles numeric values";
         md.examples = {
             {"SELECT double(21)", "Double an integer literal", "42"},
-            {"SELECT double(value) FROM numbers", "Double every value in a column",
-             std::nullopt},
+            {"SELECT double(value) FROM numbers", "Double every value in a column", std::nullopt},
         };
         return md;
     }
@@ -109,8 +108,8 @@ public:
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const int64_t factor = params.arguments.const_int64(1).value_or(1);
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
 
         arrow::Int64Builder out;
         (void)out.Reserve(values->length());

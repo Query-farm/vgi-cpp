@@ -67,8 +67,7 @@ public:
         vgi::FunctionMetadata md;
         md.description = "Return a secret's value";
         md.return_type = arrow::utf8();
-        md.examples = {{"SELECT return_secret_value()", "Return a secret's value",
-                        std::nullopt}};
+        md.examples = {{"SELECT return_secret_value()", "Return a secret's value", std::nullopt}};
         // Declaring the lookup is what makes the engine resolve it and hand
         // the values down; an undeclared secret never arrives, however it was
         // created.
@@ -101,8 +100,7 @@ public:
         vgi::FunctionMetadata md;
         md.description = "Look up secret fields by name";
         md.return_type = arrow::utf8();
-        md.examples = {{"SELECT secret_field()", "Look up secret fields by name",
-                        std::nullopt}};
+        md.examples = {{"SELECT secret_field()", "Look up secret fields by name", std::nullopt}};
         md.required_secrets = {{kSecretType, std::nullopt, std::nullopt}};
         return md;
     }
@@ -114,8 +112,7 @@ public:
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const auto port = params.secrets.typed_field(kSecretType, "port").value_or("");
         const auto name = any_secret_field(params.secrets, "secret_string");
-        return result(params, repeat_string("port=" + port + ";name=" + name,
-                                            batch->num_rows()));
+        return result(params, repeat_string("port=" + port + ";name=" + name, batch->num_rows()));
     }
 };
 
@@ -147,8 +144,8 @@ public:
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
 
         arrow::StringBuilder out;
         (void)out.Reserve(values->length());
@@ -206,8 +203,7 @@ std::shared_ptr<arrow::DataType> packet_config_type() {
 // that through a `BinaryArray&` walks 32-bit offsets over a 64-bit buffer.
 std::string const_bytes(const std::shared_ptr<arrow::Array>& array) {
     if (!array || array->length() == 0 || array->IsNull(0)) return {};
-    const auto& values =
-        static_cast<const arrow::BinaryArray&>(*cast_to(array, arrow::binary()));
+    const auto& values = static_cast<const arrow::BinaryArray&>(*cast_to(array, arrow::binary()));
     return values.GetString(0);
 }
 
@@ -230,8 +226,7 @@ public:
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
         return {
-            vgi::ArgSpec::constant_typed("header", 0, arrow::binary(),
-                                         "Header bytes to prepend"),
+            vgi::ArgSpec::constant_typed("header", 0, arrow::binary(), "Header bytes to prepend"),
             vgi::ArgSpec::column("payload", 1, "binary", "Binary payload data"),
             vgi::ArgSpec::constant_typed("config", 2, packet_config_type(),
                                          "Config {label, version}"),
@@ -244,8 +239,8 @@ public:
         const std::string header = const_bytes(params.arguments.positional(0));
         const std::string suffix = packet_suffix(params.arguments.positional(2));
 
-        const auto& payload = static_cast<const arrow::BinaryArray&>(
-            *cast_to(batch->column(0), arrow::binary()));
+        const auto& payload =
+            static_cast<const arrow::BinaryArray&>(*cast_to(batch->column(0), arrow::binary()));
 
         arrow::BinaryBuilder out;
         (void)out.Reserve(payload.length());
@@ -276,8 +271,8 @@ private:
                 if (!labels.IsNull(0)) suffix = labels.GetString(0);
             }
             if (auto declared = fields->GetFieldByName("version")) {
-                const auto& versions = static_cast<const arrow::Int64Array&>(
-                    *cast_to(declared, arrow::int64()));
+                const auto& versions =
+                    static_cast<const arrow::Int64Array&>(*cast_to(declared, arrow::int64()));
                 if (!versions.IsNull(0)) version = versions.Value(0);
             }
         }
@@ -313,8 +308,7 @@ std::shared_ptr<arrow::DataType> element_type(const std::shared_ptr<arrow::DataT
 //
 // The axes struct decides the nesting: one coordinate list per axis, and a
 // tensor that must be exactly that many list levels deep.
-std::shared_ptr<arrow::DataType> unnest_result_type(
-    const std::shared_ptr<arrow::DataType>& input) {
+std::shared_ptr<arrow::DataType> unnest_result_type(const std::shared_ptr<arrow::DataType>& input) {
     if (input->id() != arrow::Type::STRUCT) {
         tensor_error("argument must be a struct, got " + input->ToString());
     }
@@ -347,9 +341,8 @@ std::shared_ptr<arrow::DataType> unnest_result_type(
                                         /*nullable=*/true));
     }
 
-    auto row = arrow::struct_(
-        {arrow::field("value", cell, /*nullable=*/true),
-         arrow::field("axes", arrow::struct_(out_axes), /*nullable=*/true)});
+    auto row = arrow::struct_({arrow::field("value", cell, /*nullable=*/true),
+                               arrow::field("axes", arrow::struct_(out_axes), /*nullable=*/true)});
     return arrow::list(arrow::field("item", row, /*nullable=*/true));
 }
 
@@ -402,8 +395,7 @@ public:
         auto cells = std::dynamic_pointer_cast<arrow::StructArray>(batch->column(0));
         if (!cells) tensor_error("input must be a struct array");
         auto tensor = cells->GetFieldByName("tensor");
-        auto axes = std::dynamic_pointer_cast<arrow::StructArray>(
-            cells->GetFieldByName("axes"));
+        auto axes = std::dynamic_pointer_cast<arrow::StructArray>(cells->GetFieldByName("axes"));
         if (!tensor || !axes) tensor_error("input must have 'tensor' and 'axes' fields");
         const int n_axes = axes->num_fields();
 
@@ -486,8 +478,7 @@ public:
         (void)value_take.Finish(&value_indices);
         auto values = cast_to(take_indices(leaf, value_indices), row_fields.field(0)->type());
 
-        const auto& out_axes =
-            static_cast<const arrow::StructType&>(*row_fields.field(1)->type());
+        const auto& out_axes = static_cast<const arrow::StructType&>(*row_fields.field(1)->type());
         std::vector<std::shared_ptr<arrow::Array>> axis_columns;
         std::vector<std::shared_ptr<arrow::Field>> axis_fields;
         for (int a = 0; a < n_axes; ++a) {
@@ -514,8 +505,7 @@ public:
         // would copy every cell a second time.
         auto data = arrow::ArrayData::Make(
             list_type, batch->num_rows(),
-            {null_rows == 0 ? std::shared_ptr<arrow::Buffer>() : validity_buffer,
-             offsets_buffer},
+            {null_rows == 0 ? std::shared_ptr<arrow::Buffer>() : validity_buffer, offsets_buffer},
             {(*rows)->data()}, null_rows);
         return result(params, std::make_shared<arrow::ListArray>(data));
     }

@@ -140,9 +140,9 @@ public:
                 }
                 // Written to a staging namespace, because the order they
                 // arrive in is exactly what has to be undone.
-                params.storage->append(params.execution_id, kUnsortedNamespace, "",
-                                       encode_indexed(*params.input_batch_index,
-                                                      encode_batch(batch)));
+                params.storage->append(
+                    params.execution_id, kUnsortedNamespace, "",
+                    encode_indexed(*params.input_batch_index, encode_batch(batch)));
             } else {
                 params.storage->append(params.execution_id, kNamespace, "", encode_batch(batch));
             }

@@ -74,8 +74,8 @@ std::map<std::string, std::string> partition_metadata(
         // awkward, and building directly avoids depending on which Arrow
         // header Concatenate happens to live in.
         std::unique_ptr<arrow::ArrayBuilder> builder;
-        if (auto status = arrow::MakeBuilder(arrow::default_memory_pool(), column->type(),
-                                             &builder);
+        if (auto status =
+                arrow::MakeBuilder(arrow::default_memory_pool(), column->type(), &builder);
             !status.ok()) {
             refuse(status.ToString());
         }

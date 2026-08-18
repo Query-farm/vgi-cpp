@@ -85,15 +85,14 @@ std::shared_ptr<arrow::Array> cast_or_throw(const std::shared_ptr<arrow::Array>&
     options.to_type = type;
     auto result = arrow::compute::Cast(arrow::Datum(array), options);
     if (!result.ok()) {
-        throw std::runtime_error("cast " + array->type()->ToString() + " -> " +
-                                 type->ToString() + ": " + result.status().message());
+        throw std::runtime_error("cast " + array->type()->ToString() + " -> " + type->ToString() +
+                                 ": " + result.status().message());
     }
     return result.MoveValueUnsafe().make_array();
 }
 
 std::shared_ptr<arrow::Array> add_arrays(const std::shared_ptr<arrow::Array>& a,
-                                         const std::shared_ptr<arrow::Array>& b,
-                                         const char* what) {
+                                         const std::shared_ptr<arrow::Array>& b, const char* what) {
     auto sum = arrow::compute::CallFunction("add", {a, b});
     if (!sum.ok()) {
         throw std::runtime_error(std::string(what) + ": " + sum.status().message());
@@ -106,13 +105,11 @@ std::shared_ptr<arrow::Array> add_arrays(const std::shared_ptr<arrow::Array>& a,
 // harmless mismatch: `RecordBatch::Make` validates nothing, `num_columns()`
 // then reports the schema's field count while the array vector is shorter, and
 // iterating the columns reads off the end of it.
-std::shared_ptr<arrow::DataType> bound_output_type(const ProcessParams& params,
-                                                   const char* what) {
+std::shared_ptr<arrow::DataType> bound_output_type(const ProcessParams& params, const char* what) {
     if (!params.output_schema || params.output_schema->num_fields() != 1) {
         throw std::runtime_error(
             std::string(what) + ": expects a one-column output schema, got " +
-            (params.output_schema ? std::to_string(params.output_schema->num_fields()) +
-                                        " columns"
+            (params.output_schema ? std::to_string(params.output_schema->num_fields()) + " columns"
                                   : "none"));
     }
     return params.output_schema->field(0)->type();
@@ -134,11 +131,12 @@ std::shared_ptr<arrow::Array> input_column(const std::shared_ptr<arrow::RecordBa
 
 }  // namespace
 
-bool is_integer_type(const arrow::DataType& type) { return int_info(type).has_value(); }
+bool is_integer_type(const arrow::DataType& type) {
+    return int_info(type).has_value();
+}
 
 bool is_floating_type(const arrow::DataType& type) {
-    return type.id() == Type::HALF_FLOAT || type.id() == Type::FLOAT ||
-           type.id() == Type::DOUBLE;
+    return type.id() == Type::HALF_FLOAT || type.id() == Type::FLOAT || type.id() == Type::DOUBLE;
 }
 
 bool is_decimal_type(const arrow::DataType& type) {
@@ -155,10 +153,8 @@ bool is_temporal_type(const arrow::DataType& type) {
         case Type::DURATION:
         case Type::INTERVAL_MONTHS:
         case Type::INTERVAL_DAY_TIME:
-        case Type::INTERVAL_MONTH_DAY_NANO:
-            return true;
-        default:
-            return false;
+        case Type::INTERVAL_MONTH_DAY_NANO: return true;
+        default: return false;
     }
 }
 
@@ -208,8 +204,8 @@ std::shared_ptr<arrow::DataType> common_type_for_addition(
     return promote_for_addition(common_numeric(a, b));
 }
 
-std::shared_ptr<arrow::RecordBatch> double_first(
-    const ProcessParams& params, const std::shared_ptr<arrow::RecordBatch>& batch) {
+std::shared_ptr<arrow::RecordBatch> double_first(const ProcessParams& params,
+                                                 const std::shared_ptr<arrow::RecordBatch>& batch) {
     const auto type = bound_output_type(params, "double_first");
     const auto first = input_column(batch, 0, "double_first");
 
@@ -241,8 +237,8 @@ std::shared_ptr<arrow::RecordBatch> double_first(
     return arrow::RecordBatch::Make(params.output_schema, summed->length(), {summed});
 }
 
-std::shared_ptr<arrow::RecordBatch> add_two(
-    const ProcessParams& params, const std::shared_ptr<arrow::RecordBatch>& batch) {
+std::shared_ptr<arrow::RecordBatch> add_two(const ProcessParams& params,
+                                            const std::shared_ptr<arrow::RecordBatch>& batch) {
     const auto type = bound_output_type(params, "add_two");
     auto a = cast_or_throw(input_column(batch, 0, "add_two"), type);
     auto b = cast_or_throw(input_column(batch, 1, "add_two"), type);

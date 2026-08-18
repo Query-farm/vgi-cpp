@@ -76,8 +76,8 @@ public:
             // surviving columns' names but not their indices.
             auto column = batch->GetColumnByName(field->name());
             if (!column) {
-                throw std::runtime_error("secret_in_out: no input column named '" +
-                                         field->name() + "'");
+                throw std::runtime_error("secret_in_out: no input column named '" + field->name() +
+                                         "'");
             }
             columns.push_back(cast_to(column, field->type()));
         }

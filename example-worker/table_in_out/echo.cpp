@@ -111,9 +111,9 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("repeat_count", 0, "int64",
-                                           "Times to repeat each input"),
-                vgi::ArgSpec::table("data", 1, "Input relation")};
+        return {
+            vgi::ArgSpec::constant_arg("repeat_count", 0, "int64", "Times to repeat each input"),
+            vgi::ArgSpec::table("data", 1, "Input relation")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
@@ -131,15 +131,14 @@ public:
     std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        const auto count =
-            std::max<int64_t>(1, params.arguments.const_int64(0).value_or(1));
+        const auto count = std::max<int64_t>(1, params.arguments.const_int64(0).value_or(1));
         auto projected = vgi::project_batch(batch, params.output_schema);
 
         // Concatenated into one batch rather than emitted N times: the engine
         // treats each emitted batch as a separate unit downstream, and the
         // fixture's tests expect one.
-        std::vector<std::shared_ptr<arrow::RecordBatch>> copies(
-            static_cast<size_t>(count), projected);
+        std::vector<std::shared_ptr<arrow::RecordBatch>> copies(static_cast<size_t>(count),
+                                                                projected);
         auto table = arrow::Table::FromRecordBatches(projected->schema(), copies);
         if (!table.ok()) throw std::runtime_error("repeat_inputs: " + table.status().message());
         auto combined = table.ValueUnsafe()->CombineChunks();

@@ -64,8 +64,7 @@ std::shared_ptr<arrow::RecordBatch> batch_from(
 // result at init, so the producer carries no scan position.
 class OneShot : public vgi::TableProducer {
 public:
-    explicit OneShot(std::shared_ptr<arrow::RecordBatch> batch)
-        : batch_(std::move(batch)) {}
+    explicit OneShot(std::shared_ptr<arrow::RecordBatch> batch) : batch_(std::move(batch)) {}
 
     std::shared_ptr<arrow::RecordBatch> next_batch() override {
         return std::exchange(batch_, nullptr);
@@ -114,13 +113,12 @@ public:
             }
         }
 
-        auto batch = batch_from(
-            params.output_schema, static_cast<int64_t>(keys.size()),
-            [&](const std::string& name) {
-                if (name == "key") return strings(keys);
-                if (name == "value") return strings(values);
-                return strings(types);
-            });
+        auto batch = batch_from(params.output_schema, static_cast<int64_t>(keys.size()),
+                                [&](const std::string& name) {
+                                    if (name == "key") return strings(keys);
+                                    if (name == "value") return strings(values);
+                                    return strings(types);
+                                });
         return std::make_unique<OneShot>(std::move(batch));
     }
 };
@@ -144,14 +142,12 @@ public:
 
     // Asked per call site rather than declared in metadata(): the scope is an
     // argument, and metadata() is answered before any call site exists.
-    std::vector<vgi::SecretLookup> secret_lookups(
-        const vgi::BindParams& params) const override {
+    std::vector<vgi::SecretLookup> secret_lookups(const vgi::BindParams& params) const override {
         return {{kSecretType, params.arguments.const_string(0), std::nullopt}};
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("path", 0, "varchar",
-                                           "Scope path for secret lookup")};
+        return {vgi::ArgSpec::constant_arg("path", 0, "varchar", "Scope path for secret lookup")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
@@ -176,17 +172,16 @@ public:
             }
         }
 
-        auto batch = batch_from(
-            params.output_schema, 1, [&](const std::string& name) {
-                if (name == "found") {
-                    arrow::BooleanBuilder builder;
-                    (void)builder.Append(secret != nullptr);
-                    std::shared_ptr<arrow::Array> array;
-                    (void)builder.Finish(&array);
-                    return array;
-                }
-                return strings({name == "scope" ? path : keys});
-            });
+        auto batch = batch_from(params.output_schema, 1, [&](const std::string& name) {
+            if (name == "found") {
+                arrow::BooleanBuilder builder;
+                (void)builder.Append(secret != nullptr);
+                std::shared_ptr<arrow::Array> array;
+                (void)builder.Finish(&array);
+                return array;
+            }
+            return strings({name == "scope" ? path : keys});
+        });
         return std::make_unique<OneShot>(std::move(batch));
     }
 
@@ -213,8 +208,7 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("path", 0, "varchar",
-                                           "Path for scoped secret lookup")};
+        return {vgi::ArgSpec::constant_arg("path", 0, "varchar", "Path for scoped secret lookup")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {

@@ -50,8 +50,7 @@ public:
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
-        return settings_aware_schema(
-            params.settings.get_bool("vgi_verbose_mode").value_or(false));
+        return settings_aware_schema(params.settings.get_bool("vgi_verbose_mode").value_or(false));
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
@@ -134,8 +133,7 @@ public:
         auto source = batch->GetColumnByName("value");
         if (!source) throw std::runtime_error("filter_by_setting: no 'value' column");
 
-        auto values =
-            std::static_pointer_cast<arrow::Int64Array>(cast_to(source, arrow::int64()));
+        auto values = std::static_pointer_cast<arrow::Int64Array>(cast_to(source, arrow::int64()));
         arrow::BooleanBuilder keep;
         (void)keep.Reserve(values->length());
         for (int64_t i = 0; i < values->length(); ++i) {
@@ -149,8 +147,8 @@ public:
         if (!filtered.ok()) {
             throw std::runtime_error("filter_by_setting: " + filtered.status().message());
         }
-        return {vgi::project_batch(filtered.MoveValueUnsafe().record_batch(),
-                                   params.output_schema)};
+        return {
+            vgi::project_batch(filtered.MoveValueUnsafe().record_batch(), params.output_schema)};
     }
 };
 
@@ -175,8 +173,8 @@ public:
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
-        return arrow::schema({arrow::field("n", arrow::int64(), true),
-                              arrow::field("label", arrow::utf8(), true)});
+        return arrow::schema(
+            {arrow::field("n", arrow::int64(), true), arrow::field("label", arrow::utf8(), true)});
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
@@ -190,8 +188,8 @@ public:
             }
         }
         return std::make_unique<Producer>(
-            params.output_schema,
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)), config);
+            params.output_schema, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
+            config);
     }
 
 private:

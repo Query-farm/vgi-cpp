@@ -57,8 +57,8 @@ private:
     int64_t index_ = 0;
     // A no-op until the driver binds one, so the first tick's message is not a
     // special case.
-    std::function<void(vgi::LogLevel, const std::string&)> log_ =
-        [](vgi::LogLevel, const std::string&) {};
+    std::function<void(vgi::LogLevel, const std::string&)> log_ = [](vgi::LogLevel,
+                                                                     const std::string&) {};
 };
 
 class LoggingGenerator : public vgi::TableFunction {

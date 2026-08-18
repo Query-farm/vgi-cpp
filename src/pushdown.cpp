@@ -149,8 +149,7 @@ PushdownFilters PushdownFilters::parse(const std::string& ipc_bytes,
 // for `join_keys`.
 std::shared_ptr<arrow::Array> PushdownFilters::values_for(const Spec& spec) const {
     if (spec.kind == "join_keys") {
-        auto it = join_keys_.find(spec.keys_column.empty() ? spec.column_name
-                                                          : spec.keys_column);
+        auto it = join_keys_.find(spec.keys_column.empty() ? spec.column_name : spec.keys_column);
         return it == join_keys_.end() ? nullptr : it->second;
     }
     if (!spec.value_ref || *spec.value_ref >= values_.size()) return nullptr;
@@ -219,8 +218,7 @@ ColumnBounds PushdownFilters::column_bounds(const std::string& column) const {
     return bounds;
 }
 
-std::vector<std::shared_ptr<Spec>> PushdownFilters::column_specs(
-    const std::string& column) const {
+std::vector<std::shared_ptr<Spec>> PushdownFilters::column_specs(const std::string& column) const {
     std::vector<std::shared_ptr<Spec>> found;
     for (const auto& spec : specs_) {
         if (spec->column_name != column) continue;
@@ -235,8 +233,8 @@ std::vector<std::shared_ptr<Spec>> PushdownFilters::column_specs(
     return found;
 }
 
-std::shared_ptr<arrow::Array> PushdownFilters::or_column_values(
-    const Spec& spec, const std::string& column) const {
+std::shared_ptr<arrow::Array> PushdownFilters::or_column_values(const Spec& spec,
+                                                                const std::string& column) const {
     arrow::ArrayVector branches;
     for (const auto& child : spec.children) {
         // A branch constraining a different column — or none — leaves this
@@ -300,8 +298,7 @@ std::string format_scalar(const std::shared_ptr<arrow::Array>& array, int64_t i)
             return "'" + static_cast<const arrow::LargeStringArray&>(*array).GetString(i) + "'";
         case arrow::Type::BOOL:
             return static_cast<const arrow::BooleanArray&>(*array).Value(i) ? "True" : "False";
-        default:
-            break;
+        default: break;
     }
     auto casted = arrow::compute::Cast(*array->Slice(i, 1), arrow::utf8());
     if (!casted.ok()) return {};
@@ -376,9 +373,8 @@ std::string PushdownFilters::format_repr() const {
         if (spec->kind == "is_null") return "IsNullFilter(" + name + " IS NULL)";
         if (spec->kind == "is_not_null") return "IsNotNullFilter(" + name + " IS NOT NULL)";
         if (spec->kind == "constant") {
-            return "ConstantFilter(" + name + " " +
-                   op_symbol(spec->op.empty() ? "eq" : spec->op) + " " +
-                   format_scalar(values_for(*spec), 0) + ")";
+            return "ConstantFilter(" + name + " " + op_symbol(spec->op.empty() ? "eq" : spec->op) +
+                   " " + format_scalar(values_for(*spec), 0) + ")";
         }
         if (spec->kind == "in" || spec->kind == "join_keys") {
             // Every value, unlike `format`: this rendering names the kinds,
@@ -451,8 +447,7 @@ std::shared_ptr<arrow::RecordBatch> PushdownFilters::apply(
             mask = arrow::compute::IsNull(column);
         } else if (spec->kind == "is_not_null") {
             mask = arrow::compute::IsValid(column);
-        } else if (spec->kind == "constant" || spec->kind == "in" ||
-                   spec->kind == "join_keys") {
+        } else if (spec->kind == "constant" || spec->kind == "in" || spec->kind == "join_keys") {
             auto value = values_for(*spec);
             if (!value) continue;
             if (spec->kind != "constant") {
@@ -481,8 +476,7 @@ std::shared_ptr<arrow::RecordBatch> PushdownFilters::apply(
         // left to the default so the choice survives an Arrow upgrade.
         arrow::compute::FilterOptions options(
             arrow::compute::FilterOptions::NullSelectionBehavior::DROP);
-        auto filtered =
-            arrow::compute::Filter(surviving, mask.MoveValueUnsafe(), options);
+        auto filtered = arrow::compute::Filter(surviving, mask.MoveValueUnsafe(), options);
         if (!filtered.ok()) continue;
         if (auto next = filtered.MoveValueUnsafe().record_batch()) surviving = next;
     }

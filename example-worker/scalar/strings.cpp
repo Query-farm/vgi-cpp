@@ -169,8 +169,7 @@ public:
                           std::string digest = value;
                           for (int64_t i = 0; i < rounds; ++i) {
                               const auto raw = sha256_bytes(digest);
-                              digest.assign(reinterpret_cast<const char*>(raw.data()),
-                                            raw.size());
+                              digest.assign(reinterpret_cast<const char*>(raw.data()), raw.size());
                           }
                           return vgi_rpc::crypto::hex_encode(
                               reinterpret_cast<const uint8_t*>(digest.data()), digest.size());
@@ -197,8 +196,8 @@ public:
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
         arrow::Int64Builder out;
         (void)out.Reserve(values->length());
         for (int64_t i = 0; i < values->length(); ++i) {
@@ -240,8 +239,7 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        auto values =
-            vgi::ArgSpec::column("values", 0, "varchar", "String values to concatenate");
+        auto values = vgi::ArgSpec::column("values", 0, "varchar", "String values to concatenate");
         values.with_varargs();
         return {values};
     }

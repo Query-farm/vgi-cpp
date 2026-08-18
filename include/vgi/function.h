@@ -192,8 +192,7 @@ public:
     virtual std::shared_ptr<arrow::Schema> bind(const BindParams& params) const;
 
     virtual std::shared_ptr<arrow::RecordBatch> process(
-        const ProcessParams& params,
-        const std::shared_ptr<arrow::RecordBatch>& batch) const = 0;
+        const ProcessParams& params, const std::shared_ptr<arrow::RecordBatch>& batch) const = 0;
 
     // The secrets this call needs resolved, when which ones depends on the
     // arguments — a scope taken from a path argument, say.

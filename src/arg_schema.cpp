@@ -13,15 +13,12 @@ namespace vgi {
 
 std::shared_ptr<arrow::DataType> arg_type_to_arrow(const std::string& name) {
     static const std::unordered_map<std::string, std::shared_ptr<arrow::DataType>> kByName = {
-        {"int8", arrow::int8()},       {"int16", arrow::int16()},
-        {"int32", arrow::int32()},     {"int64", arrow::int64()},
-        {"uint8", arrow::uint8()},     {"uint16", arrow::uint16()},
-        {"uint32", arrow::uint32()},   {"uint64", arrow::uint64()},
-        {"float32", arrow::float32()}, {"float", arrow::float32()},
-        {"float64", arrow::float64()}, {"double", arrow::float64()},
-        {"bool", arrow::boolean()},    {"boolean", arrow::boolean()},
-        {"varchar", arrow::utf8()},    {"string", arrow::utf8()},
-        {"utf8", arrow::utf8()},       {"blob", arrow::binary()},
+        {"int8", arrow::int8()},     {"int16", arrow::int16()},     {"int32", arrow::int32()},
+        {"int64", arrow::int64()},   {"uint8", arrow::uint8()},     {"uint16", arrow::uint16()},
+        {"uint32", arrow::uint32()}, {"uint64", arrow::uint64()},   {"float32", arrow::float32()},
+        {"float", arrow::float32()}, {"float64", arrow::float64()}, {"double", arrow::float64()},
+        {"bool", arrow::boolean()},  {"boolean", arrow::boolean()}, {"varchar", arrow::utf8()},
+        {"string", arrow::utf8()},   {"utf8", arrow::utf8()},       {"blob", arrow::binary()},
         {"binary", arrow::binary()},
     };
     auto it = kByName.find(name);

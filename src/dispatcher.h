@@ -28,9 +28,7 @@ namespace vgi {
 vgi_rpc::LogLevel to_rpc_level(LogLevel level);
 
 // A sink that writes a function's messages into `context`'s in-band channel.
-std::function<void(LogLevel, const std::string&)> client_log_sink(
-    vgi_rpc::CallContext* context);
-
+std::function<void(LogLevel, const std::string&)> client_log_sink(vgi_rpc::CallContext* context);
 
 // The `init` stream's header schema (`GlobalInitResponse`). Defined in
 // function_dispatch.cpp; registration needs it, and so does the handler.
@@ -170,8 +168,7 @@ private:
     std::vector<std::string> encode_settings(const CatalogModel& model) const;
     std::vector<std::string> encode_secret_types(const CatalogModel& model) const;
     bool supports_time_travel(const CatalogModel& model) const;
-    static std::string encode_table_info(const CatalogTable& table,
-                                         const std::string& schema_name,
+    static std::string encode_table_info(const CatalogTable& table, const std::string& schema_name,
                                          const TimeTravelVersion* version = nullptr);
     // The `FunctionInfo` for each name this catalog publishes globally.
     std::vector<std::string> encode_global_functions(const CatalogModel& model) const;
@@ -184,10 +181,8 @@ private:
     std::string encode_schema_info(const std::string& owner, const std::string& handle,
                                    const CatalogSchema& schema,
                                    const CatalogSchema* contents) const;
-    static std::string encode_macro_info(const CatalogMacro& macro,
-                                         const std::string& schema_name);
-    static std::string encode_view_info(const CatalogView& view,
-                                        const std::string& schema_name);
+    static std::string encode_macro_info(const CatalogMacro& macro, const std::string& schema_name);
+    static std::string encode_view_info(const CatalogView& view, const std::string& schema_name);
 
     // Every registration under `name`, in registration order.
     //
@@ -242,8 +237,7 @@ private:
                                       const std::vector<ArgSpec>& specs,
                                       const Arguments& arguments);
 
-    std::vector<ArgSpec> argument_specs_of(const std::string& name,
-                                           const BindParams& params) const;
+    std::vector<ArgSpec> argument_specs_of(const std::string& name, const BindParams& params) const;
 
     BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
 
@@ -277,8 +271,7 @@ private:
     // version sealed into the request's `attach_opaque_data`; every other
     // catalog answers from its declared schemas. Null when there is no such
     // schema, which is how "no such name" is spelled to the engine.
-    const CatalogSchema* schema_for(const vgi_rpc::Request& request,
-                                    const std::string& name) const;
+    const CatalogSchema* schema_for(const vgi_rpc::Request& request, const std::string& name) const;
 
     static Scope scope_of(const BindParams& params);
     static Scope scope_of(const ProcessParams& params);
@@ -320,7 +313,6 @@ private:
     std::vector<std::shared_ptr<TableBufferingFunction>> bufferings_;
     std::vector<Scope> buffering_scopes_;
     std::unordered_map<std::string, std::vector<size_t>> buffering_by_name_;
-
 };
 
 }  // namespace vgi

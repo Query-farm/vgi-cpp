@@ -94,9 +94,8 @@ std::shared_ptr<arrow::RecordBatch> reduce_states(
         }
         std::sort(values.begin(), values.end());
         const size_t middle = values.size() / 2;
-        (void)out.Append(values.size() % 2 == 1
-                             ? values[middle]
-                             : (values[middle - 1] + values[middle]) / 2.0);
+        (void)out.Append(values.size() % 2 == 1 ? values[middle]
+                                                : (values[middle - 1] + values[middle]) / 2.0);
     }
     std::shared_ptr<arrow::Array> array;
     (void)out.Finish(&array);
@@ -130,8 +129,7 @@ public:
     bool supports_window() const override { return true; }
 
     std::shared_ptr<arrow::Array> window(
-        const std::shared_ptr<arrow::RecordBatch>& partition,
-        const std::shared_ptr<arrow::Schema>&,
+        const std::shared_ptr<arrow::RecordBatch>& partition, const std::shared_ptr<arrow::Schema>&,
         const std::vector<std::vector<std::pair<int64_t, int64_t>>>& frames,
         const std::vector<bool>& filter_mask) const override {
         auto values = std::static_pointer_cast<arrow::Int64Array>(
@@ -179,8 +177,8 @@ public:
     void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
                 const std::vector<std::shared_ptr<arrow::Array>>& columns) const override {
         if (columns.empty()) return;
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(columns[0], arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(columns[0], arrow::int64()));
         for (int64_t i = 0; i < group_ids.length(); ++i) {
             if (values->IsNull(i)) continue;
             auto& state = states[group_ids.Value(i)];
@@ -258,8 +256,7 @@ public:
     bool supports_window() const override { return true; }
 
     std::shared_ptr<arrow::Array> window(
-        const std::shared_ptr<arrow::RecordBatch>& partition,
-        const std::shared_ptr<arrow::Schema>&,
+        const std::shared_ptr<arrow::RecordBatch>& partition, const std::shared_ptr<arrow::Schema>&,
         const std::vector<std::vector<std::pair<int64_t, int64_t>>>& frames,
         const std::vector<bool>& filter_mask) const override {
         auto values = std::static_pointer_cast<arrow::DoubleArray>(
@@ -286,9 +283,8 @@ public:
             const size_t middle = window.size() / 2;
             // An even count averages the two middle values, which is what SQL
             // and the reference both do.
-            (void)out.Append(window.size() % 2 == 1
-                                 ? window[middle]
-                                 : (window[middle - 1] + window[middle]) / 2.0);
+            (void)out.Append(window.size() % 2 == 1 ? window[middle]
+                                                    : (window[middle - 1] + window[middle]) / 2.0);
         }
         std::shared_ptr<arrow::Array> array;
         (void)out.Finish(&array);
@@ -351,8 +347,7 @@ public:
     bool supports_window() const override { return true; }
 
     std::shared_ptr<arrow::Array> window(
-        const std::shared_ptr<arrow::RecordBatch>& partition,
-        const std::shared_ptr<arrow::Schema>&,
+        const std::shared_ptr<arrow::RecordBatch>& partition, const std::shared_ptr<arrow::Schema>&,
         const std::vector<std::vector<std::pair<int64_t, int64_t>>>& frames,
         const std::vector<bool>& filter_mask) const override {
         auto values = cast_to(partition->column(0), arrow::utf8());
@@ -472,8 +467,8 @@ public:
     void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
                 const std::vector<std::shared_ptr<arrow::Array>>& columns) const override {
         if (columns.empty()) return;
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(columns[0], arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(columns[0], arrow::int64()));
         for (int64_t i = 0; i < group_ids.length(); ++i) {
             if (values->IsNull(i)) continue;
             auto& state = states[group_ids.Value(i)];

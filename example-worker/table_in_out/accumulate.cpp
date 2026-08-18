@@ -367,11 +367,11 @@ public:
             // every append is normalized to whichever schema won.
             pin_schema(*storage, params.attachment_id, name, output_schema);
         } else if (!input_fields_match(input_schema_of(pinned), params.input_schema)) {
-            throw std::invalid_argument(
-                "input schema for accumulate('" + name + "', ...) does not match the schema " +
-                "already accumulated under that name.\n  accumulated: " +
-                input_schema_of(pinned)->ToString() +
-                "\n  received:    " + params.input_schema->ToString());
+            throw std::invalid_argument("input schema for accumulate('" + name +
+                                        "', ...) does not match the schema " +
+                                        "already accumulated under that name.\n  accumulated: " +
+                                        input_schema_of(pinned)->ToString() +
+                                        "\n  received:    " + params.input_schema->ToString());
         }
         return output_schema;
     }
@@ -399,16 +399,15 @@ public:
 
         const int64_t micros = now_micros();
         std::vector<std::shared_ptr<arrow::RecordBatch>> added;
-        for (const auto& entry : params.storage->scan(params.execution_id, kInputNamespace, "",
-                                                      /*after_id=*/0,
-                                                      std::numeric_limits<size_t>::max())) {
+        for (const auto& entry :
+             params.storage->scan(params.execution_id, kInputNamespace, "",
+                                  /*after_id=*/0, std::numeric_limits<size_t>::max())) {
             if (auto batch = decode_batch(entry.second)) {
                 added.push_back(stamp(batch, schema, micros));
             }
         }
-        auto new_rows = added.empty()
-                            ? arrow::Table::MakeEmpty(schema).ValueOrDie()
-                            : arrow::Table::FromRecordBatches(schema, added).ValueOrDie();
+        auto new_rows = added.empty() ? arrow::Table::MakeEmpty(schema).ValueOrDie()
+                                      : arrow::Table::FromRecordBatches(schema, added).ValueOrDie();
 
         auto collection = read_collection(*params.storage, params.attachment_id, name, schema);
         if (new_rows->num_rows() > 0) {
@@ -459,8 +458,7 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("name", 0, "varchar",
-                                           "Name of the collection to read")};
+        return {vgi::ArgSpec::constant_arg("name", 0, "varchar", "Name of the collection to read")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
@@ -476,7 +474,8 @@ public:
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         const auto name = params.arguments.const_string(0).value_or("");
         return std::make_unique<TableDrain>(
-            read_collection(*params.storage, params.attachment_id, name, params.output_schema), params.output_schema);
+            read_collection(*params.storage, params.attachment_id, name, params.output_schema),
+            params.output_schema);
     }
 };
 
@@ -493,8 +492,8 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("name", 0, "varchar",
-                                           "Name of the collection to clear")};
+        return {
+            vgi::ArgSpec::constant_arg("name", 0, "varchar", "Name of the collection to clear")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
@@ -505,7 +504,8 @@ public:
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         const auto name = params.arguments.const_string(0).value_or("");
         int64_t rows_cleared = 0;
-        if (auto blob = params.storage->kv_get(collection_scope(params.attachment_id, name), kRowsKey)) {
+        if (auto blob =
+                params.storage->kv_get(collection_scope(params.attachment_id, name), kRowsKey)) {
             if (auto table = decode_table(*blob)) rows_cleared = table->num_rows();
         }
         // The rows and the pinned schema share one scope, so both go in a

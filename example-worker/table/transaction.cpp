@@ -33,8 +33,7 @@ std::shared_ptr<arrow::Schema> value_schema() {
 // Resolved identically in bind and in init rather than shipped between them:
 // the pool hands a different worker process to each RPC, so the two only agree
 // because they both read the same cross-process store.
-int64_t resolve(const vgi::Arguments& arguments,
-                const std::optional<std::string>& transaction,
+int64_t resolve(const vgi::Arguments& arguments, const std::optional<std::string>& transaction,
                 vgi::FunctionStorage& storage) {
     const int64_t seed = arguments.const_int64(1).value_or(0);
     // Autocommit: the engine opens no catalog transaction, so there is nowhere
@@ -82,9 +81,9 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("key", 0, "varchar",
-                                           "Cache key, scoped to the transaction"),
-                vgi::ArgSpec::constant_arg("seed", 1, "int64", "Value to cache on first call")};
+        return {
+            vgi::ArgSpec::constant_arg("key", 0, "varchar", "Cache key, scoped to the transaction"),
+            vgi::ArgSpec::constant_arg("seed", 1, "int64", "Value to cache on first call")};
     }
 
     // Seeding here rather than in init is the point of the fixture: bind is
@@ -95,9 +94,7 @@ public:
         return value_schema();
     }
 
-    vgi::TableCardinality cardinality(const vgi::ProcessParams&) const override {
-        return {1, 1};
-    }
+    vgi::TableCardinality cardinality(const vgi::ProcessParams&) const override { return {1, 1}; }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         return std::make_unique<OneValue>(

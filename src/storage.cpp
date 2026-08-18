@@ -85,8 +85,7 @@ public:
         sweep_stale();
     }
 
-    std::optional<std::string> kv_get(const std::string& scope,
-                                      const std::string& key) override {
+    std::optional<std::string> kv_get(const std::string& scope, const std::string& key) override {
         const auto path = kv_path(scope, key);
         std::error_code ec;
         if (!fs::exists(path, ec)) return std::nullopt;
@@ -131,9 +130,8 @@ public:
     }
 
     std::vector<std::pair<int64_t, std::string>> scan(const std::string& scope,
-                                                     const std::string& ns,
-                                                     const std::string& key, int64_t after_id,
-                                                     size_t limit) override {
+                                                      const std::string& ns, const std::string& key,
+                                                      int64_t after_id, size_t limit) override {
         // Only `.entry` files are results; a `.claim` marker means an append
         // is in flight and its payload is not there yet.
         std::vector<std::pair<int64_t, std::string>> entries;
@@ -158,8 +156,7 @@ public:
         return entries;
     }
 
-    void queue_push(const std::string& scope,
-                    const std::vector<std::string>& items) override {
+    void queue_push(const std::string& scope, const std::vector<std::string>& items) override {
         if (items.empty()) return;
         const auto dir = log_dir(scope, kQueueNamespace, "");
         std::error_code ec;

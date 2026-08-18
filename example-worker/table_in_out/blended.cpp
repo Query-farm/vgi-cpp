@@ -95,8 +95,7 @@ public:
             vgi::ArgSpec::column("latitude", 0, "double", "Latitude input column"),
             vgi::ArgSpec::column("longitude", 1, "double", "Longitude input column")};
         if (with_altitude_) {
-            specs.push_back(
-                vgi::ArgSpec::column("altitude", 2, "double", "Altitude input column"));
+            specs.push_back(vgi::ArgSpec::column("altitude", 2, "double", "Altitude input column"));
         }
         specs.push_back(vgi::ArgSpec::named("precision", "int64", "Rounding precision"));
         return specs;
@@ -120,10 +119,10 @@ public:
             // correlated call names the columns, a literal scan does not.
             auto column = batch->GetColumnByName(kNames[i]);
             if (!column && i < batch->num_columns()) column = batch->column(i);
-            if (!column) throw std::runtime_error(std::string("geo_encode: no '") + kNames[i] +
-                                                  "' column");
-            inputs.push_back(std::static_pointer_cast<arrow::DoubleArray>(
-                cast_to(column, arrow::float64())));
+            if (!column)
+                throw std::runtime_error(std::string("geo_encode: no '") + kNames[i] + "' column");
+            inputs.push_back(
+                std::static_pointer_cast<arrow::DoubleArray>(cast_to(column, arrow::float64())));
         }
 
         arrow::StringBuilder out;
@@ -175,8 +174,8 @@ public:
     std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        auto counts = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto counts =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
         arrow::Int64Builder out;
         // Which input row each output row came from. Without it the engine has
         // no way to stamp the correlated columns onto a fan-out, and refuses
@@ -325,8 +324,8 @@ public:
     std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        const auto& values = static_cast<const arrow::Int64Array&>(
-            *cast_to(batch->column(0), arrow::int64()));
+        const auto& values =
+            static_cast<const arrow::Int64Array&>(*cast_to(batch->column(0), arrow::int64()));
 
         std::vector<std::shared_ptr<arrow::Array>> columns;
         for (int i = 0; i < params.output_schema->num_fields(); ++i) {
@@ -386,8 +385,7 @@ public:
         std::shared_ptr<arrow::Array> array;
         (void)out.Finish(&array);
 
-        vgi::EmittedBatch emitted{
-            arrow::RecordBatch::Make(params.output_schema, rows, {array})};
+        vgi::EmittedBatch emitted{arrow::RecordBatch::Make(params.output_schema, rows, {array})};
 
         // Written as raw metadata, not through `parent_rows`: the typed field
         // cannot express any of these, which is the point of it.

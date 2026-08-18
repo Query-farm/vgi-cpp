@@ -26,8 +26,8 @@ namespace example {
 namespace {
 
 std::shared_ptr<arrow::Schema> global_table_schema() {
-    static const auto schema = arrow::schema({arrow::field("n", arrow::int64(), true),
-                                              arrow::field("label", arrow::utf8(), true)});
+    static const auto schema = arrow::schema(
+        {arrow::field("n", arrow::int64(), true), arrow::field("label", arrow::utf8(), true)});
     return schema;
 }
 

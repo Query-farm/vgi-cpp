@@ -53,9 +53,7 @@ const std::shared_ptr<arrow::Schema>& global_init_response_schema() {
     return schema;
 }
 
-namespace {
-
-}  // namespace
+namespace {}  // namespace
 
 // Distinguishes one function execution from another. The engine echoes it on
 // follow-up calls; a worker that keeps per-execution state keys on it.
@@ -113,8 +111,7 @@ std::optional<std::string> metadata_value(
     return metadata->value(index);
 }
 
-std::optional<std::string> request_metadata(const vgi_rpc::Request& request,
-                                            const char* key) {
+std::optional<std::string> request_metadata(const vgi_rpc::Request& request, const char* key) {
     return metadata_value(request.metadata(), key);
 }
 
@@ -165,16 +162,14 @@ public:
         };
         auto result = fn_->process(params, input.batch);
         if (!result) {
-            throw std::runtime_error("scalar function '" + fn_->name() +
-                                     "' returned no batch");
+            throw std::runtime_error("scalar function '" + fn_->name() + "' returned no batch");
         }
         // The engine matches results to inputs positionally, so a row-count
         // mismatch is a silent misalignment rather than an error it can see.
         if (input.batch && result->num_rows() != input.batch->num_rows()) {
-            throw std::runtime_error(
-                "scalar function '" + fn_->name() + "' returned " +
-                std::to_string(result->num_rows()) + " rows for " +
-                std::to_string(input.batch->num_rows()) + " input rows");
+            throw std::runtime_error("scalar function '" + fn_->name() + "' returned " +
+                                     std::to_string(result->num_rows()) + " rows for " +
+                                     std::to_string(input.batch->num_rows()) + " input rows");
         }
         if (cache_) {
             out.emit_batch(result, cache_);
@@ -211,8 +206,7 @@ bool json_array_contains(const std::string& choices, const std::string& value) {
         const auto parsed = nlohmann::json::parse(choices);
         if (!parsed.is_array()) return true;
         for (const auto& choice : parsed) {
-            if (choice.is_string() ? choice.get<std::string>() == value
-                                   : choice.dump() == value) {
+            if (choice.is_string() ? choice.get<std::string>() == value : choice.dump() == value) {
                 return true;
             }
         }
@@ -272,9 +266,8 @@ private:
 // exactly what makes an all-NULL column come back non-NULL, so the columns are
 // matched by name; anything that does not line up is left alone, and the
 // emit-time schema check reports it.
-std::shared_ptr<arrow::RecordBatch> narrow_to(
-    const std::shared_ptr<arrow::RecordBatch>& batch,
-    const std::shared_ptr<arrow::Schema>& schema) {
+std::shared_ptr<arrow::RecordBatch> narrow_to(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                              const std::shared_ptr<arrow::Schema>& schema) {
     if (!schema || batch->schema()->Equals(*schema)) return batch;
     std::vector<std::shared_ptr<arrow::Array>> columns;
     columns.reserve(static_cast<size_t>(schema->num_fields()));
@@ -290,9 +283,9 @@ class TableProduce : public vgi_rpc::ProducerState {
 public:
     TableProduce(std::unique_ptr<TableProducer> producer, PushdownFilters filters = {},
                  std::shared_ptr<arrow::Schema> output_schema = nullptr)
-        : producer_(std::move(producer))
-        , filters_(std::move(filters))
-        , output_schema_(std::move(output_schema)) {}
+        : producer_(std::move(producer)),
+          filters_(std::move(filters)),
+          output_schema_(std::move(output_schema)) {}
 
     // Conditional-request validators from the init request, which is where
     // they arrive for a producer: over HTTP the first tick is folded into the
@@ -525,7 +518,8 @@ private:
         columns.reserve(static_cast<size_t>(schema->num_fields()));
         for (const auto& field : schema->fields()) {
             auto column = arrow::MakeArrayOfNull(field->type(), 0);
-            if (!column.ok()) throw std::runtime_error("table-in-out: " + column.status().ToString());
+            if (!column.ok())
+                throw std::runtime_error("table-in-out: " + column.status().ToString());
             columns.push_back(column.MoveValueUnsafe());
         }
         return arrow::RecordBatch::Make(schema, 0, columns);
@@ -641,8 +635,7 @@ std::shared_ptr<TableInOutFunction> Dispatcher::find_table_in_out(const std::str
     return nullptr;
 }
 
-std::vector<std::shared_ptr<TableFunction>> Dispatcher::tables_in_schema(
-    const Scope& scope) const {
+std::vector<std::shared_ptr<TableFunction>> Dispatcher::tables_in_schema(const Scope& scope) const {
     std::vector<std::shared_ptr<TableFunction>> found;
     for (size_t i = 0; i < tables_.size(); ++i) {
         if (in_scope(table_scopes_[i], scope)) found.push_back(tables_[i]);
@@ -655,8 +648,7 @@ std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
     return find_table(name, scope, nullptr);
 }
 
-std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
-                                                      const Scope& scope,
+std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name, const Scope& scope,
                                                       const BindParams* params) const {
     auto it = table_by_name_.find(name);
     if (it == table_by_name_.end()) return nullptr;
@@ -726,9 +718,8 @@ std::shared_ptr<ScalarFunction> Dispatcher::resolve_scalar(const std::string& na
     std::shared_ptr<ScalarFunction> best;
     int best_score = -1;
     for (const auto& candidate : candidates) {
-        const int score = score_overload(
-            candidate->argument_specs(),
-            [&](size_t i) { return params.input_type(i); });
+        const int score = score_overload(candidate->argument_specs(),
+                                         [&](size_t i) { return params.input_type(i); });
         if (score > best_score) {
             best_score = score;
             best = candidate;
@@ -773,8 +764,7 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
         // checks each constraint against whichever argument happens to sit at
         // the same offset in the spec vector, which is only the same argument
         // when the specs were declared in index order.
-        const auto position =
-            spec.index && *spec.index >= 0 ? static_cast<size_t>(*spec.index) : 0;
+        const auto position = spec.index && *spec.index >= 0 ? static_cast<size_t>(*spec.index) : 0;
 
         // A named parameter the declaration marked required has to be there.
         // Positional ones are the engine's to supply and it always does.
@@ -795,8 +785,8 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
         // is an ordinary member — `constant_columns(3, NULL::INTEGER)` asks
         // for a NULL column, not for the default.
         if ((spec.constant || !spec.index) && !spec.varargs && supplied_null) {
-            throw std::invalid_argument("function '" + function_name + "' argument '" +
-                                        spec.name + "' cannot be NULL");
+            throw std::invalid_argument("function '" + function_name + "' argument '" + spec.name +
+                                        "' cannot be NULL");
         }
 
         // Only a constant can be checked here: a column's values are not known
@@ -804,13 +794,13 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
         if (!spec.constant && spec.index) continue;
 
         const auto refuse = [&](const std::string& bound) {
-            throw std::invalid_argument("function '" + function_name + "' argument '" +
-                                        spec.name + "' must be " + bound);
+            throw std::invalid_argument("function '" + function_name + "' argument '" + spec.name +
+                                        "' must be " + bound);
         };
 
         if (spec.ge || spec.le || spec.gt || spec.lt) {
-            const auto value = spec.index ? arguments.const_double(position)
-                                          : arguments.named_double(spec.name);
+            const auto value =
+                spec.index ? arguments.const_double(position) : arguments.named_double(spec.name);
             if (value) {
                 if (spec.ge && *value < *spec.ge) refuse(">= " + std::to_string(*spec.ge));
                 if (spec.gt && *value <= *spec.gt) refuse("> " + std::to_string(*spec.gt));
@@ -823,8 +813,8 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
         // references validate them, and a worker that only shows them in
         // discovery accepts calls the reference refuses.
         if (spec.choices || spec.pattern) {
-            const auto text = spec.index ? arguments.const_string(position)
-                                         : arguments.named_string(spec.name);
+            const auto text =
+                spec.index ? arguments.const_string(position) : arguments.named_string(spec.name);
             if (text) {
                 if (spec.choices && !json_array_contains(*spec.choices, *text)) {
                     refuse("one of " + *spec.choices);
@@ -900,8 +890,7 @@ BindParams Dispatcher::read_bind_request(
         Arguments::parse(wire::get_optional_binary(bind_call, "arguments").value_or(""));
     params.settings =
         Settings::parse(wire::get_optional_binary(bind_call, "settings").value_or(""));
-    params.secrets =
-        Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
+    params.secrets = Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
     params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
     // From the attachment's seal, not from the primary: one worker may serve
     // several catalogs, and a bind carries nothing else that says which one.
@@ -1054,10 +1043,9 @@ vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& r
     } else {
         payload.set_null("max");
     }
-    return vgi_rpc::Result::value(
-        wire::ResultBuilder(envelope_schema())
-            .set_binary("result", wire::encode_ipc(payload.finish()))
-            .finish());
+    return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
+                                      .set_binary("result", wire::encode_ipc(payload.finish()))
+                                      .finish());
 }
 
 vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& request) {
@@ -1109,7 +1097,8 @@ vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Requ
     std::vector<std::string> keys;
     std::vector<std::string> values;
     if (auto table = find_table(function_name, scope_of(bind_params), &bind_params)) {
-        for (const auto& [key, value] : table->dynamic_to_string(execution_id, *default_storage())) {
+        for (const auto& [key, value] :
+             table->dynamic_to_string(execution_id, *default_storage())) {
             keys.push_back(key);
             values.push_back(value);
         }
@@ -1120,10 +1109,9 @@ vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Requ
                        .set_string_list("values", values)
                        .fill_defaults()
                        .finish();
-    return vgi_rpc::Result::value(
-        wire::ResultBuilder(envelope_schema())
-            .set_binary("result", wire::encode_ipc(payload))
-            .finish());
+    return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
+                                      .set_binary("result", wire::encode_ipc(payload))
+                                      .finish());
 }
 
 vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
@@ -1207,8 +1195,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.scan_hints.order_by_limit = wire::get_optional_int64(init_request, "order_by_limit");
     params.scan_hints.tablesample_percentage =
         wire::get_optional_double(init_request, "tablesample_percentage");
-    params.scan_hints.tablesample_seed =
-        wire::get_optional_int64(init_request, "tablesample_seed");
+    params.scan_hints.tablesample_seed = wire::get_optional_int64(init_request, "tablesample_seed");
 
     // Parsed once for the whole scan; the engine sends it on init.
     params.pushdown_filters = PushdownFilters::parse(
@@ -1218,11 +1205,11 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     int64_t max_workers = 1;
     // Same tie-break as `bind`: a COPY TO whose writer shares a name with a
     // reader must not divide the reader's work into the shared queue.
-    const bool buffering =
-        wire::get_optional_enum(bind_call, "function_type") ==
-            enums::function_type::kTableBuffering &&
-        find_buffering(function_name, scope_of(params)) != nullptr;
-    if (auto table = buffering ? nullptr : find_table(function_name, scope_of(params), &bind_params)) {
+    const bool buffering = wire::get_optional_enum(bind_call, "function_type") ==
+                               enums::function_type::kTableBuffering &&
+                           find_buffering(function_name, scope_of(params)) != nullptr;
+    if (auto table =
+            buffering ? nullptr : find_table(function_name, scope_of(params), &bind_params)) {
         max_workers = std::max<int64_t>(1, table->max_workers(params));
         // Only the primary init divides the work, and only once. A follow-on
         // worker calling this too would push the same chunks again.
@@ -1254,12 +1241,9 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
             const auto stash = [&](const char* key, const std::string& value) {
                 if (!value.empty()) params.storage->kv_put(execution_id, key, value);
             };
-            stash("bind.arguments",
-                  wire::get_optional_binary(bind_call, "arguments").value_or(""));
-            stash("bind.settings",
-                  wire::get_optional_binary(bind_call, "settings").value_or(""));
-            stash("bind.secrets",
-                  wire::get_optional_binary(bind_call, "secrets").value_or(""));
+            stash("bind.arguments", wire::get_optional_binary(bind_call, "arguments").value_or(""));
+            stash("bind.settings", wire::get_optional_binary(bind_call, "settings").value_or(""));
+            stash("bind.secrets", wire::get_optional_binary(bind_call, "secrets").value_or(""));
             stash("bind.copy_to_format", params.copy_to_format.value_or(""));
             stash("bind.copy_to_path", params.copy_to_path.value_or(""));
             stash("bind.schema", wire::encode_schema(output_schema));
@@ -1275,8 +1259,8 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
             const auto state_id =
                 wire::get_optional_binary(init_request, "finalize_state_id").value_or("");
             stream.input_schema = arrow::schema({});
-            stream.state = std::make_shared<TableProduce>(
-                sink->finalize_producer(params, state_id));
+            stream.state =
+                std::make_shared<TableProduce>(sink->finalize_producer(params, state_id));
             return stream;
         }
         // Header-only: an empty producer that finishes on its first tick.
@@ -1287,10 +1271,10 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
 
     if (auto table = find_table(function_name, scope_of(params), &bind_params)) {
         stream.input_schema = arrow::schema({});
-        auto auto_apply = table->metadata().auto_apply_filters ? params.pushdown_filters
-                                                              : PushdownFilters{};
+        auto auto_apply =
+            table->metadata().auto_apply_filters ? params.pushdown_filters : PushdownFilters{};
         auto produce = std::make_shared<TableProduce>(table->init(params), std::move(auto_apply),
-                                                     output_schema);
+                                                      output_schema);
         produce->set_validators(request_metadata(request, keys::kIfNoneMatch),
                                 request_metadata(request, keys::kIfModifiedSince));
         stream.state = std::move(produce);
@@ -1315,13 +1299,13 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
             for (auto& emitted : batches) {
                 if (emitted.batch) rows.push_back(std::move(emitted.batch));
             }
-            stream.state = std::make_shared<TableProduce>(
-                std::make_unique<BatchesProducer>(std::move(rows)));
+            stream.state =
+                std::make_shared<TableProduce>(std::make_unique<BatchesProducer>(std::move(rows)));
             return stream;
         }
         stream.input_schema = input_schema_or_empty();
-        stream.state = std::make_shared<TableInOutExchange>(std::move(transform),
-                                                            std::move(params));
+        stream.state =
+            std::make_shared<TableInOutExchange>(std::move(transform), std::move(params));
         return stream;
     }
 

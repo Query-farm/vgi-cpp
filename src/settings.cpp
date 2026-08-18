@@ -110,8 +110,7 @@ std::optional<std::string> Secrets::field(const std::string& secret_name,
     return value->second;
 }
 
-const std::map<std::string, std::string>* Secrets::secret(
-    const std::string& secret_name) const {
+const std::map<std::string, std::string>* Secrets::secret(const std::string& secret_name) const {
     auto it = by_name_.find(secret_name);
     return it == by_name_.end() ? nullptr : &it->second;
 }

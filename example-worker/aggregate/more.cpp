@@ -374,8 +374,8 @@ public:
     void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
                 const std::vector<std::shared_ptr<arrow::Array>>& columns) const override {
         if (columns.empty()) return;
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(columns[0], arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(columns[0], arrow::int64()));
         for (int64_t i = 0; i < group_ids.length(); ++i) {
             if (values->IsNull(i)) continue;
             auto& state = states[group_ids.Value(i)];

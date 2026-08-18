@@ -117,7 +117,9 @@ void trace(const std::string& method) {
 
 // The primary always exists, so `catalog()` needs no null check and a worker
 // that never calls `set_catalog` still serves a default-named one.
-Dispatcher::Dispatcher() { catalogs_.push_back(std::make_unique<CatalogModel>()); }
+Dispatcher::Dispatcher() {
+    catalogs_.push_back(std::make_unique<CatalogModel>());
+}
 
 void Dispatcher::set_catalog(CatalogModel catalog) {
     // Replaces the primary rather than adding one: `set_catalog` names what
@@ -214,13 +216,13 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
             // batch back for each. Its input and output schemas are settled
             // per call by the preceding bind, so the ones declared here are
             // only placeholders — the factory returns the real pair.
-            builder.add_exchange(name, spec.params, arrow::schema({}), arrow::schema({}),
-                                 [this, name](const vgi_rpc::Request& req,
-                                              vgi_rpc::CallContext&) {
-                                     trace(name);
-                                     return this->init(req);
-                                 },
-                                 "", global_init_response_schema());
+            builder.add_exchange(
+                name, spec.params, arrow::schema({}), arrow::schema({}),
+                [this, name](const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
+                    trace(name);
+                    return this->init(req);
+                },
+                "", global_init_response_schema());
             continue;
         }
 
@@ -231,18 +233,15 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         // statement against something that does not accept DDL, and the engine
         // surfaces "catalog is read-only" to the user. Reporting it as
         // unimplemented instead sends them looking for a missing feature.
-        const bool is_ddl = name.rfind("catalog_", 0) == 0 &&
-                            (name.find("_create") != std::string::npos ||
-                             name.find("_drop") != std::string::npos ||
-                             name.find("_rename") != std::string::npos ||
-                             name.find("_set") != std::string::npos ||
-                             name.find("_add") != std::string::npos ||
-                             name.find("_change") != std::string::npos);
+        const bool is_ddl =
+            name.rfind("catalog_", 0) == 0 &&
+            (name.find("_create") != std::string::npos || name.find("_drop") != std::string::npos ||
+             name.find("_rename") != std::string::npos || name.find("_set") != std::string::npos ||
+             name.find("_add") != std::string::npos || name.find("_change") != std::string::npos);
         const auto refuse = [name, is_ddl] {
             trace(name + (is_ddl ? " (read-only)" : " (unimplemented)"));
             if (is_ddl) {
-                throw std::invalid_argument("catalog is read-only: " + name +
-                                            " is not supported");
+                throw std::invalid_argument("catalog is read-only: " + name + " is not supported");
             }
             throw std::runtime_error("vgi-c++ has not implemented " + name + " yet");
         };
@@ -250,45 +249,44 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         if (spec.kind == MethodKind::Void) {
             if (auto it = voids.find(name); it != voids.end()) {
                 auto handler = it->second;
-                builder.add_void(name, spec.params,
-                                 [this, handler, name](const vgi_rpc::Request& req,
-                                                       vgi_rpc::CallContext&) {
-                                     trace(name);
-                                     (this->*handler)(req);
-                                 });
+                builder.add_void(
+                    name, spec.params,
+                    [this, handler, name](const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
+                        trace(name);
+                        (this->*handler)(req);
+                    });
                 continue;
             }
-            builder.add_void(name, spec.params,
-                             [refuse](const vgi_rpc::Request&, vgi_rpc::CallContext&) {
-                                 refuse();
-                             });
+            builder.add_void(
+                name, spec.params,
+                [refuse](const vgi_rpc::Request&, vgi_rpc::CallContext&) { refuse(); });
         } else {
             if (auto it = unary_with_context.find(name); it != unary_with_context.end()) {
                 auto handler = it->second;
-                builder.add_unary(name, spec.params, envelope_schema(),
-                                  [this, handler, name](const vgi_rpc::Request& req,
-                                                        vgi_rpc::CallContext& ctx) {
-                                      trace(name);
-                                      return (this->*handler)(req, ctx);
-                                  });
+                builder.add_unary(
+                    name, spec.params, envelope_schema(),
+                    [this, handler, name](const vgi_rpc::Request& req, vgi_rpc::CallContext& ctx) {
+                        trace(name);
+                        return (this->*handler)(req, ctx);
+                    });
                 continue;
             }
             if (auto it = unary.find(name); it != unary.end()) {
                 auto handler = it->second;
-                builder.add_unary(name, spec.params, envelope_schema(),
-                                  [this, handler, name](const vgi_rpc::Request& req,
-                                                        vgi_rpc::CallContext&) {
-                                      trace(name);
-                                      return (this->*handler)(req);
-                                  });
+                builder.add_unary(
+                    name, spec.params, envelope_schema(),
+                    [this, handler, name](const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
+                        trace(name);
+                        return (this->*handler)(req);
+                    });
                 continue;
             }
-            builder.add_unary(name, spec.params, envelope_schema(),
-                              [refuse](const vgi_rpc::Request&,
-                                       vgi_rpc::CallContext&) -> vgi_rpc::Result {
-                                  refuse();
-                                  return vgi_rpc::Result::void_result();  // unreachable
-                              });
+            builder.add_unary(
+                name, spec.params, envelope_schema(),
+                [refuse](const vgi_rpc::Request&, vgi_rpc::CallContext&) -> vgi_rpc::Result {
+                    refuse();
+                    return vgi_rpc::Result::void_result();  // unreachable
+                });
         }
     }
 }

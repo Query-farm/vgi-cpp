@@ -45,8 +45,8 @@ public:
         // 1 rather than an error: an unset setting means "no scaling", and a
         // function that refused to run without one would be unusable.
         const int64_t multiplier = params.settings.get_int64("multiplier").value_or(1);
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
 
         arrow::Int64Builder out;
         (void)out.Reserve(values->length());

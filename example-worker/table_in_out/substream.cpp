@@ -77,8 +77,8 @@ public:
             throw std::invalid_argument("substream_partial_sum requires an input column");
         }
         // The input's column name, so an outer `sum(n)` still names `n`.
-        return arrow::schema({arrow::field(params.input_schema->field(0)->name(),
-                                           arrow::int64(), /*nullable=*/true)});
+        return arrow::schema({arrow::field(params.input_schema->field(0)->name(), arrow::int64(),
+                                           /*nullable=*/true)});
     }
 
     bool has_finish() const override { return true; }

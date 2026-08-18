@@ -32,13 +32,21 @@ void Worker::set_catalog(CatalogModel catalog) {
     disp_->set_catalog(std::move(catalog));
 }
 
-CatalogModel& Worker::catalog() { return disp_->catalog(); }
+CatalogModel& Worker::catalog() {
+    return disp_->catalog();
+}
 
-CatalogModel& Worker::catalog(const std::string& name) { return disp_->catalog(name); }
+CatalogModel& Worker::catalog(const std::string& name) {
+    return disp_->catalog(name);
+}
 
-void Worker::hide_function(std::string name) { disp_->hide_function(std::move(name)); }
+void Worker::hide_function(std::string name) {
+    disp_->hide_function(std::move(name));
+}
 
-void Worker::set_server_id(std::string id) { server_id_ = std::move(id); }
+void Worker::set_server_id(std::string id) {
+    server_id_ = std::move(id);
+}
 
 void Worker::register_scalar(std::shared_ptr<ScalarFunction> fn) {
     disp_->register_scalar(std::move(fn));
@@ -108,9 +116,9 @@ void Worker::run(int argc, char** argv) {
     // than somewhere later in the query.
     const char* override_version = std::getenv("VGI_PROTOCOL_VERSION_OVERRIDE");
     vgi_rpc::ServerBuilder builder;
-    builder.enable_describe("vgi").protocol_version(
-        override_version && *override_version ? std::string(override_version)
-                                              : std::string(gen::VGI_PROTOCOL_VERSION));
+    builder.enable_describe("vgi").protocol_version(override_version && *override_version
+                                                        ? std::string(override_version)
+                                                        : std::string(gen::VGI_PROTOCOL_VERSION));
     if (!server_id_.empty()) builder.server_id(server_id_);
     disp_->install(builder);
 

@@ -213,8 +213,8 @@ void register_projection_repro(vgi::Worker& worker) {
     add({"proj_repro_strict", "projection-pushdown reproducer (strict params.output_schema)", 0, 1,
          true});
     add({"proj_repro_full_schema", "projection-pushdown reproducer (emits full FIXED_SCHEMA)"});
-    add({"proj_repro_chunked",
-         "projection-pushdown reproducer (multi-tick, full FIXED_SCHEMA)", 2});
+    add({"proj_repro_chunked", "projection-pushdown reproducer (multi-tick, full FIXED_SCHEMA)",
+         2});
     add({"proj_repro_multi_worker",
          "projection-pushdown reproducer (4 workers, multi-tick, full FIXED_SCHEMA)", 2, 4});
 }

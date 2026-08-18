@@ -40,8 +40,7 @@ vgi_rpc::LogLevel to_rpc_level(LogLevel level) {
     return vgi_rpc::LogLevel::INFO;
 }
 
-std::function<void(LogLevel, const std::string&)> client_log_sink(
-    vgi_rpc::CallContext* context) {
+std::function<void(LogLevel, const std::string&)> client_log_sink(vgi_rpc::CallContext* context) {
     // A no-op rather than an empty function when there is no channel, so a
     // function may log without first asking which call it is in.
     if (!context) return [](LogLevel, const std::string&) {};
@@ -130,8 +129,7 @@ vgi_rpc::Result Dispatcher::table_buffering_destructor(const vgi_rpc::Request& r
     // has already produced its answer.
     try {
         if (auto dto = wire::get_ipc(request.batch(), "request")) {
-            const auto execution_id =
-                wire::get_optional_binary(dto, "execution_id").value_or("");
+            const auto execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
             if (!execution_id.empty()) default_storage()->clear(execution_id);
         }
     } catch (const std::exception&) {

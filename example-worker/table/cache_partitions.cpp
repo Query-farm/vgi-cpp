@@ -192,8 +192,7 @@ public:
 
     vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
         vgi::TableCardinality estimate;
-        const int64_t rows =
-            rows_per_country(params) * static_cast<int64_t>(kCountries.size());
+        const int64_t rows = rows_per_country(params) * static_cast<int64_t>(kCountries.size());
         estimate.estimate = rows;
         estimate.max = rows;
         return estimate;
@@ -227,9 +226,7 @@ private:
             return batch;
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;
@@ -262,9 +259,8 @@ public:
 
     vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
         vgi::TableCardinality estimate;
-        const int64_t rows =
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(1)) *
-            static_cast<int64_t>(kCountries.size());
+        const int64_t rows = std::max<int64_t>(0, params.arguments.const_int64(0).value_or(1)) *
+                             static_cast<int64_t>(kCountries.size());
         estimate.estimate = rows;
         estimate.max = rows;
         return estimate;
@@ -291,9 +287,7 @@ private:
             return batch;
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;
@@ -366,9 +360,7 @@ private:
             return batch;
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;
@@ -442,9 +434,7 @@ private:
             return batch;
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;
@@ -505,9 +495,7 @@ private:
             return batch;
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;

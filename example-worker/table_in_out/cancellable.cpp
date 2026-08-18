@@ -43,8 +43,7 @@ public:
         sleep.with_range(0, std::nullopt);
         return {vgi::ArgSpec::constant_arg("probe_path", 0, "varchar",
                                            "Path to append to when on_cancel fires"),
-                vgi::ArgSpec::table("data", 1, "Input relation"),
-                std::move(sleep)};
+                vgi::ArgSpec::table("data", 1, "Input relation"), std::move(sleep)};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
@@ -64,7 +63,6 @@ public:
         return {vgi::project_batch(batch, params.output_schema)};
     }
 };
-
 
 // `slow_cancellable(probe_path, sleep_ms := 50, count := 1000000)` — the
 // producer half of the same idea: one row per batch, slowly, so a client has

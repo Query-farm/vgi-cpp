@@ -34,24 +34,22 @@ bool is_multipliable_type(const arrow::DataType& type);
 // One argument's worth of headroom: the type that can hold `type` + `type`
 // without overflowing. Temporal types are returned unchanged, since a date
 // plus a date is still a date's width.
-std::shared_ptr<arrow::DataType> promote_for_addition(
-    const std::shared_ptr<arrow::DataType>& type);
+std::shared_ptr<arrow::DataType> promote_for_addition(const std::shared_ptr<arrow::DataType>& type);
 
 // The common numeric type of `a` and `b`, then promoted for headroom.
 std::shared_ptr<arrow::DataType> common_type_for_addition(
     const std::shared_ptr<arrow::DataType>& a, const std::shared_ptr<arrow::DataType>& b);
 
-
 // x + x over the first input column, in the bound output type.
 //
 // Addition rather than multiplication by two on purpose: for decimals the two
 // differ in how they overflow, and the canonical worker adds.
-std::shared_ptr<arrow::RecordBatch> double_first(
-    const ProcessParams& params, const std::shared_ptr<arrow::RecordBatch>& batch);
+std::shared_ptr<arrow::RecordBatch> double_first(const ProcessParams& params,
+                                                 const std::shared_ptr<arrow::RecordBatch>& batch);
 
 // a + b over the first two input columns, in the bound output type.
-std::shared_ptr<arrow::RecordBatch> add_two(
-    const ProcessParams& params, const std::shared_ptr<arrow::RecordBatch>& batch);
+std::shared_ptr<arrow::RecordBatch> add_two(const ProcessParams& params,
+                                            const std::shared_ptr<arrow::RecordBatch>& batch);
 
 namespace bounds {
 

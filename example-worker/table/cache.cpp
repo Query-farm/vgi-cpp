@@ -36,7 +36,9 @@ constexpr int64_t kDefaultTtlSeconds = 300;
 // assert on — the counter is the observable, not an implementation detail.
 std::atomic<int64_t> nonce_counter{0};
 
-int64_t next_nonce() { return nonce_counter.fetch_add(1, std::memory_order_relaxed); }
+int64_t next_nonce() {
+    return nonce_counter.fetch_add(1, std::memory_order_relaxed);
+}
 
 vgi::FunctionMetadata cache_metadata(std::string description) {
     vgi::FunctionMetadata md;
@@ -75,8 +77,7 @@ public:
         const bool first = index_ == 0;
         const int64_t size = std::min(remaining_, batch_size_);
         auto batch = i64_batch(schema_, index_, index_ + size);
-        metadata_ = first ? cache_control_.to_metadata()
-                          : std::map<std::string, std::string>{};
+        metadata_ = first ? cache_control_.to_metadata() : std::map<std::string, std::string>{};
         index_ += size;
         remaining_ -= size;
         return batch;
@@ -96,8 +97,7 @@ private:
 // Emits exactly one row holding `value`.
 class OneRow : public vgi::TableProducer {
 public:
-    OneRow(std::shared_ptr<arrow::Schema> schema, int64_t value,
-           vgi::CacheControl cache_control)
+    OneRow(std::shared_ptr<arrow::Schema> schema, int64_t value, vgi::CacheControl cache_control)
         : schema_(std::move(schema)), value_(value), cache_control_(std::move(cache_control)) {}
 
     void on_conditional_request(const std::optional<std::string>& if_none_match,
@@ -146,8 +146,8 @@ public:
     // fixture is scanned with no arguments at all, so its count must be named
     // and defaulted; one called directly as `f(3)` needs it positional. The
     // engine resolves on arity, so the two cannot be the same declaration.
-    CachedNumbers(std::string name, std::string description, std::string column,
-                  bool takes_ttl, bool positional_rows = false)
+    CachedNumbers(std::string name, std::string description, std::string column, bool takes_ttl,
+                  bool positional_rows = false)
         : name_(std::move(name)),
           description_(std::move(description)),
           column_(std::move(column)),
@@ -188,8 +188,7 @@ public:
 protected:
     virtual vgi::CacheControl cache_control(const vgi::ProcessParams& params) const {
         vgi::CacheControl control;
-        control.ttl_seconds =
-            params.arguments.named_int64("ttl").value_or(kDefaultTtlSeconds);
+        control.ttl_seconds = params.arguments.named_int64("ttl").value_or(kDefaultTtlSeconds);
         return control;
     }
 
@@ -211,8 +210,8 @@ private:
 class CacheNoStore : public CachedNumbers {
 public:
     CacheNoStore()
-        : CachedNumbers("cache_no_store",
-                        "Emits n rows but advertises no_store (never cached)", "n",
+        : CachedNumbers("cache_no_store", "Emits n rows but advertises no_store (never cached)",
+                        "n",
                         /*takes_ttl=*/false) {}
 
 protected:
@@ -286,9 +285,7 @@ private:
             return arrow::RecordBatch::Make(schema_, rows_, {index_array, nonce_array});
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;
@@ -320,8 +317,7 @@ public:
         control.ttl_seconds = kDefaultTtlSeconds;
         // The nonce is drawn here, in init, which the engine only reaches on a
         // cache miss — so a served hit leaves it unchanged.
-        return std::make_unique<OneRow>(params.output_schema, next_nonce(),
-                                        std::move(control));
+        return std::make_unique<OneRow>(params.output_schema, next_nonce(), std::move(control));
     }
 };
 
@@ -379,9 +375,7 @@ private:
             return arrow::RecordBatch::Make(schema_, rows_, columns);
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;
@@ -421,9 +415,9 @@ public:
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         vgi::CacheControl control;
         control.ttl_seconds = kDefaultTtlSeconds;
-        return std::make_unique<Countdown>(
-            params.output_schema, params.arguments.named_int64("rows").value_or(5000), 1000,
-            std::move(control));
+        return std::make_unique<Countdown>(params.output_schema,
+                                           params.arguments.named_int64("rows").value_or(5000),
+                                           1000, std::move(control));
     }
 };
 
@@ -482,8 +476,7 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("rows", 0, "int64",
-                                           "Total number of rows to generate"),
+        return {vgi::ArgSpec::constant_arg("rows", 0, "int64", "Total number of rows to generate"),
                 vgi::ArgSpec::named("batch_size", "int64", "Rows per output batch")};
     }
 
@@ -564,9 +557,7 @@ private:
             return batch;
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;
@@ -590,8 +581,9 @@ public:
     std::string name() const override { return "cache_poison"; }
 
     vgi::FunctionMetadata metadata() const override {
-        return cache_metadata("Cacheable first batch then a mid-stream error "
-                              "(never-partial check)");
+        return cache_metadata(
+            "Cacheable first batch then a mid-stream error "
+            "(never-partial check)");
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
@@ -625,9 +617,7 @@ private:
             return i64_batch(schema_, 0, rows_);
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         std::shared_ptr<arrow::Schema> schema_;
@@ -690,9 +680,7 @@ private:
             return arrow::RecordBatch::Make(schema_, kRows, columns);
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         static constexpr int64_t kRows = 3;

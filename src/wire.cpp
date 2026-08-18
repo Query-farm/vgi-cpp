@@ -21,7 +21,9 @@
 namespace vgi::wire {
 namespace {
 
-[[noreturn]] void fail(const std::string& what) { throw std::runtime_error(what); }
+[[noreturn]] void fail(const std::string& what) {
+    throw std::runtime_error(what);
+}
 
 template <typename T>
 T unwrap(arrow::Result<T> result, const std::string& context) {
@@ -37,8 +39,7 @@ void check_ok(const arrow::Status& status, const std::string& context) {
 // a segfault rather than an exception, so they live in one place.
 template <typename ArrayType>
 std::shared_ptr<ArrayType> typed_column(const std::shared_ptr<arrow::RecordBatch>& batch,
-                                        const std::string& field,
-                                        const char* expected) {
+                                        const std::string& field, const char* expected) {
     auto arr = column(batch, field);
     auto typed = std::dynamic_pointer_cast<ArrayType>(arr);
     if (!typed) {
@@ -76,30 +77,28 @@ std::shared_ptr<arrow::Array> column(const std::shared_ptr<arrow::RecordBatch>& 
     return arr;
 }
 
-std::string get_string(const std::shared_ptr<arrow::RecordBatch>& batch,
-                       const std::string& field) {
+std::string get_string(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
     auto arr = typed_column<arrow::StringArray>(batch, field, "string");
     if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
     return arr->GetString(0);
 }
 
-std::optional<std::string> get_optional_string(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+std::optional<std::string> get_optional_string(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                               const std::string& field) {
     if (!has_column(batch, field)) return std::nullopt;
     auto arr = typed_column<arrow::StringArray>(batch, field, "string");
     if (arr->IsNull(0)) return std::nullopt;
     return arr->GetString(0);
 }
 
-std::string get_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
-                       const std::string& field) {
+std::string get_binary(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
     auto arr = typed_column<arrow::BinaryArray>(batch, field, "binary");
     if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
     return arr->GetString(0);
 }
 
-std::optional<std::string> get_optional_binary(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+std::optional<std::string> get_optional_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                               const std::string& field) {
     if (!has_column(batch, field)) return std::nullopt;
     // `binary` and `large_binary` alike: the protocol picks the wide form for
     // fields that can exceed 2 GiB — `pushdown_filters` is declared
@@ -149,8 +148,7 @@ std::optional<double> get_optional_double(const std::shared_ptr<arrow::RecordBat
     return arr->Value(0);
 }
 
-std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
-                     const std::string& field) {
+std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
     auto arr = typed_column<arrow::DictionaryArray>(batch, field, "dictionary");
     if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
     auto values = std::dynamic_pointer_cast<arrow::StringArray>(arr->dictionary());
@@ -167,8 +165,8 @@ std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
     return values->GetString(index);
 }
 
-std::optional<std::string> get_optional_enum(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+std::optional<std::string> get_optional_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                             const std::string& field) {
     if (!has_column(batch, field)) return std::nullopt;
     auto arr = typed_column<arrow::DictionaryArray>(batch, field, "dictionary");
     if (arr->IsNull(0)) return std::nullopt;
@@ -192,8 +190,8 @@ std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes) {
     if (bytes.empty()) return nullptr;
     auto buffer = arrow::Buffer::FromString(bytes);
     auto source = std::make_shared<arrow::io::BufferReader>(buffer);
-    auto reader = unwrap(arrow::ipc::RecordBatchStreamReader::Open(source),
-                         "reading an embedded IPC value");
+    auto reader =
+        unwrap(arrow::ipc::RecordBatchStreamReader::Open(source), "reading an embedded IPC value");
     std::shared_ptr<arrow::RecordBatch> batch;
     check_ok(reader->ReadNext(&batch), "reading an embedded IPC batch");
     // A schema with no batches is how an absent optional dataclass travels;
@@ -223,9 +221,8 @@ std::optional<std::map<std::string, std::string>> get_struct_fields(
     return fields;
 }
 
-std::optional<std::string> get_struct_binary(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field,
-    const std::string& child) {
+std::optional<std::string> get_struct_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                             const std::string& field, const std::string& child) {
     if (!has_column(batch, field)) return std::nullopt;
     auto structs = std::dynamic_pointer_cast<arrow::StructArray>(column(batch, field));
     if (!structs || structs->length() == 0 || structs->IsNull(0)) return std::nullopt;
@@ -277,8 +274,8 @@ std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatc
     return items;
 }
 
-std::shared_ptr<arrow::RecordBatch> get_ipc(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+std::shared_ptr<arrow::RecordBatch> get_ipc(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                            const std::string& field) {
     auto bytes = get_optional_binary(batch, field);
     if (!bytes) return nullptr;
     return decode_ipc(*bytes);
@@ -297,8 +294,8 @@ std::string encode_ipc(const std::shared_ptr<arrow::RecordBatch>& batch) {
         throw std::runtime_error("encoding an invalid IPC batch: " + status.ToString());
     }
     auto sink = unwrap(arrow::io::BufferOutputStream::Create(), "allocating an IPC sink");
-    auto writer = unwrap(arrow::ipc::MakeStreamWriter(sink, batch->schema()),
-                         "opening an IPC writer");
+    auto writer =
+        unwrap(arrow::ipc::MakeStreamWriter(sink, batch->schema()), "opening an IPC writer");
     check_ok(writer->WriteRecordBatch(*batch), "writing an embedded IPC batch");
     check_ok(writer->Close(), "closing an embedded IPC stream");
     auto buffer = unwrap(sink->Finish(), "finishing an IPC sink");
@@ -309,8 +306,8 @@ std::shared_ptr<arrow::Schema> decode_schema(const std::string& bytes) {
     if (bytes.empty()) return nullptr;
     auto buffer = arrow::Buffer::FromString(bytes);
     auto source = std::make_shared<arrow::io::BufferReader>(buffer);
-    auto reader = unwrap(arrow::ipc::RecordBatchStreamReader::Open(source),
-                         "reading an embedded IPC schema");
+    auto reader =
+        unwrap(arrow::ipc::RecordBatchStreamReader::Open(source), "reading an embedded IPC schema");
     return reader->schema();
 }
 
@@ -421,8 +418,8 @@ ResultBuilder& ResultBuilder::set_int32_list(const std::string& field,
     return *this;
 }
 
-ResultBuilder& ResultBuilder::set_int32_list_list(
-    const std::string& field, const std::vector<std::vector<int32_t>>& groups) {
+ResultBuilder& ResultBuilder::set_int32_list_list(const std::string& field,
+                                                  const std::vector<std::vector<int32_t>>& groups) {
     auto items = std::make_shared<arrow::Int32Builder>();
     auto inner = std::make_shared<arrow::ListBuilder>(arrow::default_memory_pool(), items);
     arrow::ListBuilder outer(arrow::default_memory_pool(), inner);
@@ -478,8 +475,7 @@ ResultBuilder& ResultBuilder::set_secret_lookups(
     const std::vector<std::tuple<std::string, std::string, std::string>>& lookups) {
     const int index = field_index(field);
     std::unique_ptr<arrow::ArrayBuilder> raw;
-    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), schema_->field(index)->type(),
-                                &raw),
+    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), schema_->field(index)->type(), &raw),
              "building secrets field '" + field + "'");
     auto* list = dynamic_cast<arrow::ListBuilder*>(raw.get());
     if (!list) fail("result field '" + field + "' is not a list");
@@ -553,8 +549,7 @@ ResultBuilder& ResultBuilder::set_int64_map(
 }
 
 ResultBuilder& ResultBuilder::set_string_map(
-    const std::string& field,
-    const std::vector<std::pair<std::string, std::string>>& entries) {
+    const std::string& field, const std::vector<std::pair<std::string, std::string>>& entries) {
     auto key_builder = std::make_shared<arrow::StringBuilder>();
     auto item_builder = std::make_shared<arrow::StringBuilder>();
     arrow::MapBuilder b(arrow::default_memory_pool(), key_builder, item_builder);
@@ -568,8 +563,8 @@ ResultBuilder& ResultBuilder::set_string_map(
     return *this;
 }
 
-ResultBuilder& ResultBuilder::set_optional_string(
-    const std::string& field, const std::optional<std::string>& value) {
+ResultBuilder& ResultBuilder::set_optional_string(const std::string& field,
+                                                  const std::optional<std::string>& value) {
     return value ? set_string(field, *value) : set_null(field);
 }
 
@@ -590,9 +585,9 @@ ResultBuilder& ResultBuilder::set_enum(const std::string& field, const std::stri
     check_ok(indices.Append(0), "building enum index for '" + field + "'");
     auto index_array = unwrap(indices.Finish(), "finishing enum index for '" + field + "'");
 
-    arrays_[static_cast<size_t>(index)] = unwrap(
-        arrow::DictionaryArray::FromArrays(type, index_array, dictionary),
-        "assembling enum field '" + field + "'");
+    arrays_[static_cast<size_t>(index)] =
+        unwrap(arrow::DictionaryArray::FromArrays(type, index_array, dictionary),
+               "assembling enum field '" + field + "'");
     return *this;
 }
 
@@ -608,11 +603,11 @@ ResultBuilder& ResultBuilder::fill_defaults() {
         // A non-nullable field still needs a value, and the empty one is what
         // the canonical dataclasses default to.
         switch (type->id()) {
-            case arrow::Type::STRING:  set_string(field->name(), ""); break;
-            case arrow::Type::BINARY:  set_binary(field->name(), ""); break;
-            case arrow::Type::BOOL:    set_bool(field->name(), false); break;
-            case arrow::Type::INT64:   set_int64(field->name(), 0); break;
-            case arrow::Type::MAP:     set_string_map(field->name(), {}); break;
+            case arrow::Type::STRING: set_string(field->name(), ""); break;
+            case arrow::Type::BINARY: set_binary(field->name(), ""); break;
+            case arrow::Type::BOOL: set_bool(field->name(), false); break;
+            case arrow::Type::INT64: set_int64(field->name(), 0); break;
+            case arrow::Type::MAP: set_string_map(field->name(), {}); break;
             default: {
                 std::unique_ptr<arrow::ArrayBuilder> builder;
                 check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), type, &builder),

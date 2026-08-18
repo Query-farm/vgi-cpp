@@ -28,8 +28,8 @@ constexpr int64_t kCacheTtlSeconds = 300;
 // `x * 2` over the blended input column, onto the bound output schema.
 std::shared_ptr<arrow::RecordBatch> doubled(const vgi::ProcessParams& params,
                                             const std::shared_ptr<arrow::RecordBatch>& batch) {
-    auto values = std::static_pointer_cast<arrow::Int64Array>(
-        cast_to(batch->column(0), arrow::int64()));
+    auto values =
+        std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
     arrow::Int64Builder out;
     (void)out.Reserve(values->length());
     for (int64_t i = 0; i < values->length(); ++i) {
@@ -77,9 +77,7 @@ public:
         return arrow::schema({arrow::field("doubled", arrow::int64(), /*nullable=*/true)});
     }
 
-    std::optional<vgi::CacheControl> cache_control() const override {
-        return per_value_cache();
-    }
+    std::optional<vgi::CacheControl> cache_control() const override { return per_value_cache(); }
 
     std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
@@ -97,8 +95,7 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
-        md.description =
-            "Blended map x->x*2 with always-revalidate (304 not_modified) contract";
+        md.description = "Blended map x->x*2 with always-revalidate (304 not_modified) contract";
         md.categories = {"blended", "cache", "test"};
         md.input_from_args = true;
         return md;
@@ -129,11 +126,10 @@ public:
         // right bytes and must not be sent them again.
         if (params.if_none_match && *params.if_none_match == kEtag) {
             control.not_modified = true;
-            vgi::EmittedBatch confirmed{
-                arrow::RecordBatch::Make(params.output_schema, 0,
-                                         std::vector<std::shared_ptr<arrow::Array>>{
-                                             arrow::MakeArrayOfNull(arrow::int64(), 0)
-                                                 .ValueOrDie()})};
+            vgi::EmittedBatch confirmed{arrow::RecordBatch::Make(
+                params.output_schema, 0,
+                std::vector<std::shared_ptr<arrow::Array>>{
+                    arrow::MakeArrayOfNull(arrow::int64(), 0).ValueOrDie()})};
             confirmed.cache_control = control;
             return {std::move(confirmed)};
         }
@@ -175,15 +171,13 @@ public:
         return arrow::schema({arrow::field("i", arrow::int64(), /*nullable=*/true)});
     }
 
-    std::optional<vgi::CacheControl> cache_control() const override {
-        return per_value_cache();
-    }
+    std::optional<vgi::CacheControl> cache_control() const override { return per_value_cache(); }
 
     std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        auto counts = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto counts =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
 
         // Round-robin rather than contiguous: round k emits value k for every
         // input row still counting, so an input row's outputs are *not*
@@ -229,15 +223,13 @@ public:
         return {vgi::ArgSpec::column("value", 0, "int64", "Value to double")};
     }
 
-    std::optional<vgi::CacheControl> cache_control() const override {
-        return per_value_cache();
-    }
+    std::optional<vgi::CacheControl> cache_control() const override { return per_value_cache(); }
 
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
         arrow::Int64Builder out;
         (void)out.Reserve(values->length());
         for (int64_t i = 0; i < values->length(); ++i) {
@@ -272,16 +264,14 @@ public:
                 vgi::ArgSpec::constant_arg("addend", 1, "int64", "Constant addend")};
     }
 
-    std::optional<vgi::CacheControl> cache_control() const override {
-        return per_value_cache();
-    }
+    std::optional<vgi::CacheControl> cache_control() const override { return per_value_cache(); }
 
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const int64_t addend = params.arguments.const_int64(1).value_or(0);
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
         arrow::Int64Builder out;
         (void)out.Reserve(values->length());
         for (int64_t i = 0; i < values->length(); ++i) {

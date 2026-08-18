@@ -265,8 +265,8 @@ public:
     using TaggedChunks::TaggedChunks;
 
 protected:
-    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk,
-                                         int64_t from, int64_t rows) const override {
+    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk, int64_t from,
+                                         int64_t rows) const override {
         if (name == "partition_id") {
             return int64_column(rows, [&](int64_t) { return chunk.id; });
         }
@@ -331,8 +331,8 @@ public:
     using PartitionedChunks::PartitionedChunks;
 
 protected:
-    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk,
-                                         int64_t from, int64_t rows) const override {
+    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk, int64_t from,
+                                         int64_t rows) const override {
         if (name == "country") return repeated_string(rows, kCountries[chunk.id]);
         // Unique per (country, row), which is what makes the tests' SUM
         // expectations short to write and a misattributed row obvious.
@@ -348,8 +348,8 @@ public:
     using PartitionedChunks::PartitionedChunks;
 
 protected:
-    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk,
-                                         int64_t from, int64_t rows) const override {
+    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk, int64_t from,
+                                         int64_t rows) const override {
         const auto& partition = kRegionYears[chunk.id];
         if (name == "region") return repeated_string(rows, partition.region);
         if (name == "year") return int64_column(rows, [&](int64_t) { return partition.year; });
@@ -366,8 +366,8 @@ public:
     using PartitionedChunks::PartitionedChunks;
 
 protected:
-    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk,
-                                         int64_t from, int64_t rows) const override {
+    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk, int64_t from,
+                                         int64_t rows) const override {
         if (name == "category") return repeated_string(rows, kCategories[chunk.id]);
         const int64_t base = (chunk.id + 1) * 100 + (from - chunk.start);
         return int64_column(rows, [&](int64_t i) { return base + i; });
@@ -390,8 +390,8 @@ public:
           stride_(stride) {}
 
 protected:
-    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk,
-                                         int64_t from, int64_t rows) const override {
+    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk, int64_t from,
+                                         int64_t rows) const override {
         const int64_t offset = from - chunk.start;
         const int64_t base = name == "key" ? chunk.id * stride_ : chunk.id * 10;
         return int64_column(rows, [&](int64_t i) { return base + offset + i; });
@@ -419,8 +419,7 @@ public:
     }
 
 protected:
-    virtual std::shared_ptr<arrow::Array> column(const std::string& name,
-                                                 int64_t rows) const = 0;
+    virtual std::shared_ptr<arrow::Array> column(const std::string& name, int64_t rows) const = 0;
 
 private:
     std::shared_ptr<arrow::Schema> schema_;
@@ -513,9 +512,9 @@ public:
     std::string name() const override { return "partitioned_batch_index"; }
 
     vgi::FunctionMetadata metadata() const override {
-        auto md = fixture_metadata(
-            "Multi-worker partitioned sequence with per-batch batch_index tagging",
-            {"generator", "utility"});
+        auto md =
+            fixture_metadata("Multi-worker partitioned sequence with per-batch batch_index tagging",
+                             {"generator", "utility"});
         md.projection_pushdown = true;
         md.supports_batch_index = true;
         md.order_preservation = vgi::order_preservations::kFixedOrder;
@@ -523,8 +522,7 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {
-            vgi::ArgSpec::constant_arg("count", 0, "int64", "Total integers to generate")};
+        return {vgi::ArgSpec::constant_arg("count", 0, "int64", "Total integers to generate")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
@@ -592,9 +590,9 @@ public:
     }
 
     void on_init(const vgi::ProcessParams& params) const override {
-        push_ranges(params, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
-                    std::max<int64_t>(
-                        1, params.arguments.named_int64("chunk_size").value_or(kChunkRows)));
+        push_ranges(
+            params, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
+            std::max<int64_t>(1, params.arguments.named_int64("chunk_size").value_or(kChunkRows)));
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
@@ -610,9 +608,9 @@ public:
     std::string name() const override { return "filter_echo_partitioned"; }
 
     vgi::FunctionMetadata metadata() const override {
-        auto md = fixture_metadata(
-            "Multi-worker partitioned sequence that echoes pushed-down filters",
-            {"generator", "diagnostic", "testing"});
+        auto md =
+            fixture_metadata("Multi-worker partitioned sequence that echoes pushed-down filters",
+                             {"generator", "diagnostic", "testing"});
         md.projection_pushdown = true;
         md.filter_pushdown = true;
         // Reports the filters *and* applies them: the engine trusts a function
@@ -645,8 +643,7 @@ public:
 
     void on_init(const vgi::ProcessParams& params) const override {
         const int64_t count = std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0));
-        push_ranges(params, count,
-                    std::max<int64_t>(1, (count + kMaxChunks - 1) / kMaxChunks));
+        push_ranges(params, count, std::max<int64_t>(1, (count + kMaxChunks - 1) / kMaxChunks));
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
@@ -793,8 +790,8 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("rows", 0, "int64",
-                                           "Rows to emit per category partition")};
+        return {
+            vgi::ArgSpec::constant_arg("rows", 0, "int64", "Rows to emit per category partition")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
@@ -817,8 +814,8 @@ public:
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        return std::make_unique<Override>(params.output_schema, params.storage,
-                                          params.execution_id, category_schema());
+        return std::make_unique<Override>(params.output_schema, params.storage, params.execution_id,
+                                          category_schema());
     }
 
 private:
@@ -835,10 +832,10 @@ private:
             const Chunk& chunk, const std::shared_ptr<arrow::RecordBatch>&) const override {
             // One row carrying the value this chunk was assigned. Its min and
             // max are that value, which is the whole advertisement.
-            auto stated = arrow::RecordBatch::Make(
-                category_schema(), 1,
-                {repeated_string(1, kCategories[chunk.id]),
-                 int64_column(1, [](int64_t) { return int64_t{0}; })});
+            auto stated =
+                arrow::RecordBatch::Make(category_schema(), 1,
+                                         {repeated_string(1, kCategories[chunk.id]),
+                                          int64_column(1, [](int64_t) { return int64_t{0}; })});
             return vgi::partition_metadata(category_schema(), stated);
         }
     };
@@ -860,8 +857,7 @@ std::shared_ptr<arrow::Schema> range_schema() {
 // round-trip, since the engine rejects a kind it does not recognize.
 class RangePartitioned : public vgi::TableFunction {
 public:
-    RangePartitioned(std::string name, std::string description, std::string kind,
-                     int64_t stride)
+    RangePartitioned(std::string name, std::string description, std::string kind, int64_t stride)
         : name_(std::move(name)),
           description_(std::move(description)),
           kind_(std::move(kind)),
@@ -896,8 +892,7 @@ public:
     }
 
     void on_init(const vgi::ProcessParams& params) const override {
-        push_partitions(params,
-                        std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
+        push_partitions(params, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
                         rows(params));
     }
 
@@ -908,8 +903,8 @@ public:
 
 private:
     static int64_t rows(const vgi::ProcessParams& params) {
-        return std::max<int64_t>(1, params.arguments.named_int64("rows_per_partition")
-                                        .value_or(10));
+        return std::max<int64_t>(1,
+                                 params.arguments.named_int64("rows_per_partition").value_or(10));
     }
 
     std::string name_;

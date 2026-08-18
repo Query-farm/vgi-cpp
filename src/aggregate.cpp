@@ -32,8 +32,8 @@ split_group_ids(const std::shared_ptr<arrow::RecordBatch>& batch) {
     auto group_ids =
         std::dynamic_pointer_cast<arrow::Int64Array>(batch->GetColumnByName(kGroupColumnName));
     if (!group_ids) {
-        throw std::runtime_error(std::string("aggregate batch has no int64 '") +
-                                 kGroupColumnName + "' column");
+        throw std::runtime_error(std::string("aggregate batch has no int64 '") + kGroupColumnName +
+                                 "' column");
     }
     std::vector<std::shared_ptr<arrow::Array>> columns;
     for (int i = 0; i < batch->num_columns(); ++i) {
@@ -45,8 +45,8 @@ split_group_ids(const std::shared_ptr<arrow::RecordBatch>& batch) {
 
 // An int64 column by name, falling back to position — the engine has used both
 // spellings for the combine batch's two columns.
-std::shared_ptr<arrow::Int64Array> int64_column(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& name, int position) {
+std::shared_ptr<arrow::Int64Array> int64_column(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                                const std::string& name, int position) {
     auto column = batch->GetColumnByName(name);
     if (!column && position < batch->num_columns()) column = batch->column(position);
     auto typed = std::dynamic_pointer_cast<arrow::Int64Array>(column);
@@ -82,8 +82,7 @@ std::vector<bool> unpack_mask(const std::string& packed, int64_t row_count) {
     for (int64_t i = 0; i < row_count; ++i) {
         const size_t byte = static_cast<size_t>(i) / 8;
         if (byte >= packed.size()) break;
-        mask[static_cast<size_t>(i)] =
-            (static_cast<unsigned char>(packed[byte]) >> (i % 8)) & 1;
+        mask[static_cast<size_t>(i)] = (static_cast<unsigned char>(packed[byte]) >> (i % 8)) & 1;
     }
     return mask;
 }
@@ -244,8 +243,7 @@ vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request) 
     // carries none and may run on a worker that never bound.
     auto arguments = Arguments::parse(
         default_storage()->kv_get(execution_id, "aggregate.arguments").value_or(""));
-    auto result_batch =
-        fn->finalize_with_arguments(output_schema, *group_ids, states, arguments);
+    auto result_batch = fn->finalize_with_arguments(output_schema, *group_ids, states, arguments);
     auto payload = wire::ResultBuilder(payload_schema_of("aggregate_finalize"))
                        .set_binary("result_batch", wire::encode_ipc(result_batch))
                        .fill_defaults()
@@ -342,8 +340,7 @@ vgi_rpc::Result Dispatcher::aggregate_streaming_close(const vgi_rpc::Request& re
     // Must not raise; the session's state is the only thing to release.
     try {
         if (auto dto = wire::get_ipc(request.batch(), "request")) {
-            const auto execution_id =
-                wire::get_optional_binary(dto, "execution_id").value_or("");
+            const auto execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
             if (!execution_id.empty()) default_storage()->clear(execution_id);
         }
     } catch (const std::exception&) {
@@ -397,8 +394,7 @@ vgi_rpc::Result Dispatcher::aggregate_window_destructor(const vgi_rpc::Request& 
     // matters more than the error would.
     try {
         if (auto dto = wire::get_ipc(request.batch(), "request")) {
-            const auto execution_id =
-                wire::get_optional_binary(dto, "execution_id").value_or("");
+            const auto execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
             if (execution_id.empty()) return empty_envelope();
             // Only the named partition. An execution holds several at once —
             // the engine evicts them as it finishes each — so clearing the
@@ -444,8 +440,8 @@ vgi_rpc::Result Dispatcher::window_result(const std::shared_ptr<arrow::RecordBat
         // `window_init` is what stores it. Reaching `window` without one means
         // the init never arrived or carried no schema, and building a batch
         // against a null schema dereferences it.
-        throw std::runtime_error("aggregate_window: partition " +
-                                 std::to_string(partition_id) + " has no output schema");
+        throw std::runtime_error("aggregate_window: partition " + std::to_string(partition_id) +
+                                 " has no output schema");
     }
 
     const auto starts = wire::get_int64_list(dto, "frame_starts");
@@ -473,16 +469,15 @@ vgi_rpc::Result Dispatcher::window_result(const std::shared_ptr<arrow::RecordBat
 
     // Unpacked here rather than in every implementation: the bit order is a
     // wire detail, and getting it backwards silently inverts the filter.
-    const auto row_count =
-        std::strtoll(store->kv_get(execution_id, rows_key(partition_id)).value_or("0").c_str(),
-                     nullptr, 10);
-    auto mask = unpack_mask(store->kv_get(execution_id, mask_key(partition_id)).value_or(""),
-                            row_count);
+    const auto row_count = std::strtoll(
+        store->kv_get(execution_id, rows_key(partition_id)).value_or("0").c_str(), nullptr, 10);
+    auto mask =
+        unpack_mask(store->kv_get(execution_id, mask_key(partition_id)).value_or(""), row_count);
 
     auto values = fn->window(partition, output_schema, frames, mask);
     auto result_batch = arrow::RecordBatch::Make(output_schema, values->length(), {values});
-    auto payload = wire::ResultBuilder(payload_schema_of(batched ? "aggregate_window_batch"
-                                                                : "aggregate_window"))
+    auto payload = wire::ResultBuilder(
+                       payload_schema_of(batched ? "aggregate_window_batch" : "aggregate_window"))
                        .set_binary("result_batch", wire::encode_ipc(result_batch))
                        .fill_defaults()
                        .finish();

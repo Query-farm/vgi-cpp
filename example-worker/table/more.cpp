@@ -254,8 +254,7 @@ public:
             // BLOBs.
             auto field = params.arguments.positional_field(i);
             fields.push_back(arrow::field("col_" + std::to_string(i - 1), value->type(),
-                                          /*nullable=*/true,
-                                          field ? field->metadata() : nullptr));
+                                          /*nullable=*/true, field ? field->metadata() : nullptr));
         }
         return arrow::schema(std::move(fields));
     }
@@ -270,8 +269,7 @@ public:
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        const int64_t count =
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0));
+        const int64_t count = std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0));
         std::vector<std::shared_ptr<arrow::Array>> columns;
         for (size_t i = 1; i < params.arguments.positional_count(); ++i) {
             if (auto value = params.arguments.positional(i)) {
@@ -298,8 +296,7 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        auto values =
-            vgi::ArgSpec::constant_arg("values", 1, type_name_, "Values to repeat");
+        auto values = vgi::ArgSpec::constant_arg("values", 1, type_name_, "Values to repeat");
         values.with_varargs();
         return {vgi::ArgSpec::constant_arg("count", 0, "int64", "Number of rows"), values};
     }
@@ -307,15 +304,13 @@ public:
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
         std::vector<std::shared_ptr<arrow::Field>> fields;
         for (size_t i = 1; i < params.arguments.positional_count(); ++i) {
-            fields.push_back(
-                arrow::field("v" + std::to_string(i - 1), type_, /*nullable=*/true));
+            fields.push_back(arrow::field("v" + std::to_string(i - 1), type_, /*nullable=*/true));
         }
         return arrow::schema(std::move(fields));
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        const int64_t count =
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0));
+        const int64_t count = std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0));
         std::vector<std::shared_ptr<arrow::Array>> columns;
         for (size_t i = 1; i < params.arguments.positional_count(); ++i) {
             auto value = params.arguments.positional(i);
@@ -540,7 +535,8 @@ public:
     std::string name() const override { return "profiling_demo"; }
 
     vgi::FunctionMetadata metadata() const override {
-        return generator_metadata("Sequence generator publishing diagnostics under EXPLAIN ANALYZE");
+        return generator_metadata(
+            "Sequence generator publishing diagnostics under EXPLAIN ANALYZE");
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
@@ -590,10 +586,9 @@ private:
     };
 
     static uint64_t now_ns() {
-        return static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count());
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::system_clock::now().time_since_epoch())
+                                         .count());
     }
 
     class Producer : public vgi::TableProducer {
@@ -628,9 +623,9 @@ private:
             // reading early, and a LIMIT that never drains the scan would
             // otherwise leave nothing for the profiler to find.
             if (storage_) {
-                storage_->kv_put(execution_id_, kCountersKey,
-                                 std::string(reinterpret_cast<const char*>(&counters_),
-                                             sizeof(counters_)));
+                storage_->kv_put(
+                    execution_id_, kCountersKey,
+                    std::string(reinterpret_cast<const char*>(&counters_), sizeof(counters_)));
             }
             return arrow::RecordBatch::Make(schema_, size, {array});
         }

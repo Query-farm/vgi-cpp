@@ -32,8 +32,7 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
-        md.description =
-            "value -> 'lbl-<value>' or NULL for negatives (advertises vgi.cache.ttl)";
+        md.description = "value -> 'lbl-<value>' or NULL for negatives (advertises vgi.cache.ttl)";
         md.return_type = arrow::utf8();
         return md;
     }
@@ -52,8 +51,8 @@ public:
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
+        auto values =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(0), arrow::int64()));
         arrow::StringBuilder out;
         (void)out.Reserve(values->length());
         for (int64_t i = 0; i < values->length(); ++i) {

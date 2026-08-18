@@ -74,10 +74,8 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         switch (shape_) {
-            case Shape::Precision:
-                return format_metadata("Format number with specified precision");
-            case Shape::Prefixed:
-                return format_metadata("Format number with precision and prefix");
+            case Shape::Precision: return format_metadata("Format number with specified precision");
+            case Shape::Prefixed: return format_metadata("Format number with precision and prefix");
             case Shape::Default: break;
         }
         return format_metadata("Format number with default precision (0 decimals)");
@@ -90,8 +88,7 @@ public:
             case Shape::Precision:
                 return {precision, vgi::ArgSpec::column("value", 1, "float64", "Number")};
             case Shape::Prefixed:
-                return {precision,
-                        vgi::ArgSpec::constant_arg("prefix", 1, "varchar", "Prefix"),
+                return {precision, vgi::ArgSpec::constant_arg("prefix", 1, "varchar", "Prefix"),
                         vgi::ArgSpec::column("value", 2, "float64", "Number")};
             case Shape::Default: break;
         }
@@ -101,10 +98,10 @@ public:
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        const int precision =
-            shape_ == Shape::Default
-                ? 0
-                : static_cast<int>(std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)));
+        const int precision = shape_ == Shape::Default
+                                  ? 0
+                                  : static_cast<int>(std::max<int64_t>(
+                                        0, params.arguments.const_int64(0).value_or(0)));
         const std::string prefix =
             shape_ == Shape::Prefixed ? params.arguments.const_string(1).value_or("") : "";
 

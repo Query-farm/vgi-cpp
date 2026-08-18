@@ -32,8 +32,7 @@ private:
 // path is reused rather than duplicated.
 class CopyFromScan : public TableFunction {
 public:
-    explicit CopyFromScan(std::shared_ptr<CopyFromFunction> reader)
-        : reader_(std::move(reader)) {}
+    explicit CopyFromScan(std::shared_ptr<CopyFromFunction> reader) : reader_(std::move(reader)) {}
 
     std::string name() const override { return reader_->handler_name(); }
     FunctionMetadata metadata() const override { return reader_->metadata(); }

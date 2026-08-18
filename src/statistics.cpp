@@ -143,18 +143,16 @@ std::shared_ptr<arrow::Array> build_child(const std::vector<ColumnStatistics>& s
 }
 
 std::shared_ptr<arrow::Array> build_union(const std::vector<ColumnStatistics>& statistics,
-                                          bool minimum,
-                                          const std::vector<StatValue::Kind>& order) {
+                                          bool minimum, const std::vector<StatValue::Kind>& order) {
     arrow::Int8Builder type_ids;
     (void)type_ids.Reserve(static_cast<int64_t>(statistics.size()));
     for (const auto& stat : statistics) {
         // A row with no bounds at all still needs a type id — sparse union
         // rows always name a child. Child 0's slot is null for it either way.
         const auto kind = row_kind(stat);
-        const auto found =
-            kind ? std::find(order.begin(), order.end(), *kind) : order.end();
-        (void)type_ids.Append(
-            found == order.end() ? 0 : static_cast<int8_t>(found - order.begin()));
+        const auto found = kind ? std::find(order.begin(), order.end(), *kind) : order.end();
+        (void)type_ids.Append(found == order.end() ? 0
+                                                   : static_cast<int8_t>(found - order.begin()));
     }
     auto ids = finish(type_ids);
 
@@ -224,8 +222,8 @@ std::string serialize_column_statistics(const std::vector<ColumnStatistics>& sta
     auto maximums = build_union(statistics, /*minimum=*/false, order);
 
     const std::vector<std::shared_ptr<arrow::Array>> columns{
-        finish(names),           finish(has_null),         finish(has_not_null),
-        finish(distinct_count),  finish(contains_unicode), finish(max_string_length)};
+        finish(names),          finish(has_null),         finish(has_not_null),
+        finish(distinct_count), finish(contains_unicode), finish(max_string_length)};
 
     auto schema = arrow::schema({
         arrow::field("column_name", arrow::utf8(), true),
@@ -237,10 +235,9 @@ std::string serialize_column_statistics(const std::vector<ColumnStatistics>& sta
         arrow::field("contains_unicode", arrow::boolean(), true),
         arrow::field("max_string_length", arrow::uint64(), true),
     });
-    auto batch = arrow::RecordBatch::Make(
-        schema, static_cast<int64_t>(statistics.size()),
-        {columns[0], minimums, maximums, columns[1], columns[2], columns[3], columns[4],
-         columns[5]});
+    auto batch = arrow::RecordBatch::Make(schema, static_cast<int64_t>(statistics.size()),
+                                          {columns[0], minimums, maximums, columns[1], columns[2],
+                                           columns[3], columns[4], columns[5]});
     return wire::encode_ipc(batch);
 }
 

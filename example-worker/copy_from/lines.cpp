@@ -75,9 +75,8 @@ public:
             vgi::ArgSpec::named("null_string", "varchar", "Token parsed as SQL NULL"),
             vgi::ArgSpec::named("delimiter", "varchar", "Field separator"),
             vgi::ArgSpec::named("skip_rows", "int64", "Leading lines to skip before data"),
-            vgi::ArgSpec::named(
-                "on_error", "varchar",
-                "Behavior on a row whose column count does not match the target"),
+            vgi::ArgSpec::named("on_error", "varchar",
+                                "Behavior on a row whose column count does not match the target"),
         };
     }
 
@@ -89,15 +88,14 @@ public:
 
         auto lines = read_lines(params.copy_from_path.value_or(""), format());
         std::vector<std::vector<std::string>> rows;
-        for (size_t line = static_cast<size_t>(options.skip_rows); line < lines.size();
-             ++line) {
+        for (size_t line = static_cast<size_t>(options.skip_rows); line < lines.size(); ++line) {
             if (lines[line].empty()) continue;
             auto cells = split(lines[line], options.delimiter);
             if (static_cast<int>(cells.size()) != columns) {
                 if (options.on_error == "skip") continue;
-                throw std::invalid_argument(
-                    format() + ": row has " + std::to_string(cells.size()) + " fields, expected " +
-                    std::to_string(columns) + ": '" + lines[line] + "'");
+                throw std::invalid_argument(format() + ": row has " + std::to_string(cells.size()) +
+                                            " fields, expected " + std::to_string(columns) + ": '" +
+                                            lines[line] + "'");
             }
             rows.push_back(std::move(cells));
         }
@@ -144,8 +142,7 @@ private:
         }
         options.on_error = arguments.named_string("on_error").value_or("fail");
         if (options.on_error != "fail" && options.on_error != "skip") {
-            throw std::invalid_argument(format() +
-                                        ": 'on_error' must be one of ['fail', 'skip']");
+            throw std::invalid_argument(format() + ": 'on_error' must be one of ['fail', 'skip']");
         }
         return options;
     }
@@ -174,8 +171,7 @@ public:
                                     "Secret type to fetch, scoped by the source path")};
     }
 
-    std::vector<vgi::SecretLookup> secret_lookups(
-        const vgi::BindParams& params) const override {
+    std::vector<vgi::SecretLookup> secret_lookups(const vgi::BindParams& params) const override {
         if (!params.copy_from_path) return {};
         // Scoped to the source: a cloud read wants the credential for the
         // bucket it is reading from, not any credential of that type.
@@ -204,8 +200,7 @@ public:
         (void)builder.Append(api_key);
         std::shared_ptr<arrow::Array> text;
         (void)builder.Finish(&text);
-        return {arrow::RecordBatch::Make(schema, 1,
-                                         {cast_to(text, schema->field(0)->type())})};
+        return {arrow::RecordBatch::Make(schema, 1, {cast_to(text, schema->field(0)->type())})};
     }
 
 private:

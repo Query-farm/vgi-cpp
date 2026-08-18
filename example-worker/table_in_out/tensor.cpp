@@ -207,8 +207,8 @@ public:
 
         std::shared_ptr<arrow::Array> value_indices;
         (void)value_take.Finish(&value_indices);
-        auto values = cast_to(take_indices(leaf, value_indices),
-                              schema->GetFieldByName("value")->type());
+        auto values =
+            cast_to(take_indices(leaf, value_indices), schema->GetFieldByName("value")->type());
 
         std::vector<std::shared_ptr<arrow::Array>> axis_columns;
         std::vector<std::shared_ptr<arrow::Field>> axis_fields;

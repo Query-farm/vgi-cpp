@@ -90,9 +90,9 @@ public:
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
         md.description = "Schema-disambiguation probe; the " + schema_ + "-schema table-in-out";
-        md.examples = {{"SELECT * FROM example." + schema_ + "." + kTransformName +
-                            "((SELECT 1 AS n))",
-                        "Returns '" + schema_ + ":1'", std::nullopt}};
+        md.examples = {
+            {"SELECT * FROM example." + schema_ + "." + kTransformName + "((SELECT 1 AS n))",
+             "Returns '" + schema_ + ":1'", std::nullopt}};
         return md;
     }
 
@@ -143,9 +143,9 @@ public:
         vgi::FunctionMetadata md;
         md.description =
             "Schema-disambiguation probe; the " + schema_ + "-schema buffered function";
-        md.examples = {{"SELECT * FROM example." + schema_ + "." + kBufferedName +
-                            "((SELECT 1 AS n))",
-                        "Returns '" + schema_ + ":1'", std::nullopt}};
+        md.examples = {
+            {"SELECT * FROM example." + schema_ + "." + kBufferedName + "((SELECT 1 AS n))",
+             "Returns '" + schema_ + ":1'", std::nullopt}};
         return md;
     }
 

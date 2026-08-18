@@ -29,8 +29,7 @@ vgi::FunctionMetadata series_metadata(std::string description) {
 // Emits a precomputed run of int64 values in chunks.
 class Values : public vgi::TableProducer {
 public:
-    Values(std::shared_ptr<arrow::Schema> schema, std::vector<int64_t> values,
-           int64_t batch_size)
+    Values(std::shared_ptr<arrow::Schema> schema, std::vector<int64_t> values, int64_t batch_size)
         : schema_(std::move(schema)), values_(std::move(values)), batch_size_(batch_size) {}
 
     std::shared_ptr<arrow::RecordBatch> next_batch() override {
@@ -83,12 +82,9 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         switch (arity_) {
-            case Arity::Count:
-                return series_metadata("Generate integers from 0 to count-1");
-            case Arity::Range:
-                return series_metadata("Generate integers from start to stop-1");
-            case Arity::Step:
-                break;
+            case Arity::Count: return series_metadata("Generate integers from 0 to count-1");
+            case Arity::Range: return series_metadata("Generate integers from start to stop-1");
+            case Arity::Step: break;
         }
         return series_metadata("Generate integers from start to stop-1 with step");
     }
@@ -103,14 +99,12 @@ public:
             case Arity::Range:
                 return {vgi::ArgSpec::constant_arg("start", 0, "int64", "Start (inclusive)"),
                         vgi::ArgSpec::constant_arg("stop", 1, "int64", "Stop (exclusive)")};
-            case Arity::Step:
-                break;
+            case Arity::Step: break;
         }
         auto step = vgi::ArgSpec::constant_arg("step", 2, "int64", "Step");
         step.ge = 1;
         return {vgi::ArgSpec::constant_arg("start", 0, "int64", "Start (inclusive)"),
-                vgi::ArgSpec::constant_arg("stop", 1, "int64", "Stop (exclusive)"),
-                step};
+                vgi::ArgSpec::constant_arg("stop", 1, "int64", "Stop (exclusive)"), step};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
@@ -209,8 +203,7 @@ public:
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         return std::make_unique<Producer>(
-            params.output_schema,
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
+            params.output_schema, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
             std::max<int64_t>(1, params.arguments.named_int64("batch_size").value_or(1000)),
             params.arguments.named_double("increment").value_or(1.0));
     }
@@ -272,8 +265,8 @@ public:
         const auto csv = params.arguments.const_string(0).value_or("");
         for (size_t start = 0; start <= csv.size();) {
             const auto comma = csv.find(',', start);
-            const auto field = csv.substr(start, comma == std::string::npos ? std::string::npos
-                                                                            : comma - start);
+            const auto field =
+                csv.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
             // Unparseable fields are skipped rather than failing the scan:
             // this is a formatting fixture, not a validator.
             try {
@@ -330,10 +323,8 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         switch (shape_) {
-            case Shape::Str:
-                return series_metadata("Generate string pairs with prefix and suffix");
-            case Shape::IntStr:
-                return series_metadata("Generate mixed int/string pairs");
+            case Shape::Str: return series_metadata("Generate string pairs with prefix and suffix");
+            case Shape::IntStr: return series_metadata("Generate mixed int/string pairs");
             case Shape::Int: break;
         }
         return series_metadata("Generate integer pairs (i, i*2)");
@@ -363,8 +354,8 @@ public:
                                       arrow::field("b", arrow::utf8(), true)});
             case Shape::Int: break;
         }
-        return arrow::schema({arrow::field("a", arrow::int64(), true),
-                              arrow::field("b", arrow::int64(), true)});
+        return arrow::schema(
+            {arrow::field("a", arrow::int64(), true), arrow::field("b", arrow::int64(), true)});
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {

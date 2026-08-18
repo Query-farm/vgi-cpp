@@ -69,13 +69,11 @@ public:
     std::string name() const override { return "generator_exception"; }
 
     vgi::FunctionMetadata metadata() const override {
-        return generator_metadata("Raises an exception after N batches for testing",
-                                  {"testing"});
+        return generator_metadata("Raises an exception after N batches for testing", {"testing"});
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {
-            vgi::ArgSpec::constant_arg("fail_after", 0, "int64", "Batches before failure")};
+        return {vgi::ArgSpec::constant_arg("fail_after", 0, "int64", "Batches before failure")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
@@ -159,8 +157,7 @@ public:
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         return std::make_unique<Producer>(
-            params.output_schema,
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
+            params.output_schema, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
             std::max<int64_t>(1, params.arguments.named_int64("history_size").value_or(20)));
     }
 
@@ -367,9 +364,8 @@ private:
 // names have nothing that says "union", and sparse is the only union mode
 // DuckDB ever emits over Arrow.
 std::shared_ptr<arrow::DataType> union_arg_type() {
-    return arrow::sparse_union({arrow::field("i", arrow::int64(), true),
-                                arrow::field("s", arrow::utf8(), true)},
-                               {0, 1});
+    return arrow::sparse_union(
+        {arrow::field("i", arrow::int64(), true), arrow::field("s", arrow::utf8(), true)}, {0, 1});
 }
 
 // The single element of a one-row array, rendered the way the shared test
@@ -402,8 +398,7 @@ public:
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
         auto configs = vgi::ArgSpec::constant_typed(
-            "configs", 0, union_arg_type(),
-            "Union values whose active member tag is echoed back");
+            "configs", 0, union_arg_type(), "Union values whose active member tag is echoed back");
         configs.with_varargs();
         return {configs};
     }
@@ -489,8 +484,7 @@ std::optional<int64_t> named_iv_ms(const vgi::Arguments& arguments) {
     if (!readable(array) || array->type_id() != arrow::Type::INTERVAL_MONTH_DAY_NANO) {
         return std::nullopt;
     }
-    const auto value =
-        std::static_pointer_cast<arrow::MonthDayNanoIntervalArray>(array)->Value(0);
+    const auto value = std::static_pointer_cast<arrow::MonthDayNanoIntervalArray>(array)->Value(0);
     return (static_cast<int64_t>(value.months) * 30 + value.days) * 86400000 +
            value.nanoseconds / 1000000;
 }
@@ -536,8 +530,7 @@ public:
         return {vgi::ArgSpec::constant_arg("n", 0, "int64", "Number of rows to emit"),
                 named_typed("ts", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"),
                             "Timestamp const (TIMESTAMPTZ)"),
-                named_typed("iv", arrow::month_day_nano_interval(),
-                            "Interval const (INTERVAL)"),
+                named_typed("iv", arrow::month_day_nano_interval(), "Interval const (INTERVAL)"),
                 named_typed("blob", arrow::binary(), "Blob const (BLOB)"),
                 named_typed("ub", arrow::uint64(), "Unsigned const (UBIGINT)"),
                 vgi::ArgSpec::named("f", "double", "Float const (DOUBLE)")};
@@ -573,8 +566,8 @@ public:
 private:
     class Producer : public vgi::TableProducer {
     public:
-        Producer(std::shared_ptr<arrow::Schema> schema, int64_t rows, int64_t ts_us,
-                 int64_t iv_ms, std::string payload, uint64_t ub, double f)
+        Producer(std::shared_ptr<arrow::Schema> schema, int64_t rows, int64_t ts_us, int64_t iv_ms,
+                 std::string payload, uint64_t ub, double f)
             : schema_(std::move(schema)),
               remaining_(rows),
               ts_us_(ts_us),

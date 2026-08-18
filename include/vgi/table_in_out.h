@@ -66,8 +66,7 @@ public:
     virtual std::shared_ptr<arrow::Schema> bind(const BindParams& params) const;
 
     virtual std::vector<EmittedBatch> process(
-        const ProcessParams& params,
-        const std::shared_ptr<arrow::RecordBatch>& batch) const = 0;
+        const ProcessParams& params, const std::shared_ptr<arrow::RecordBatch>& batch) const = 0;
 
     // Whether the function accumulates across the whole stream and flushes at
     // the end. Declaring it drives the engine's FINALIZE phase; without it,
@@ -101,8 +100,7 @@ public:
 // By name and not by position: the engine narrows a table-in-out's output
 // schema when a projection is pushed down, and the surviving columns keep
 // their names but not their indices.
-std::shared_ptr<arrow::RecordBatch> project_batch(
-    const std::shared_ptr<arrow::RecordBatch>& batch,
-    const std::shared_ptr<arrow::Schema>& schema);
+std::shared_ptr<arrow::RecordBatch> project_batch(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                                  const std::shared_ptr<arrow::Schema>& schema);
 
 }  // namespace vgi

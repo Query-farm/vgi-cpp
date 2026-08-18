@@ -46,12 +46,10 @@ struct ArgSpec {
                           std::string description = "");
     static ArgSpec constant_arg(std::string name, int index, std::string type,
                                 std::string description = "");
-    static ArgSpec named(std::string name, std::string type,
-                         std::string description = "");
+    static ArgSpec named(std::string name, std::string type, std::string description = "");
     // A polymorphic column: the engine resolves its type at the call site and
     // reports it to bind. Declared as `any` with a null placeholder type.
-    static ArgSpec any_column(std::string name, int index,
-                              std::string description = "");
+    static ArgSpec any_column(std::string name, int index, std::string description = "");
     // A table-valued argument — the input relation of a table-in-out function.
     // Marked with `vgi_type=table` rather than an Arrow type, since the shape
     // is whatever the caller passes.
@@ -101,8 +99,7 @@ struct ArgSpec {
     // A column argument with an exact Arrow type. Distinct from the named
     // forms above because overload resolution happens on the exact type: two
     // overloads that differ only by integer width need this, not "int64".
-    static ArgSpec column_typed(std::string name, int index,
-                                std::shared_ptr<arrow::DataType> type,
+    static ArgSpec column_typed(std::string name, int index, std::shared_ptr<arrow::DataType> type,
                                 std::string description = "");
 };
 

@@ -19,9 +19,8 @@ std::shared_ptr<arrow::Schema> TableInOutFunction::bind(const BindParams& params
     return params.input_schema;
 }
 
-std::shared_ptr<arrow::RecordBatch> project_batch(
-    const std::shared_ptr<arrow::RecordBatch>& batch,
-    const std::shared_ptr<arrow::Schema>& schema) {
+std::shared_ptr<arrow::RecordBatch> project_batch(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                                  const std::shared_ptr<arrow::Schema>& schema) {
     if (!schema) throw std::invalid_argument("project_batch: null schema");
     if (!batch) throw std::invalid_argument("project_batch: null batch");
 
@@ -36,11 +35,10 @@ std::shared_ptr<arrow::RecordBatch> project_batch(
             // is all-nulls rather than an error: a projection may name a
             // column the producing side chose not to emit.
             std::unique_ptr<arrow::ArrayBuilder> builder;
-            auto status =
-                arrow::MakeBuilder(arrow::default_memory_pool(), field->type(), &builder);
+            auto status = arrow::MakeBuilder(arrow::default_memory_pool(), field->type(), &builder);
             if (!status.ok()) {
-                throw std::runtime_error("project_batch: cannot build nulls for '" +
-                                         field->name() + "': " + status.ToString());
+                throw std::runtime_error("project_batch: cannot build nulls for '" + field->name() +
+                                         "': " + status.ToString());
             }
             if (!builder->AppendNulls(batch->num_rows()).ok()) {
                 throw std::runtime_error("project_batch: cannot append nulls for '" +

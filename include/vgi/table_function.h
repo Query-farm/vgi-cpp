@@ -51,9 +51,7 @@ public:
     // A producer that has something to say — a warning about an argument, a
     // note about what it skipped — has nowhere else to put it: stdout is the
     // Arrow channel and stderr is swallowed by the engine.
-    virtual void set_log(std::function<void(LogLevel, const std::string&)> log) {
-        (void)log;
-    }
+    virtual void set_log(std::function<void(LogLevel, const std::string&)> log) { (void)log; }
 
     // Filters the engine discovered after the scan began, handed over before
     // each `next_batch` that follows.
@@ -111,8 +109,7 @@ public:
     // at 9,999 into an empty result without ever calling the function — and,
     // by the same token, what makes a wrong bound a wrong answer rather than a
     // slow one.
-    virtual std::optional<std::vector<ColumnStatistics>> statistics(
-        const ProcessParams&) const {
+    virtual std::optional<std::vector<ColumnStatistics>> statistics(const ProcessParams&) const {
         return std::nullopt;
     }
 

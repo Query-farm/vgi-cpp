@@ -91,8 +91,8 @@ std::shared_ptr<arrow::RecordBatch> project(const std::shared_ptr<arrow::Schema>
         auto found = std::find_if(columns.begin(), columns.end(),
                                   [&](const auto& entry) { return entry.first == field->name(); });
         if (found == columns.end()) {
-            throw std::runtime_error("static scan was asked for unknown column \"" +
-                                     field->name() + "\"");
+            throw std::runtime_error("static scan was asked for unknown column \"" + field->name() +
+                                     "\"");
         }
         projected.push_back(found->second);
     }
@@ -213,9 +213,10 @@ public:
         std::vector<std::shared_ptr<arrow::Array>> columns;
         columns.reserve(static_cast<size_t>(params.output_schema->num_fields()));
         for (const auto& field : params.output_schema->fields()) {
-            columns.push_back(field->name() == "row_id"
-                                  ? build_row_id(field->type(), rows)
-                                  : string_series(field->name() == "name" ? "item_" : "val_", rows));
+            columns.push_back(
+                field->name() == "row_id"
+                    ? build_row_id(field->type(), rows)
+                    : string_series(field->name() == "name" ? "item_" : "val_", rows));
         }
         return std::make_unique<OneShot>(
             arrow::RecordBatch::Make(params.output_schema, rows, std::move(columns)));
@@ -244,8 +245,8 @@ private:
     // `struct<a, b>` arrives here as `struct<b>` when only `rowid.b` is
     // selected. A fixed-shape StructArray would disagree with its own type,
     // which Arrow does not check — it crashes whatever reads the batch next.
-    static std::shared_ptr<arrow::Array> build_row_id(
-        const std::shared_ptr<arrow::DataType>& type, int64_t rows) {
+    static std::shared_ptr<arrow::Array> build_row_id(const std::shared_ptr<arrow::DataType>& type,
+                                                      int64_t rows) {
         if (type->id() == arrow::Type::STRING) return string_series("rid_", rows);
         if (type->id() == arrow::Type::STRUCT) {
             std::vector<std::shared_ptr<arrow::Array>> children;
@@ -434,7 +435,8 @@ public:
     std::string name() const override { return "tt_pushdown_scan"; }
 
     vgi::FunctionMetadata metadata() const override {
-        return tt_metadata("Function-backed time-travel + filter-pushdown scan (reads AT at init).");
+        return tt_metadata(
+            "Function-backed time-travel + filter-pushdown scan (reads AT at init).");
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
@@ -578,10 +580,9 @@ public:
         shape.null_ord_stride =
             std::max<int64_t>(0, params.arguments.named_int64("null_ord_stride").value_or(0));
         return std::make_unique<Producer>(
-            params.output_schema,
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
-            std::max<int64_t>(1, params.arguments.named_int64("batch_size").value_or(2048)),
-            shape, rowid_witness(params.pushdown_filters));
+            params.output_schema, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
+            std::max<int64_t>(1, params.arguments.named_int64("batch_size").value_or(2048)), shape,
+            rowid_witness(params.pushdown_filters));
     }
 
 private:
@@ -663,38 +664,42 @@ private:
 // catalog is a fixture of its own: the binary serves it beside `example` only
 // when it is serving `example`, and alone when the wrapper names it.
 void register_versioned_tables_scans(vgi::Worker& worker) {
-    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
-        "versioned_tables_animals_scan",
-        Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
-                {"legs", int64_column({2, 4, 4, 4, 4})},
-                {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})}}));
-    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
-        "versioned_tables_animals_color_scan",
-        Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
-                {"legs", int64_column({2, 4, 4, 4, 4})},
-                {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})},
-                {"color", string_column({"red", "brown", "black", "pink", "white"})}}));
-    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
-        "versioned_tables_plants_scan",
-        Columns{{"name", string_column({"oak", "pine", "rose", "tomato", "wheat"})},
-                {"kind", string_column({"tree", "tree", "flower", "vegetable", "grass"})},
-                {"height_m", double_column({20.0, 25.0, 0.6, 1.5, 1.0})}}));
+    worker.register_table_in(
+        kVersionedTables, "main",
+        std::make_shared<StaticScan>(
+            "versioned_tables_animals_scan",
+            Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
+                    {"legs", int64_column({2, 4, 4, 4, 4})},
+                    {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})}}));
+    worker.register_table_in(
+        kVersionedTables, "main",
+        std::make_shared<StaticScan>(
+            "versioned_tables_animals_color_scan",
+            Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
+                    {"legs", int64_column({2, 4, 4, 4, 4})},
+                    {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})},
+                    {"color", string_column({"red", "brown", "black", "pink", "white"})}}));
+    worker.register_table_in(
+        kVersionedTables, "main",
+        std::make_shared<StaticScan>(
+            "versioned_tables_plants_scan",
+            Columns{{"name", string_column({"oak", "pine", "rose", "tomato", "wheat"})},
+                    {"kind", string_column({"tree", "tree", "flower", "vegetable", "grass"})},
+                    {"height_m", double_column({20.0, 25.0, 0.6, 1.5, 1.0})}}));
 }
 
 void register_static_scans(vgi::Worker& worker) {
     // The reference tables the constraint, comment, default and statistics
     // tests read. Values are pinned by those tests, not chosen here.
     worker.register_table(std::make_shared<StaticScan>(
-        "departments_scan",
-        Columns{{"id", int64_column({1, 2, 3})},
-                {"name", string_column({"Engineering", "Sales", "HR"})},
-                {"budget", double_column({500000.0, 300000.0, 200000.0})}}));
+        "departments_scan", Columns{{"id", int64_column({1, 2, 3})},
+                                    {"name", string_column({"Engineering", "Sales", "HR"})},
+                                    {"budget", double_column({500000.0, 300000.0, 200000.0})}}));
     worker.register_table(std::make_shared<StaticScan>(
-        "products_scan",
-        Columns{{"id", int64_column({1, 2, 3})},
-                {"name", string_column({"Widget", "Gadget", "Doohickey"})},
-                {"quantity", int64_column({100, 50, 200})},
-                {"price", double_column({9.99, 24.99, 4.99})}}));
+        "products_scan", Columns{{"id", int64_column({1, 2, 3})},
+                                 {"name", string_column({"Widget", "Gadget", "Doohickey"})},
+                                 {"quantity", int64_column({100, 50, 200})},
+                                 {"price", double_column({9.99, 24.99, 4.99})}}));
     worker.register_table(std::make_shared<StaticScan>(
         "employees_scan",
         Columns{{"id", int64_column({1, 2, 3, 4, 5})},

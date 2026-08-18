@@ -87,7 +87,6 @@ std::string next_attachment_id() {
     return out.str();
 }
 
-
 namespace gen = ::vgi::generated;
 
 std::shared_ptr<arrow::Schema> advertised_aggregate_schema(const AggregateFunction& fn) {
@@ -115,8 +114,7 @@ std::string join_quoted(const std::vector<std::string>& values) {
 const char* stability_wire_value(Stability stability) {
     switch (stability) {
         case Stability::Volatile: return enums::stability::kVolatile;
-        case Stability::ConsistentWithinQuery:
-            return enums::stability::kConsistentWithinQuery;
+        case Stability::ConsistentWithinQuery: return enums::stability::kConsistentWithinQuery;
         case Stability::Consistent: break;
     }
     return enums::stability::kConsistent;
@@ -236,9 +234,8 @@ vgi_rpc::Result envelope(const std::shared_ptr<arrow::RecordBatch>& payload) {
 // a worker does not populate.  The payload differs per method only in name, so
 // the shape is shared.
 vgi_rpc::Result empty_items(const std::string& method) {
-    return envelope(wire::ResultBuilder(payload_schema_of(method))
-                        .set_binary_list("items", {})
-                        .finish());
+    return envelope(
+        wire::ResultBuilder(payload_schema_of(method)).set_binary_list("items", {}).finish());
 }
 
 }  // namespace
@@ -285,14 +282,14 @@ std::vector<std::string> Dispatcher::encode_settings(const CatalogModel& model) 
     std::vector<std::string> entries;
     entries.reserve(model.settings.size());
     for (const auto& setting : model.settings) {
-        auto value_schema =
-            arrow::schema({arrow::field("value", setting.type, /*nullable=*/true)});
-        entries.push_back(wire::encode_ipc(wire::ResultBuilder(schema)
-                                               .set_string("name", setting.name)
-                                               .set_string("description", setting.description)
-                                               .set_binary("type", wire::encode_schema(value_schema))
-                                               .set_null("default_value")
-                                               .finish()));
+        auto value_schema = arrow::schema({arrow::field("value", setting.type, /*nullable=*/true)});
+        entries.push_back(
+            wire::encode_ipc(wire::ResultBuilder(schema)
+                                 .set_string("name", setting.name)
+                                 .set_string("description", setting.description)
+                                 .set_binary("type", wire::encode_schema(value_schema))
+                                 .set_null("default_value")
+                                 .finish()));
     }
     return entries;
 }
@@ -328,13 +325,12 @@ std::vector<std::string> Dispatcher::encode_secret_types(const CatalogModel& mod
     std::vector<std::string> entries;
     entries.reserve(model.secret_types.size());
     for (const auto& secret : model.secret_types) {
-        entries.push_back(
-            wire::encode_ipc(wire::ResultBuilder(schema)
-                                 .set_string("name", secret.name)
-                                 .set_string("description", secret.description)
-                                 .set_binary("parameters_schema",
-                                             wire::encode_schema(secret.parameters))
-                                 .finish()));
+        entries.push_back(wire::encode_ipc(
+            wire::ResultBuilder(schema)
+                .set_string("name", secret.name)
+                .set_string("description", secret.description)
+                .set_binary("parameters_schema", wire::encode_schema(secret.parameters))
+                .finish()));
     }
     return entries;
 }
@@ -423,14 +419,12 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
         if (model.npm_version_resolution) {
             resolved_data =
                 resolve_version_npm(requested_data, model.supported_data_versions,
-                                    model.default_data_version.value_or(""),
-                                    "data_version_spec");
+                                    model.default_data_version.value_or(""), "data_version_spec");
         } else if (requested_data) {
             const auto& supported = model.supported_data_versions;
-            if (std::find(supported.begin(), supported.end(), *requested_data) ==
-                supported.end()) {
-                throw std::invalid_argument("Unsupported data_version_spec \"" +
-                                            *requested_data + "\"; this worker serves one of " +
+            if (std::find(supported.begin(), supported.end(), *requested_data) == supported.end()) {
+                throw std::invalid_argument("Unsupported data_version_spec \"" + *requested_data +
+                                            "\"; this worker serves one of " +
                                             join_quoted(supported));
             }
             resolved_data = requested_data;
@@ -446,15 +440,15 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     // than a refusal: nothing errors and `SHOW TABLES` is simply empty.
     if (!model.version_schemas.empty() &&
         !model.version_schemas.count(resolved_data.value_or(""))) {
-        throw std::invalid_argument(
-            "data_version \"" + resolved_data.value_or("") +
-            "\" has no schemas; this worker serves one of " +
-            join_quoted([&] {
-                std::vector<std::string> keys;
-                keys.reserve(model.version_schemas.size());
-                for (const auto& [version, schemas] : model.version_schemas) keys.push_back(version);
-                return keys;
-            }()));
+        throw std::invalid_argument("data_version \"" + resolved_data.value_or("") +
+                                    "\" has no schemas; this worker serves one of " +
+                                    join_quoted([&] {
+                                        std::vector<std::string> keys;
+                                        keys.reserve(model.version_schemas.size());
+                                        for (const auto& [version, schemas] : model.version_schemas)
+                                            keys.push_back(version);
+                                        return keys;
+                                    }()));
     }
 
     std::optional<std::string> resolved_impl;
@@ -462,14 +456,11 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
         const auto& supported = model.supported_implementation_versions.empty()
                                     ? std::vector<std::string>{model.implementation_version}
                                     : model.supported_implementation_versions;
-        if (model.npm_version_resolution &&
-            !model.supported_implementation_versions.empty()) {
-            resolved_impl = resolve_version_npm(requested_impl, supported,
-                                                model.implementation_version,
-                                                "implementation_version");
+        if (model.npm_version_resolution && !model.supported_implementation_versions.empty()) {
+            resolved_impl = resolve_version_npm(
+                requested_impl, supported, model.implementation_version, "implementation_version");
         } else if (requested_impl) {
-            if (std::find(supported.begin(), supported.end(), *requested_impl) ==
-                supported.end()) {
+            if (std::find(supported.begin(), supported.end(), *requested_impl) == supported.end()) {
                 throw std::invalid_argument("Unsupported implementation_version \"" +
                                             *requested_impl + "\"; this worker serves " +
                                             join_quoted(supported));
@@ -517,9 +508,8 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
 }
 
 vgi_rpc::Result Dispatcher::catalog_version(const vgi_rpc::Request&) {
-    return envelope(wire::ResultBuilder(payload_schema_of("catalog_version"))
-                                      .set_int64("version", 1)
-                                      .finish());
+    return envelope(
+        wire::ResultBuilder(payload_schema_of("catalog_version")).set_int64("version", 1).finish());
 }
 
 void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
@@ -531,9 +521,7 @@ void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
     // has touched in a day instead, which bounds it without guessing.
 }
 
-namespace {
-
-}  // namespace
+namespace {}  // namespace
 
 vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
     // Minted here rather than by the engine, and unique across processes: the
@@ -595,9 +583,8 @@ std::vector<std::string> Dispatcher::encode_attach_options(const CatalogModel& m
                            .set_binary("type", wire::encode_schema(value_schema))
                            .set_bool("required", option.required);
         if (option.default_value) {
-            builder.set_binary("default_value",
-                               wire::encode_ipc(arrow::RecordBatch::Make(
-                                   value_schema, 1, {option.default_value})));
+            builder.set_binary("default_value", wire::encode_ipc(arrow::RecordBatch::Make(
+                                                    value_schema, 1, {option.default_value})));
         } else {
             builder.set_null("default_value");
         }
@@ -622,10 +609,10 @@ vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
                 ? std::nullopt
                 : std::optional<std::string>(model->implementation_version));
         builder.set_optional_string("data_version_spec", model->data_version_spec);
-        builder.set_optional_string(
-            "source_url",
-            model->source_url.empty() ? std::nullopt
-                                      : std::optional<std::string>(model->source_url));
+        builder.set_optional_string("source_url",
+                                    model->source_url.empty()
+                                        ? std::nullopt
+                                        : std::optional<std::string>(model->source_url));
         items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_catalogs"))
@@ -682,7 +669,8 @@ const TimeTravelVersion* resolve_version(const CatalogTable& table,
             // useful answer is when "then" starts being answerable.
             int earliest = 0;
             for (const auto& version : table.time_travel) {
-                if (version.timestamp_year && (earliest == 0 || *version.timestamp_year < earliest)) {
+                if (version.timestamp_year &&
+                    (earliest == 0 || *version.timestamp_year < earliest)) {
                     earliest = *version.timestamp_year;
                 }
             }
@@ -745,13 +733,13 @@ std::vector<std::string> encode_foreign_keys(const CatalogTable& table,
     std::vector<std::string> entries;
     entries.reserve(table.foreign_keys.size());
     for (const auto& key : table.foreign_keys) {
-        entries.push_back(wire::encode_ipc(
-            wire::ResultBuilder(schema)
-                .set_string_list("fk_columns", key.columns)
-                .set_string_list("pk_columns", key.referenced_columns)
-                .set_string("referenced_table", key.referenced_table)
-                .set_string("referenced_schema", schema_name)
-                .finish()));
+        entries.push_back(
+            wire::encode_ipc(wire::ResultBuilder(schema)
+                                 .set_string_list("fk_columns", key.columns)
+                                 .set_string_list("pk_columns", key.referenced_columns)
+                                 .set_string("referenced_table", key.referenced_table)
+                                 .set_string("referenced_schema", schema_name)
+                                 .finish()));
     }
     return entries;
 }
@@ -764,8 +752,7 @@ std::vector<std::string> encode_foreign_keys(const CatalogTable& table,
 // table is a name bound to a function, and this is the binding. Inlining the
 // scan here saves the engine a `catalog_table_scan_function_get` round trip
 // per query.
-std::string Dispatcher::encode_table_info(const CatalogTable& table,
-                                          const std::string& schema_name,
+std::string Dispatcher::encode_table_info(const CatalogTable& table, const std::string& schema_name,
                                           const TimeTravelVersion* version) {
     auto scan =
         wire::ResultBuilder(gen::ScanFunctionResultSchema())
@@ -813,8 +800,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table,
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(
-    const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "schema_name");
     const auto name = wire::get_string(request.batch(), "name");
 
@@ -846,8 +832,8 @@ vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
     if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& table : schema->tables) {
             if (table.name != name) continue;
-            items.push_back(encode_table_info(table, schema_name,
-                                              resolve_version(table, at_unit, at_value)));
+            items.push_back(
+                encode_table_info(table, schema_name, resolve_version(table, at_unit, at_value)));
         }
     }
     // Zero or one item; absence is how "no such table" is spelled, and the
@@ -857,8 +843,7 @@ vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
                         .finish());
 }
 
-std::string Dispatcher::encode_view_info(const CatalogView& view,
-                                         const std::string& schema_name) {
+std::string Dispatcher::encode_view_info(const CatalogView& view, const std::string& schema_name) {
     auto builder = wire::ResultBuilder(gen::ViewInfoSchema());
     builder.set_string("name", view.name)
         .set_string("schema_name", schema_name)
@@ -947,13 +932,11 @@ std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
                             [&](const auto& entry) { return entry.first == name; });
             auto field = arrow::field(name, has_default ? arrow::int64() : arrow::null(),
                                       /*nullable=*/true);
-            const auto doc = std::find_if(
-                macro.parameter_docs.begin(), macro.parameter_docs.end(),
-                [&](const auto& entry) { return entry.first == name; });
+            const auto doc = std::find_if(macro.parameter_docs.begin(), macro.parameter_docs.end(),
+                                          [&](const auto& entry) { return entry.first == name; });
             // Presence-only, as everywhere else: an empty doc is an absent key.
             if (doc != macro.parameter_docs.end() && !doc->second.empty()) {
-                field = field->WithMetadata(
-                    arrow::key_value_metadata({"vgi_doc"}, {doc->second}));
+                field = field->WithMetadata(arrow::key_value_metadata({"vgi_doc"}, {doc->second}));
             }
             fields.push_back(std::move(field));
         }
@@ -1010,29 +993,29 @@ std::string Dispatcher::encode_schema_info(const std::string& owner, const std::
         return static_cast<int64_t>(registrations.size());
     };
 
-    auto builder = wire::ResultBuilder(gen::SchemaInfoSchema())
-                       .set_string("name", schema.name)
-                       .set_string_map("tags", schema.tags)
-                       // The sealed handle, not the bare catalog name: this
-                       // field is what a client would send back, and only the
-                       // five-field seal survives `attachment_of`. `owner` is
-                       // the catalog name the scopes below are counted in.
-                       .set_binary("attach_opaque_data", handle)
-                       .set_int64_map(
-                           "estimated_object_count",
-                           {{"view", static_cast<int64_t>(contents->views.size())},
-                            {"macro", static_cast<int64_t>(contents->macros.size())},
-                            {"table", static_cast<int64_t>(contents->tables.size())},
-                            {"scalar_function", size(scalars_in_schema({owner, schema.name}))},
-                            {"aggregate_function", size(aggregates_in_schema({owner, schema.name}))},
-                            // Every kind the engine registers as a table
-                            // function, which is three of ours: a table-in-out
-                            // and a buffering sink are table functions to it.
-                            {"table_function",
-                             size(tables_in_schema({owner, schema.name})) +
-                                 size(table_in_outs_in_schema({owner, schema.name})) +
-                                 size(bufferings_in_schema({owner, schema.name}))},
-                            {"index", 0}});
+    auto builder =
+        wire::ResultBuilder(gen::SchemaInfoSchema())
+            .set_string("name", schema.name)
+            .set_string_map("tags", schema.tags)
+            // The sealed handle, not the bare catalog name: this
+            // field is what a client would send back, and only the
+            // five-field seal survives `attachment_of`. `owner` is
+            // the catalog name the scopes below are counted in.
+            .set_binary("attach_opaque_data", handle)
+            .set_int64_map(
+                "estimated_object_count",
+                {{"view", static_cast<int64_t>(contents->views.size())},
+                 {"macro", static_cast<int64_t>(contents->macros.size())},
+                 {"table", static_cast<int64_t>(contents->tables.size())},
+                 {"scalar_function", size(scalars_in_schema({owner, schema.name}))},
+                 {"aggregate_function", size(aggregates_in_schema({owner, schema.name}))},
+                 // Every kind the engine registers as a table
+                 // function, which is three of ours: a table-in-out
+                 // and a buffering sink are table functions to it.
+                 {"table_function", size(tables_in_schema({owner, schema.name})) +
+                                        size(table_in_outs_in_schema({owner, schema.name})) +
+                                        size(bufferings_in_schema({owner, schema.name}))},
+                 {"index", 0}});
     if (schema.comment) {
         builder.set_string("comment", *schema.comment);
     } else {
@@ -1052,13 +1035,12 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
-        items.push_back(
-            encode_schema_info(attachment.catalog, owner, *schema,
-                               schema_for(request, schema->name)));
+        items.push_back(encode_schema_info(attachment.catalog, owner, *schema,
+                                           schema_for(request, schema->name)));
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
-                                      .set_binary_list("items", items)
-                                      .finish());
+                        .set_binary_list("items", items)
+                        .finish());
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) {
@@ -1075,8 +1057,8 @@ vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) 
     }
     // Zero or one item; the engine reads absence as "no such schema".
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_get"))
-                                      .set_binary_list("items", items)
-                                      .finish());
+                        .set_binary_list("items", items)
+                        .finish());
 }
 
 std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
@@ -1159,10 +1141,9 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
             .set_enum("order_dependent", metadata.order_dependent
                                              ? enums::order_dependence::kOrderDependent
                                              : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent",
-                      metadata.distinct_dependent
-                          ? enums::distinct_dependence::kDistinctDependent
-                          : enums::distinct_dependence::kNotDistinctDependent)
+            .set_enum("distinct_dependent", metadata.distinct_dependent
+                                                ? enums::distinct_dependence::kDistinctDependent
+                                                : enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
             .finish());
 }
@@ -1199,10 +1180,9 @@ std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
             .set_enum("order_dependent", metadata.order_dependent
                                              ? enums::order_dependence::kOrderDependent
                                              : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent",
-                      metadata.distinct_dependent
-                          ? enums::distinct_dependence::kDistinctDependent
-                          : enums::distinct_dependence::kNotDistinctDependent)
+            .set_enum("distinct_dependent", metadata.distinct_dependent
+                                                ? enums::distinct_dependence::kDistinctDependent
+                                                : enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
             .finish());
 }
@@ -1239,10 +1219,9 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
             .set_enum("order_dependent", metadata.order_dependent
                                              ? enums::order_dependence::kOrderDependent
                                              : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent",
-                      metadata.distinct_dependent
-                          ? enums::distinct_dependence::kDistinctDependent
-                          : enums::distinct_dependence::kNotDistinctDependent)
+            .set_enum("distinct_dependent", metadata.distinct_dependent
+                                                ? enums::distinct_dependence::kDistinctDependent
+                                                : enums::distinct_dependence::kNotDistinctDependent)
             // Declared, or the engine never sends a window request at all and
             // an aggregate that implements `window` is simply never asked.
             .set_bool("supports_window", fn.supports_window())
@@ -1286,10 +1265,9 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
             .set_enum("order_dependent", metadata.order_dependent
                                              ? enums::order_dependence::kOrderDependent
                                              : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent",
-                      metadata.distinct_dependent
-                          ? enums::distinct_dependence::kDistinctDependent
-                          : enums::distinct_dependence::kNotDistinctDependent)
+            .set_enum("distinct_dependent", metadata.distinct_dependent
+                                                ? enums::distinct_dependence::kDistinctDependent
+                                                : enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
             .finish());
 }
@@ -1300,8 +1278,8 @@ std::string Dispatcher::seal_attachment(const Attachment& attachment) {
     const std::string options =
         attachment.options ? arrow::util::base64_encode(wire::encode_ipc(attachment.options))
                            : std::string{};
-    return attachment.catalog + '\0' + attachment.data_version + '\0' + attachment.alias +
-           '\0' + attachment.id + '\0' + options;
+    return attachment.catalog + '\0' + attachment.data_version + '\0' + attachment.alias + '\0' +
+           attachment.id + '\0' + options;
 }
 
 Dispatcher::Attachment Dispatcher::attachment_of(
@@ -1378,8 +1356,8 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
             items.push_back(encode_table_function_info(*tables_[i], schema_name));
         }
         for (size_t i = 0; i < table_in_outs_.size(); ++i) {
-            if (table_in_out_scopes_[i].schema != schema_name ||
-                !mine(table_in_out_scopes_[i]) || !shown(table_in_outs_[i]->name())) {
+            if (table_in_out_scopes_[i].schema != schema_name || !mine(table_in_out_scopes_[i]) ||
+                !shown(table_in_outs_[i]->name())) {
                 continue;
             }
             items.push_back(encode_table_in_out_info(*table_in_outs_[i], schema_name));
@@ -1421,8 +1399,7 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Reques
             // read. Describing the table two ways depending on which discovery
             // call the engine chose is how a table gets typed against one
             // shape and scanned against another.
-            items.push_back(
-                encode_table_info(table, schema_name, resolve_version(table, {}, {})));
+            items.push_back(encode_table_info(table, schema_name, resolve_version(table, {}, {})));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_tables"))
@@ -1463,8 +1440,7 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Reque
     // return type is `bytes`, so the payload *is* the ScanFunctionResult.
     auto scan =
         wire::ResultBuilder(gen::ScanFunctionResultSchema())
-            .set_string("function_name",
-                        version ? version->scan_function : found->scan_function)
+            .set_string("function_name", version ? version->scan_function : found->scan_function)
             .set_binary("arguments", version ? version->scan_arguments : found->scan_arguments)
             .set_string_list("required_extensions", {})
             .finish();
@@ -1499,14 +1475,14 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
         // one branch, its own scan function. Answering with an empty list
         // instead would read as "this table has no sources" — which is what a
         // table that *did* declare an empty list is saying.
-        auto branch = wire::ResultBuilder(gen::ScanBranchSchema())
-                          .set_string("function_name",
-                                      version ? version->scan_function : found->scan_function)
-                          .set_binary("arguments",
-                                      version ? version->scan_arguments : found->scan_arguments)
-                          .set_bool("writable", false)
-                          .fill_defaults()
-                          .finish();
+        auto branch =
+            wire::ResultBuilder(gen::ScanBranchSchema())
+                .set_string("function_name",
+                            version ? version->scan_function : found->scan_function)
+                .set_binary("arguments", version ? version->scan_arguments : found->scan_arguments)
+                .set_bool("writable", false)
+                .fill_defaults()
+                .finish();
         branches.push_back(wire::encode_ipc(branch));
     } else {
         for (const auto& source : *found->branches) {
@@ -1514,8 +1490,7 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
             builder.set_string("function_name", source.function_name)
                 .set_binary("arguments", source.scan_arguments)
                 .set_bool("writable", source.writable);
-            const auto optional = [&](const char* field,
-                                      const std::optional<std::string>& value) {
+            const auto optional = [&](const char* field, const std::optional<std::string>& value) {
                 if (value) {
                     builder.set_string(field, *value);
                 } else {
@@ -1544,8 +1519,8 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Reques
     // The engine scans the two macro kinds in separate calls, and the kind it
     // wants is in `type`. Answering with all of them on a kind-scoped request
     // registers every macro twice, once per call.
-    const auto filter = normalize_function_type(
-        wire::get_optional_enum(request.batch(), "type").value_or(""));
+    const auto filter =
+        normalize_function_type(wire::get_optional_enum(request.batch(), "type").value_or(""));
 
     std::vector<std::string> items;
     if (const auto* schema = schema_for(request, schema_name)) {
@@ -1598,8 +1573,8 @@ vgi_rpc::Result Dispatcher::catalog_copy_from_formats(const vgi_rpc::Request&) {
         if (writer && reader && writer->handler_name() != reader->handler_name()) {
             throw std::invalid_argument(
                 "COPY format '" + format + "' is declared in both directions with different " +
-                "handlers ('" + writer->handler_name() + "' writing, '" +
-                reader->handler_name() + "' reading). One name is one handler.");
+                "handlers ('" + writer->handler_name() + "' writing, '" + reader->handler_name() +
+                "' reading). One name is one handler.");
         }
         const auto metadata = writer ? writer->metadata() : reader->metadata();
         const auto comment = writer ? writer->comment() : reader->comment();
@@ -1610,8 +1585,8 @@ vgi_rpc::Result Dispatcher::catalog_copy_from_formats(const vgi_rpc::Request&) {
             .set_string("description", metadata.description)
             .set_bool("ordered", writer && writer->ordered())
             .set_binary("options",
-                        wire::encode_schema(build_arg_schema(
-                            writer ? writer->argument_specs() : reader->argument_specs())))
+                        wire::encode_schema(build_arg_schema(writer ? writer->argument_specs()
+                                                                    : reader->argument_specs())))
             .set_string_map("tags", metadata.tags);
         if (comment) {
             builder.set_string("comment", *comment);

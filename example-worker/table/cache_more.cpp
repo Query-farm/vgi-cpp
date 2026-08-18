@@ -34,7 +34,6 @@
 namespace example {
 namespace {
 
-
 // Long enough that freshness never lapses part-way through a test.
 constexpr int64_t kDefaultTtlSeconds = 300;
 
@@ -87,8 +86,8 @@ public:
         if (remaining_ <= 0) return nullptr;
         const int64_t size = std::min(remaining_, batch_size_);
         auto column = i64_column(index_, index_ + size);
-        metadata_ = index_ == 0 ? default_ttl().to_metadata()
-                                : std::map<std::string, std::string>{};
+        metadata_ =
+            index_ == 0 ? default_ttl().to_metadata() : std::map<std::string, std::string>{};
         index_ += size;
         remaining_ -= size;
         return arrow::RecordBatch::Make(schema_, size, {column});
@@ -131,7 +130,9 @@ private:
 
 // Rows where `j % 5 == 0` are NULL in every nullable column; `id` never is, so
 // a test can still join live against served rows.
-bool null_row(int64_t j) { return j % 5 == 0; }
+bool null_row(int64_t j) {
+    return j % 5 == 0;
+}
 
 std::shared_ptr<arrow::Schema> cache_types_schema() {
     return arrow::schema(
@@ -208,8 +209,8 @@ std::shared_ptr<arrow::Array> build_attrs(const std::shared_ptr<arrow::DataType>
     return finish(builder);
 }
 
-std::shared_ptr<arrow::Array> build_amt(const std::shared_ptr<arrow::DataType>& type,
-                                        int64_t start, int64_t rows) {
+std::shared_ptr<arrow::Array> build_amt(const std::shared_ptr<arrow::DataType>& type, int64_t start,
+                                        int64_t rows) {
     auto decimal_type = std::dynamic_pointer_cast<arrow::Decimal128Type>(type);
     if (!decimal_type) {
         throw std::runtime_error("cache_types: `amt` bound to " + type->ToString());
@@ -227,8 +228,8 @@ std::shared_ptr<arrow::Array> build_amt(const std::shared_ptr<arrow::DataType>& 
     return finish(builder);
 }
 
-std::shared_ptr<arrow::Array> build_ts(const std::shared_ptr<arrow::DataType>& type,
-                                       int64_t start, int64_t rows) {
+std::shared_ptr<arrow::Array> build_ts(const std::shared_ptr<arrow::DataType>& type, int64_t start,
+                                       int64_t rows) {
     if (type->id() != arrow::Type::TIMESTAMP) {
         throw std::runtime_error("cache_types: `ts` bound to " + type->ToString());
     }
@@ -281,8 +282,8 @@ public:
         for (const auto& field : schema_->fields()) {
             columns.push_back(build_types_column(*field, index_, size));
         }
-        metadata_ = index_ == 0 ? default_ttl().to_metadata()
-                                : std::map<std::string, std::string>{};
+        metadata_ =
+            index_ == 0 ? default_ttl().to_metadata() : std::map<std::string, std::string>{};
         index_ += size;
         remaining_ -= size;
         return arrow::RecordBatch::Make(schema_, size, std::move(columns));
@@ -342,8 +343,8 @@ public:
     std::string name() const override { return "cache_filtered"; }
 
     vgi::FunctionMetadata metadata() const override {
-        auto md = cache_metadata(
-            "Cacheable sequence with static filter pushdown (filter_bytes keying)");
+        auto md =
+            cache_metadata("Cacheable sequence with static filter pushdown (filter_bytes keying)");
         md.filter_pushdown = true;
         // The fixture only advertises the capability — it has no partition to
         // skip — so the framework applies the predicate to what it emits.
@@ -361,8 +362,7 @@ public:
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         return std::make_unique<Sequence>(params.output_schema,
-                                          params.arguments.named_int64("rows").value_or(100),
-                                          2048);
+                                          params.arguments.named_int64("rows").value_or(100), 2048);
     }
 };
 
@@ -374,8 +374,7 @@ public:
     std::string name() const override { return "cache_ordered"; }
 
     vgi::FunctionMetadata metadata() const override {
-        return cache_metadata(
-            "Order-sensitive cacheable sequence; ordered-serve cache fixture");
+        return cache_metadata("Order-sensitive cacheable sequence; ordered-serve cache fixture");
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
@@ -446,9 +445,7 @@ private:
             return arrow::RecordBatch::Make(schema_, 0, {i64_column(0, 0)});
         }
 
-        std::map<std::string, std::string> last_metadata() const override {
-            return metadata_;
-        }
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
 
     private:
         // Loopback port 9 (discard) is closed, so the fetch fails with

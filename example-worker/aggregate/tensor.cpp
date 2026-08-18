@@ -79,8 +79,7 @@ std::shared_ptr<arrow::Array> take(const std::shared_ptr<arrow::Array>& values,
     return taken.MoveValueUnsafe();
 }
 
-std::shared_ptr<arrow::Array> concatenate(
-    const std::vector<std::shared_ptr<arrow::Array>>& parts) {
+std::shared_ptr<arrow::Array> concatenate(const std::vector<std::shared_ptr<arrow::Array>>& parts) {
     auto joined = arrow::Concatenate(parts);
     if (!joined.ok()) nest_error("concatenate failed: " + joined.status().ToString());
     return joined.MoveValueUnsafe();
@@ -94,8 +93,8 @@ std::shared_ptr<arrow::RecordBatch> concatenate_batches(
     for (int i = 0; i < first->num_columns(); ++i) {
         columns.push_back(concatenate({first->column(i), second->column(i)}));
     }
-    return arrow::RecordBatch::Make(first->schema(),
-                                    first->num_rows() + second->num_rows(), columns);
+    return arrow::RecordBatch::Make(first->schema(), first->num_rows() + second->num_rows(),
+                                    columns);
 }
 
 // How many list levels wrap the leaf values.
@@ -138,9 +137,9 @@ std::shared_ptr<arrow::Array> wrap_one_level(const std::shared_ptr<arrow::Array>
 
     // Assembled from buffers rather than a ListBuilder: the child values are
     // already one contiguous array, and a builder would copy every cell again.
-    auto data = arrow::ArrayData::Make(arrow::list(values->type()),
-                                       static_cast<int64_t>(lengths.size()),
-                                       {nullptr, buffer}, {values->data()}, 0);
+    auto data =
+        arrow::ArrayData::Make(arrow::list(values->type()), static_cast<int64_t>(lengths.size()),
+                               {nullptr, buffer}, {values->data()}, 0);
     return std::make_shared<arrow::ListArray>(data);
 }
 
@@ -253,17 +252,16 @@ public:
             }
             if (arrow::is_nested(axis->type()->id())) {
                 nest_error("axis '" + axis->name() + "' has nested type " +
-                           axis->type()->ToString() +
-                           "; only scalar coord types are supported");
+                           axis->type()->ToString() + "; only scalar coord types are supported");
             }
             axis_fields.push_back(
                 arrow::field(axis->name(), arrow::list(axis->type()), /*nullable=*/true));
         }
 
-        auto result = arrow::struct_(
-            {arrow::field("tensor", nested_list(value_type, axes.num_fields()),
-                          /*nullable=*/true),
-             arrow::field("axes", arrow::struct_(axis_fields), /*nullable=*/true)});
+        auto result =
+            arrow::struct_({arrow::field("tensor", nested_list(value_type, axes.num_fields()),
+                                         /*nullable=*/true),
+                            arrow::field("axes", arrow::struct_(axis_fields), /*nullable=*/true)});
         return arrow::schema({arrow::field("result", result, /*nullable=*/true)});
     }
 
@@ -285,9 +283,8 @@ public:
             rows_by_group[group_ids.Value(i)].push_back(i);
         }
 
-        auto schema = arrow::schema(
-            {arrow::field("value", values->type(), /*nullable=*/true),
-             arrow::field("axes", axes->type(), /*nullable=*/true)});
+        auto schema = arrow::schema({arrow::field("value", values->type(), /*nullable=*/true),
+                                     arrow::field("axes", axes->type(), /*nullable=*/true)});
         for (const auto& [group, rows] : rows_by_group) {
             auto indices = index_array(rows);
             auto batch = arrow::RecordBatch::Make(schema, static_cast<int64_t>(rows.size()),
@@ -317,8 +314,7 @@ public:
         const auto& result_fields = static_cast<const arrow::StructType&>(*result_type);
         auto tensor_field = result_fields.GetFieldByName("tensor");
         auto axes_field = result_fields.GetFieldByName("axes");
-        if (!tensor_field || !axes_field ||
-            axes_field->type()->id() != arrow::Type::STRUCT) {
+        if (!tensor_field || !axes_field || axes_field->type()->id() != arrow::Type::STRUCT) {
             nest_error("bound result must have 'tensor' and an 'axes' struct");
         }
         const auto& axes_fields = static_cast<const arrow::StructType&>(*axes_field->type());
@@ -330,8 +326,7 @@ public:
 
         std::vector<std::shared_ptr<arrow::Array>> leaves;
         std::vector<std::vector<int64_t>> shapes;
-        std::vector<std::vector<std::shared_ptr<arrow::Array>>> coords(
-            static_cast<size_t>(n_axes));
+        std::vector<std::vector<std::shared_ptr<arrow::Array>>> coords(static_cast<size_t>(n_axes));
 
         for (const auto& state : states) {
             auto rows = state && !state->empty() ? decode_batch(*state) : nullptr;
@@ -374,9 +369,8 @@ public:
 private:
     // One group's rows placed into row-major order, appending its leaf values,
     // its shape and its per-axis coordinates to the running lists.
-    static void append_group(const arrow::RecordBatch& rows,
-                             const arrow::StructType& axes_fields, int n_axes,
-                             std::vector<std::shared_ptr<arrow::Array>>& leaves,
+    static void append_group(const arrow::RecordBatch& rows, const arrow::StructType& axes_fields,
+                             int n_axes, std::vector<std::shared_ptr<arrow::Array>>& leaves,
                              std::vector<std::vector<int64_t>>& shapes,
                              std::vector<std::vector<std::shared_ptr<arrow::Array>>>& coords) {
         auto axes = std::dynamic_pointer_cast<arrow::StructArray>(rows.column(1));

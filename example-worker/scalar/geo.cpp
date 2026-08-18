@@ -133,8 +133,8 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
-        md.description = std::string("Euclidean distance between two ") +
-                         shape_phrase(shape_) + " points";
+        md.description =
+            std::string("Euclidean distance between two ") + shape_phrase(shape_) + " points";
         md.return_type = arrow::float64();
         return md;
     }

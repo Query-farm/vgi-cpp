@@ -136,8 +136,7 @@ public:
             throw std::runtime_error(format_ + ": destination already exists: " + path);
         }
 
-        auto shards = params.storage->scan(params.execution_id, kShardNamespace, "", 0,
-                                           SIZE_MAX);
+        auto shards = params.storage->scan(params.execution_id, kShardNamespace, "", 0, SIZE_MAX);
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) throw std::runtime_error(format_ + ": cannot open " + path);
 
@@ -258,8 +257,7 @@ public:
                                     "Secret type to fetch, scoped by the destination path")};
     }
 
-    std::vector<vgi::SecretLookup> secret_lookups(
-        const vgi::BindParams& params) const override {
+    std::vector<vgi::SecretLookup> secret_lookups(const vgi::BindParams& params) const override {
         if (!params.copy_to_path) return {};
         // Scoped to the destination: a cloud write wants the credential for
         // the bucket it is writing to, not any credential of that type.
@@ -288,9 +286,8 @@ public:
         }
 
         int64_t rows = 0;
-        for (const auto& [id, value] : params.storage->scan(params.execution_id,
-                                                            kSecretShardNamespace, "", 0,
-                                                            SIZE_MAX)) {
+        for (const auto& [id, value] :
+             params.storage->scan(params.execution_id, kSecretShardNamespace, "", 0, SIZE_MAX)) {
             (void)id;
             rows += std::strtoll(value.c_str(), nullptr, 10);
         }

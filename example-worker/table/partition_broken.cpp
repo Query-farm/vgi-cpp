@@ -117,8 +117,8 @@ public:
         }
         if (fault_ == PartitionFault::AbsentColumn) {
             auto without_country = arrow::RecordBatch::Make(
-                arrow::schema({arrow::field("sales", arrow::int64(), /*nullable=*/true)}),
-                rows_, {counting_column(rows_)});
+                arrow::schema({arrow::field("sales", arrow::int64(), /*nullable=*/true)}), rows_,
+                {counting_column(rows_)});
             metadata_ = require_partition_metadata(country_schema(true), without_country);
             return without_country;
         }
@@ -130,8 +130,8 @@ public:
             countries.push_back(fault_ == PartitionFault::MinNeqMax && i % 2 == 1 ? "BR" : "AU");
         }
         auto schema = country_schema(true);
-        auto batch = arrow::RecordBatch::Make(schema, rows_,
-                                              {strings(countries), counting_column(rows_)});
+        auto batch =
+            arrow::RecordBatch::Make(schema, rows_, {strings(countries), counting_column(rows_)});
         if (fault_ == PartitionFault::MinNeqMax) {
             metadata_ = vgi::partition_metadata(schema, batch);
         }
@@ -208,8 +208,7 @@ enum class BatchIndexFault {
 
 class BrokenBatchIndexProducer : public vgi::TableProducer {
 public:
-    BrokenBatchIndexProducer(BatchIndexFault fault, int64_t rows)
-        : fault_(fault), rows_(rows) {}
+    BrokenBatchIndexProducer(BatchIndexFault fault, int64_t rows) : fault_(fault), rows_(rows) {}
 
     std::shared_ptr<arrow::RecordBatch> next_batch() override {
         auto schema = arrow::schema({arrow::field("n", arrow::int64(), /*nullable=*/true)});
@@ -291,8 +290,8 @@ private:
 void register_partition_broken(vgi::Worker& worker) {
     worker.register_table(std::make_shared<BrokenPartitionFunction>(
         "broken_missing_partition_values", PartitionFault::MissingValues));
-    worker.register_table(std::make_shared<BrokenPartitionFunction>(
-        "broken_partition_min_neq_max", PartitionFault::MinNeqMax));
+    worker.register_table(std::make_shared<BrokenPartitionFunction>("broken_partition_min_neq_max",
+                                                                    PartitionFault::MinNeqMax));
     worker.register_table(std::make_shared<BrokenPartitionFunction>(
         "broken_partition_values_no_annotation", PartitionFault::NoAnnotation));
     worker.register_table(std::make_shared<BrokenPartitionFunction>(
@@ -302,8 +301,8 @@ void register_partition_broken(vgi::Worker& worker) {
         "broken_missing_batch_index_tag", BatchIndexFault::MissingTag));
     worker.register_table(std::make_shared<BrokenBatchIndexFunction>(
         "broken_non_monotone_batch_index", BatchIndexFault::NonMonotone));
-    worker.register_table(std::make_shared<BrokenBatchIndexFunction>(
-        "broken_batch_index_overflow", BatchIndexFault::Overflow));
+    worker.register_table(std::make_shared<BrokenBatchIndexFunction>("broken_batch_index_overflow",
+                                                                     BatchIndexFault::Overflow));
 }
 
 }  // namespace example

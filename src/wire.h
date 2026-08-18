@@ -45,15 +45,13 @@ namespace vgi::wire {
 std::shared_ptr<arrow::Array> column(const std::shared_ptr<arrow::RecordBatch>& batch,
                                      const std::string& field);
 
-std::string get_string(const std::shared_ptr<arrow::RecordBatch>& batch,
-                       const std::string& field);
-std::optional<std::string> get_optional_string(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+std::string get_string(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+std::optional<std::string> get_optional_string(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                               const std::string& field);
 
-std::string get_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
-                       const std::string& field);
-std::optional<std::string> get_optional_binary(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+std::string get_binary(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+std::optional<std::string> get_optional_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                               const std::string& field);
 
 bool get_bool(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
 std::optional<bool> get_optional_bool(const std::shared_ptr<arrow::RecordBatch>& batch,
@@ -65,12 +63,11 @@ std::optional<double> get_optional_double(const std::shared_ptr<arrow::RecordBat
                                           const std::string& field);
 
 // A dictionary<int16, utf8> parameter, read back as its string value.
-std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
-                     const std::string& field);
+std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
 
 // The same, for an optional enum: nullopt when the column is absent or null.
-std::optional<std::string> get_optional_enum(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+std::optional<std::string> get_optional_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                             const std::string& field);
 
 // ── IPC-embedded values ───────────────────────────────────────────────────
 
@@ -85,7 +82,7 @@ std::vector<int64_t> get_int64_list(const std::shared_ptr<arrow::RecordBatch>& b
 
 // A `list<binary>` or `list<large_binary>` parameter, as its elements.
 std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatch>& batch,
-                                        const std::string& field);
+                                         const std::string& field);
 
 // A struct parameter's fields, rendered as strings. Nullopt when the column is
 // absent or null.
@@ -96,13 +93,12 @@ std::optional<std::map<std::string, std::string>> get_struct_fields(
 // get_struct_fields because that one renders every child as a string, and a
 // binary child rendered that way is escaped rather than reproduced — which an
 // IPC payload does not survive.
-std::optional<std::string> get_struct_binary(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field,
-    const std::string& child);
+std::optional<std::string> get_struct_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                             const std::string& field, const std::string& child);
 
 // Read a dataclass parameter: the named binary column, decoded.
-std::shared_ptr<arrow::RecordBatch> get_ipc(
-    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+std::shared_ptr<arrow::RecordBatch> get_ipc(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                            const std::string& field);
 
 std::string encode_ipc(const std::shared_ptr<arrow::RecordBatch>& batch);
 
@@ -160,12 +156,11 @@ public:
     ResultBuilder& set_string_list(const std::string& field,
                                    const std::vector<std::string>& values);
     // A `list<int32>` column.
-    ResultBuilder& set_int32_list(const std::string& field,
-                                  const std::vector<int32_t>& values);
+    ResultBuilder& set_int32_list(const std::string& field, const std::vector<int32_t>& values);
     ResultBuilder& set_int32_list_list(const std::string& field,
                                        const std::vector<std::vector<int32_t>>& groups);
-    ResultBuilder& set_string_list_list(
-        const std::string& field, const std::vector<std::vector<std::string>>& groups);
+    ResultBuilder& set_string_list_list(const std::string& field,
+                                        const std::vector<std::vector<std::string>>& groups);
     // The `required_secrets` column: a list of
     // {secret_type, scope, secret_name}, where an absent scope or name is a
     // null rather than an empty string — the engine treats "" as a real scope.
@@ -179,9 +174,8 @@ public:
     // keys/values), which is what the canonical Python protocol emits.
     ResultBuilder& set_int64_map(const std::string& field,
                                  const std::vector<std::pair<std::string, int64_t>>& entries);
-    ResultBuilder& set_string_map(
-        const std::string& field,
-        const std::vector<std::pair<std::string, std::string>>& entries);
+    ResultBuilder& set_string_map(const std::string& field,
+                                  const std::vector<std::pair<std::string, std::string>>& entries);
 
     // Fails if any field was left unset — a silently-null required column
     // surfaces far from here, usually as a confusing engine-side error.

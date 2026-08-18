@@ -70,14 +70,14 @@ Version build_version(int64_t version) {
                 {int64_column({1, 2, 3})}};
     }
     if (version == 2) {
-        return {arrow::schema({arrow::field("id", arrow::int64(), true),
-                               arrow::field("name", arrow::utf8(), true),
-                               arrow::field("score", arrow::float64(), true),
-                               arrow::field("active", arrow::boolean(), true)}),
-                {int64_column({1, 2, 3, 4, 5}),
-                 string_column({"alice", "bob", "carol", "dave", "eve"}),
-                 double_column({10.0, 20.0, 30.0, 40.0, 50.0}),
-                 bool_column({true, false, true, false, true})}};
+        return {
+            arrow::schema({arrow::field("id", arrow::int64(), true),
+                           arrow::field("name", arrow::utf8(), true),
+                           arrow::field("score", arrow::float64(), true),
+                           arrow::field("active", arrow::boolean(), true)}),
+            {int64_column({1, 2, 3, 4, 5}), string_column({"alice", "bob", "carol", "dave", "eve"}),
+             double_column({10.0, 20.0, 30.0, 40.0, 50.0}),
+             bool_column({true, false, true, false, true})}};
     }
     return {arrow::schema({arrow::field("id", arrow::int64(), true),
                            arrow::field("score", arrow::float64(), true)}),

@@ -108,8 +108,8 @@ public:
     void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
                 const std::vector<std::shared_ptr<arrow::Array>>& columns) const override {
         if (columns.empty()) return;
-        auto values = std::static_pointer_cast<arrow::DoubleArray>(
-            cast_to(columns[0], arrow::float64()));
+        auto values =
+            std::static_pointer_cast<arrow::DoubleArray>(cast_to(columns[0], arrow::float64()));
         for (int64_t i = 0; i < group_ids.length(); ++i) {
             if (values->IsNull(i)) continue;
             auto& state = states[group_ids.Value(i)];
@@ -149,9 +149,9 @@ public:
             std::sort(values.begin(), values.end());
             // Nearest-rank rather than interpolated, clamped so percentile 1.0
             // lands on the last value instead of one past it.
-            const auto index = std::min(
-                static_cast<size_t>(percentile * static_cast<double>(values.size())),
-                values.size() - 1);
+            const auto index =
+                std::min(static_cast<size_t>(percentile * static_cast<double>(values.size())),
+                         values.size() - 1);
             (void)out.Append(values[index]);
         }
         std::shared_ptr<arrow::Array> array;

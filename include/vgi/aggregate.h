@@ -52,19 +52,16 @@ public:
     // load-bearing: an implementation that inserts on first sight turns a
     // group of all-NULLs into a zero, where SQL requires NULL. Insert only
     // when a value is actually folded in.
-    virtual void update(std::map<int64_t, std::string>& states,
-                        const arrow::Int64Array& group_ids,
+    virtual void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
                         const std::vector<std::shared_ptr<arrow::Array>>& columns) const = 0;
 
     // Merge `source` into `target`, returning the new target state.
-    virtual std::string combine(const std::string& target,
-                                const std::string& source) const = 0;
+    virtual std::string combine(const std::string& target, const std::string& source) const = 0;
 
     // One output row per entry of `group_ids`. `states[i]` is the state for
     // `group_ids[i]`, absent if that group never accumulated anything.
     virtual std::shared_ptr<arrow::RecordBatch> finalize(
-        const std::shared_ptr<arrow::Schema>& output_schema,
-        const arrow::Int64Array& group_ids,
+        const std::shared_ptr<arrow::Schema>& output_schema, const arrow::Int64Array& group_ids,
         const std::vector<std::optional<std::string>>& states) const = 0;
 
     // Like `finalize`, with the bind-time arguments in hand.
@@ -74,10 +71,8 @@ public:
     // because they are folded before it is known. The default ignores them, so
     // an aggregate that does not care overrides only `finalize`.
     virtual std::shared_ptr<arrow::RecordBatch> finalize_with_arguments(
-        const std::shared_ptr<arrow::Schema>& output_schema,
-        const arrow::Int64Array& group_ids,
-        const std::vector<std::optional<std::string>>& states,
-        const Arguments& arguments) const {
+        const std::shared_ptr<arrow::Schema>& output_schema, const arrow::Int64Array& group_ids,
+        const std::vector<std::optional<std::string>>& states, const Arguments& arguments) const {
         (void)arguments;
         return finalize(output_schema, group_ids, states);
     }

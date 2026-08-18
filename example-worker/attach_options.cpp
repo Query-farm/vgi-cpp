@@ -69,8 +69,7 @@ std::shared_ptr<arrow::DataType> struct_type() {
 
 std::shared_ptr<arrow::Array> list_default() {
     auto items = std::make_shared<arrow::Int64Builder>();
-    arrow::ListBuilder builder(arrow::default_memory_pool(), items,
-                               list_type());
+    arrow::ListBuilder builder(arrow::default_memory_pool(), items, list_type());
     (void)builder.Append();
     for (int64_t value : {1, 2, 3}) (void)items->Append(value);
     std::shared_ptr<arrow::Array> array;
@@ -116,8 +115,8 @@ std::vector<vgi::AttachOptionSpec> option_specs() {
         {"opt_date", "Date", arrow::date32(), one<arrow::Date32Builder>(kDefaultDate), false},
         {"opt_time", "Time of day", arrow::time64(arrow::TimeUnit::MICRO),
          one_typed(arrow::time64(arrow::TimeUnit::MICRO), kDefaultTimeOfDay), false},
-        {"opt_timestamp", "Naive timestamp", timestamp,
-         one_typed(timestamp, kDefaultTimestamp), false},
+        {"opt_timestamp", "Naive timestamp", timestamp, one_typed(timestamp, kDefaultTimestamp),
+         false},
         {"opt_timestamp_tz", "Timestamp with UTC tz", timestamp_tz,
          one_typed(timestamp_tz, kDefaultTimestamp), false},
         {"opt_decimal", "Decimal(18,4)", arrow::decimal128(18, 4), decimal_default(), false},
@@ -148,9 +147,7 @@ public:
         return arrow::schema(std::move(fields));
     }
 
-    vgi::TableCardinality cardinality(const vgi::ProcessParams&) const override {
-        return {1, 1};
-    }
+    vgi::TableCardinality cardinality(const vgi::ProcessParams&) const override { return {1, 1}; }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         if (!params.attach_options) {
@@ -165,13 +162,12 @@ public:
         for (const auto& field : params.output_schema->fields()) {
             auto column = params.attach_options->GetColumnByName(field->name());
             if (!column) {
-                throw std::runtime_error("echo_attach_options: no option named '" +
-                                         field->name() + "'");
+                throw std::runtime_error("echo_attach_options: no option named '" + field->name() +
+                                         "'");
             }
             columns.push_back(std::move(column));
         }
-        return std::make_unique<OneRow>(
-            arrow::RecordBatch::Make(params.output_schema, 1, columns));
+        return std::make_unique<OneRow>(arrow::RecordBatch::Make(params.output_schema, 1, columns));
     }
 
 private:

@@ -190,8 +190,7 @@ public:
             // path, so finalize sees an empty log and emits the zero row.
             params.storage->append(params.execution_id, kCountNamespace, "", "");
             const auto seen =
-                params.storage->scan(params.execution_id, kCountNamespace, "", 0, SIZE_MAX)
-                    .size();
+                params.storage->scan(params.execution_id, kCountNamespace, "", 0, SIZE_MAX).size();
             if (seen % 2 == 0) {
                 throw std::invalid_argument("Intentional exception on batch " +
                                             std::to_string(seen));
@@ -199,9 +198,9 @@ public:
             return params.execution_id;
         }
         if (params.arguments.named_bool("logging").value_or(false)) {
-            params.client_log(vgi::LogLevel::Info,
-                              "Processing batch with " +
-                                  std::to_string(batch ? batch->num_rows() : 0) + " rows");
+            params.client_log(
+                vgi::LogLevel::Info,
+                "Processing batch with " + std::to_string(batch ? batch->num_rows() : 0) + " rows");
         }
         if (batch && batch->num_rows() > 0) {
             auto schema = derive_output_schema(*batch->schema());
@@ -265,8 +264,7 @@ public:
         arrow::TableBatchReader reader(*combined);
         std::shared_ptr<arrow::RecordBatch> all;
         (void)reader.ReadNext(&all);
-        return std::make_unique<Once>(all ? sum_batch(all, schema) : nullptr,
-                                      cache_metadata());
+        return std::make_unique<Once>(all ? sum_batch(all, schema) : nullptr, cache_metadata());
     }
 
 private:

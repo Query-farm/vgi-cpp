@@ -9,8 +9,7 @@
 
 namespace vgi {
 
-ArgSpec ArgSpec::column(std::string name, int index, std::string type,
-                        std::string description) {
+ArgSpec ArgSpec::column(std::string name, int index, std::string type, std::string description) {
     ArgSpec s;
     s.name = std::move(name);
     s.index = index;
@@ -31,8 +30,7 @@ ArgSpec& ArgSpec::with_varargs() {
     return *this;
 }
 
-ArgSpec ArgSpec::constant_typed(std::string name, int index,
-                                std::shared_ptr<arrow::DataType> type,
+ArgSpec ArgSpec::constant_typed(std::string name, int index, std::shared_ptr<arrow::DataType> type,
                                 std::string description) {
     ArgSpec spec = constant_arg(std::move(name), index, "", std::move(description));
     spec.arrow_type = std::move(type);
@@ -43,8 +41,7 @@ ArgSpec ArgSpec::table(std::string name, int index, std::string description) {
     return column(std::move(name), index, "table", std::move(description));
 }
 
-ArgSpec ArgSpec::column_typed(std::string name, int index,
-                              std::shared_ptr<arrow::DataType> type,
+ArgSpec ArgSpec::column_typed(std::string name, int index, std::shared_ptr<arrow::DataType> type,
                               std::string description) {
     ArgSpec spec = column(std::move(name), index, "", std::move(description));
     spec.arrow_type = std::move(type);
@@ -95,9 +92,8 @@ std::shared_ptr<arrow::Schema> ScalarFunction::bind(const BindParams&) const {
     if (!md.return_type) {
         // A function that leaves return_type empty is declaring that its
         // result depends on its arguments, which means it owes an override.
-        throw std::runtime_error(
-            "scalar function '" + name() +
-            "' declares no fixed return_type and does not override bind()");
+        throw std::runtime_error("scalar function '" + name() +
+                                 "' declares no fixed return_type and does not override bind()");
     }
     // The engine names the single output column "result"; see the canonical
     // Python worker's scalar path.

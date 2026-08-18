@@ -106,8 +106,8 @@ vgi::CatalogBranch native_branch(std::string function_name, const std::string& f
 
 vgi::CatalogTable versioned_table(std::string name, std::string scan_function,
                                   std::shared_ptr<arrow::Schema> schema, std::string comment) {
-    auto table = backed_by(std::move(name), std::move(scan_function), std::move(schema),
-                           std::move(comment));
+    auto table =
+        backed_by(std::move(name), std::move(scan_function), std::move(schema), std::move(comment));
     // Not inlined: the engine asks for the scan separately, and only then does
     // the request carry the attachment whose resolved version decides which
     // definition of the table it is asking about.
@@ -131,8 +131,7 @@ vgi::ColumnStatistics sequence_statistics(std::string column, int64_t count) {
 // A column carrying metadata: a default, a comment, a generated expression, or
 // the row_id marker. Metadata is how all four travel — the wire has no field
 // for any of them, only the column schema.
-std::shared_ptr<arrow::Field> tagged(std::string name,
-                                     std::shared_ptr<arrow::DataType> type,
+std::shared_ptr<arrow::Field> tagged(std::string name, std::shared_ptr<arrow::DataType> type,
                                      std::vector<std::string> keys,
                                      std::vector<std::string> values) {
     return arrow::field(std::move(name), std::move(type), /*nullable=*/true)
@@ -183,8 +182,7 @@ std::shared_ptr<arrow::Array> bool_arg(bool value) {
 // A rowid fixture: 20 rows of `rowid_sequence`, with the row_id column at the
 // declared index. The layout argument and the column order have to agree —
 // the table's declared columns are what the planner types against.
-vgi::CatalogTable rowid_table(std::string name,
-                              std::vector<std::shared_ptr<arrow::Field>> fields,
+vgi::CatalogTable rowid_table(std::string name, std::vector<std::shared_ptr<arrow::Field>> fields,
                               const std::string& layout, const std::string& row_id_type,
                               std::string comment) {
     vgi::CatalogTable table;
@@ -236,18 +234,15 @@ void declare_versioned_tables(vgi::CatalogModel& catalog) {
         "animals", "versioned_tables_animals_scan",
         columns({{"name", arrow::utf8()}, {"legs", arrow::int64()}, {"sound", arrow::utf8()}}),
         "Animals table for data_version 1.0.0");
-    const auto animals_color = versioned_table(
-        "animals", "versioned_tables_animals_color_scan",
-        columns({{"name", arrow::utf8()},
-                 {"legs", arrow::int64()},
-                 {"sound", arrow::utf8()},
-                 {"color", arrow::utf8()}}),
-        "Animals table for data_version 1.1.0 (with color)");
+    const auto animals_color = versioned_table("animals", "versioned_tables_animals_color_scan",
+                                               columns({{"name", arrow::utf8()},
+                                                        {"legs", arrow::int64()},
+                                                        {"sound", arrow::utf8()},
+                                                        {"color", arrow::utf8()}}),
+                                               "Animals table for data_version 1.1.0 (with color)");
     const auto plants = versioned_table(
         "plants", "versioned_tables_plants_scan",
-        columns({{"name", arrow::utf8()},
-                 {"kind", arrow::utf8()},
-                 {"height_m", arrow::float64()}}),
+        columns({{"name", arrow::utf8()}, {"kind", arrow::utf8()}, {"height_m", arrow::float64()}}),
         "Plants table for data_version 2.0.0 and 3.0.0");
 
     const auto main_with = [](std::vector<vgi::CatalogTable> tables) {
@@ -338,35 +333,32 @@ void declare_catalog(vgi::Worker& worker) {
     data.tables.push_back(
         backed_by("cache_nonce", "cache_nonce", columns({{"nonce", arrow::int64()}}),
                   "One-row cacheable result whose value changes per real invocation"));
-    data.tables.push_back(
-        backed_by("cache_no_store", "cache_no_store", columns({{"n", arrow::int64()}}),
-                  "Advertises vgi.cache.no_store — must never be cached"));
-    data.tables.push_back(backed_by(
-        "cache_scoped_txn", "cache_scoped_txn",
-        columns({{"n", arrow::int64()}, {"nonce", arrow::int64()}}),
-        "Advertises vgi.cache.scope=transaction"));
+    data.tables.push_back(backed_by("cache_no_store", "cache_no_store",
+                                    columns({{"n", arrow::int64()}}),
+                                    "Advertises vgi.cache.no_store — must never be cached"));
+    data.tables.push_back(backed_by("cache_scoped_txn", "cache_scoped_txn",
+                                    columns({{"n", arrow::int64()}, {"nonce", arrow::int64()}}),
+                                    "Advertises vgi.cache.scope=transaction"));
     // Uncommented on purpose: `cache_bench` is a scaling fixture called
     // directly, and `table/comments.test` pins the commented set exactly.
     data.tables.push_back(
         backed_by("cache_bench", "cache_bench", columns({{"v", arrow::int64()}})));
-    data.tables.push_back(backed_by("cache_multicol", "cache_multicol",
-                                    columns({{"a", arrow::int64()},
-                                             {"b", arrow::int64()},
-                                             {"c", arrow::int64()}}),
-                                    "Multi-column cacheable result (projection-coverage reuse)"));
+    data.tables.push_back(
+        backed_by("cache_multicol", "cache_multicol",
+                  columns({{"a", arrow::int64()}, {"b", arrow::int64()}, {"c", arrow::int64()}}),
+                  "Multi-column cacheable result (projection-coverage reuse)"));
     data.tables.push_back(
         backed_by("cache_big", "cache_big", columns({{"n", arrow::int64()}}),
                   "Large multi-batch cacheable result (advertises vgi.cache.ttl)"));
-    data.tables.push_back(
-        backed_by("cache_revalidatable", "cache_revalidatable",
-                  columns({{"nonce", arrow::int64()}}),
-                  "Always-revalidate result (304 not_modified reuses stored bytes)"));
+    data.tables.push_back(backed_by(
+        "cache_revalidatable", "cache_revalidatable", columns({{"nonce", arrow::int64()}}),
+        "Always-revalidate result (304 not_modified reuses stored bytes)"));
     data.tables.push_back(
         backed_by("cache_whoami", "cache_whoami", columns({{"who", arrow::utf8()}}),
                   "Cacheable result echoing the caller's auth principal (identity-scoped)"));
-    data.tables.push_back(
-        backed_by("ten_thousand_table", "ten_thousand", columns({{"n", arrow::int64()}}),
-                  "Function-backed table over the no-arg ten_thousand function"));
+    data.tables.push_back(backed_by("ten_thousand_table", "ten_thousand",
+                                    columns({{"n", arrow::int64()}}),
+                                    "Function-backed table over the no-arg ten_thousand function"));
     data.tables.push_back(
         backed_by("cache_parallel", "cache_parallel", columns({{"v", arrow::int64()}})));
 
@@ -379,26 +371,23 @@ void declare_catalog(vgi::Worker& worker) {
         multi_branch("multi_branch_filtered_numbers",
                      {sequence_branch(100, "n < 50"), sequence_branch(100, "n >= 50")},
                      "Multi-branch with complementary branch_filters — exercises pruning"));
-    data.tables.push_back(
-        multi_branch("multi_branch_empty", {},
-                     "Multi-branch: empty branches list — used by "
-                     "multi_branch_empty_branches.test"));
+    data.tables.push_back(multi_branch("multi_branch_empty", {},
+                                       "Multi-branch: empty branches list — used by "
+                                       "multi_branch_empty_branches.test"));
 
     // Heterogeneous branches: one arm is this worker, the others are DuckDB's
     // own readers over files the test writes first. What they probe is that a
     // branch the worker never serves still stitches into the same relation.
-    data.tables.push_back(
-        multi_branch("multi_branch_hetero",
-                     {sequence_branch(50),
-                      native_branch("read_parquet", "vgi_hetero_branch.parquet")},
-                     "Multi-branch: sequence(50) + read_parquet — used by "
-                     "multi_branch_heterogeneous.test"));
-    data.tables.push_back(
-        multi_branch("multi_branch_nopushdown",
-                     {sequence_branch(50),
-                      native_branch("read_csv_auto", "vgi_nopushdown_branch.csv")},
-                     "Multi-branch: VGI + read_csv — used by "
-                     "multi_branch_pushdown_incapable.test"));
+    data.tables.push_back(multi_branch(
+        "multi_branch_hetero",
+        {sequence_branch(50), native_branch("read_parquet", "vgi_hetero_branch.parquet")},
+        "Multi-branch: sequence(50) + read_parquet — used by "
+        "multi_branch_heterogeneous.test"));
+    data.tables.push_back(multi_branch(
+        "multi_branch_nopushdown",
+        {sequence_branch(50), native_branch("read_csv_auto", "vgi_nopushdown_branch.csv")},
+        "Multi-branch: VGI + read_csv — used by "
+        "multi_branch_pushdown_incapable.test"));
     {
         // Declared for parity only: the iceberg branch is scanned solely by the
         // gated multi_branch_iceberg.test, which the language suites skip.
@@ -413,13 +402,12 @@ void declare_catalog(vgi::Worker& worker) {
         // Three parquet files whose columns differ in order and in count; the
         // engine reconciles them against the declared schema, which is why this
         // table declares two columns rather than the usual one.
-        auto recon = multi_branch(
-            "multi_branch_recon",
-            {native_branch("read_parquet", "vgi_recon_a_b.parquet"),
-             native_branch("read_parquet", "vgi_recon_b_a.parquet"),
-             native_branch("read_parquet", "vgi_recon_a_only.parquet")},
-            "Multi-branch: column reconciliation — used by "
-            "multi_branch_reconciliation.test");
+        auto recon = multi_branch("multi_branch_recon",
+                                  {native_branch("read_parquet", "vgi_recon_a_b.parquet"),
+                                   native_branch("read_parquet", "vgi_recon_b_a.parquet"),
+                                   native_branch("read_parquet", "vgi_recon_a_only.parquet")},
+                                  "Multi-branch: column reconciliation — used by "
+                                  "multi_branch_reconciliation.test");
         recon.columns = columns({{"a", arrow::int64()}, {"b", arrow::int64()}});
         data.tables.push_back(std::move(recon));
     }
@@ -430,10 +418,9 @@ void declare_catalog(vgi::Worker& worker) {
         writable_a.writable = true;
         auto writable_b = sequence_branch(10);
         writable_b.writable = true;
-        data.tables.push_back(
-            multi_branch("multi_branch_two_writable", {writable_a, writable_b},
-                         "Multi-branch with two writable=True arms — used by "
-                         "multi_branch_two_writable.test"));
+        data.tables.push_back(multi_branch("multi_branch_two_writable", {writable_a, writable_b},
+                                           "Multi-branch with two writable=True arms — used by "
+                                           "multi_branch_two_writable.test"));
     }
 
     data.tables.push_back(
@@ -505,8 +492,7 @@ void declare_catalog(vgi::Worker& worker) {
         versioned.scan_function = "versioned_data_scan";
         versioned.scan_arguments = versioned.time_travel.back().scan_arguments;
         versioned.inline_scan = false;
-        versioned.comment =
-            "Versioned data table demonstrating time travel with schema evolution";
+        versioned.comment = "Versioned data table demonstrating time travel with schema evolution";
         data.tables.push_back(std::move(versioned));
     }
 
@@ -561,21 +547,19 @@ void declare_catalog(vgi::Worker& worker) {
 
     data.tables.push_back(
         backed_by("cache_projection", "cache_projection",
-                  columns({{"a", arrow::int64()},
-                           {"b", arrow::int64()},
-                           {"c", arrow::int64()}}),
+                  columns({{"a", arrow::int64()}, {"b", arrow::int64()}, {"c", arrow::int64()}}),
                   "Projection-pushdown cacheable result (SELECT a vs b are distinct keys)"));
 
     // The constraint / reference tables. Their rows are almost incidental:
     // what the suite reads from them is metadata — comments, defaults,
     // column statistics — so the declarations here are the fixture.
     {
-        auto departments = backed_by(
-            "departments", "departments_scan",
-            arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/true),
-                           arrow::field("name", arrow::utf8(), /*nullable=*/true),
-                           tagged("budget", arrow::float64(), {"default"}, {"0"})}),
-            "Department reference table");
+        auto departments =
+            backed_by("departments", "departments_scan",
+                      arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/true),
+                                     arrow::field("name", arrow::utf8(), /*nullable=*/true),
+                                     tagged("budget", arrow::float64(), {"default"}, {"0"})}),
+                      "Department reference table");
         departments.cardinality = 3;
         departments.not_null = {0, 1};
         departments.primary_key = {{0}};
@@ -587,24 +571,24 @@ void declare_catalog(vgi::Worker& worker) {
         departments.column_statistics = {
             stat("id", vgi::StatValue::integer(1), vgi::StatValue::integer(10), 10),
             string_stat("name", "Accounting", "Sales", 10, 20),
-            stat("budget", vgi::StatValue::floating(50000.0),
-                 vgi::StatValue::floating(500000.0), 10),
+            stat("budget", vgi::StatValue::floating(50000.0), vgi::StatValue::floating(500000.0),
+                 10),
         };
         data.tables.push_back(std::move(departments));
     }
 
     {
-        auto products = backed_by(
-            "products", "products_scan",
-            arrow::schema({
-                tagged("id", arrow::int64(), {"comment"}, {"Unique product identifier"}),
-                tagged("name", arrow::utf8(), {"default", "comment"},
-                       {"'unknown'", "Product display name"}),
-                tagged("quantity", arrow::int64(), {"default"}, {"0"}),
-                tagged("price", arrow::float64(), {"default", "comment"},
-                       {"9.99", "Unit price in USD"}),
-            }),
-            "Product table with column defaults");
+        auto products =
+            backed_by("products", "products_scan",
+                      arrow::schema({
+                          tagged("id", arrow::int64(), {"comment"}, {"Unique product identifier"}),
+                          tagged("name", arrow::utf8(), {"default", "comment"},
+                                 {"'unknown'", "Product display name"}),
+                          tagged("quantity", arrow::int64(), {"default"}, {"0"}),
+                          tagged("price", arrow::float64(), {"default", "comment"},
+                                 {"9.99", "Unit price in USD"}),
+                      }),
+                      "Product table with column defaults");
         products.cardinality = 3;
         products.not_null = {0};
         products.primary_key = {{0}};
@@ -655,11 +639,11 @@ void declare_catalog(vgi::Worker& worker) {
         // (red, green, blue) while the rows are ordered by id. The two
         // disagreeing is the point: it proves the bounds are the declared
         // strings and not dictionary indices.
-        auto colors = backed_by("colors", "colors_scan",
-                                columns({{"id", arrow::int64()},
-                                         {"color", arrow::utf8()},
-                                         {"hex_code", arrow::utf8()}}),
-                                "Colors table with ENUM-derived statistics");
+        auto colors = backed_by(
+            "colors", "colors_scan",
+            columns(
+                {{"id", arrow::int64()}, {"color", arrow::utf8()}, {"hex_code", arrow::utf8()}}),
+            "Colors table with ENUM-derived statistics");
         colors.cardinality = 3;
         colors.column_statistics = {
             stat("id", vgi::StatValue::integer(1), vgi::StatValue::integer(3), 3),
@@ -710,49 +694,45 @@ void declare_catalog(vgi::Worker& worker) {
     // The row_id column at each index in turn, and in each type the protocol
     // allows. Position is what these pin: an engine that assumed index 0 would
     // pass `rowid_first` and fail the other two.
-    data.tables.push_back(rowid_table(
-        "rowid_first",
-        {tagged("row_id", arrow::int64(), {"is_row_id"}, {""}),
-         arrow::field("name", arrow::utf8(), /*nullable=*/true),
-         arrow::field("value", arrow::utf8(), /*nullable=*/true)},
-        "first", "int64", "Table with row_id at column index 0"));
-    data.tables.push_back(rowid_table(
-        "rowid_middle",
-        {arrow::field("name", arrow::utf8(), /*nullable=*/true),
-         tagged("row_id", arrow::int64(), {"is_row_id"}, {""}),
-         arrow::field("value", arrow::utf8(), /*nullable=*/true)},
-        "middle", "int64", "Table with row_id at column index 1"));
-    data.tables.push_back(rowid_table(
-        "rowid_last",
-        {arrow::field("name", arrow::utf8(), /*nullable=*/true),
-         arrow::field("value", arrow::utf8(), /*nullable=*/true),
-         tagged("row_id", arrow::int64(), {"is_row_id"}, {""})},
-        "last", "int64", "Table with row_id at column index 2"));
-    data.tables.push_back(rowid_table(
-        "rowid_string",
-        {tagged("row_id", arrow::utf8(), {"is_row_id"}, {""}),
-         arrow::field("value", arrow::utf8(), /*nullable=*/true)},
-        "first", "string", "Table with string row_id"));
-    data.tables.push_back(rowid_table(
-        "rowid_struct",
-        {tagged("row_id",
-                arrow::struct_({arrow::field("a", arrow::int64(), /*nullable=*/true),
-                                arrow::field("b", arrow::utf8(), /*nullable=*/true)}),
-                {"is_row_id"}, {""}),
-         arrow::field("value", arrow::utf8(), /*nullable=*/true)},
-        "first", "struct", "Table with struct row_id"));
+    data.tables.push_back(rowid_table("rowid_first",
+                                      {tagged("row_id", arrow::int64(), {"is_row_id"}, {""}),
+                                       arrow::field("name", arrow::utf8(), /*nullable=*/true),
+                                       arrow::field("value", arrow::utf8(), /*nullable=*/true)},
+                                      "first", "int64", "Table with row_id at column index 0"));
+    data.tables.push_back(rowid_table("rowid_middle",
+                                      {arrow::field("name", arrow::utf8(), /*nullable=*/true),
+                                       tagged("row_id", arrow::int64(), {"is_row_id"}, {""}),
+                                       arrow::field("value", arrow::utf8(), /*nullable=*/true)},
+                                      "middle", "int64", "Table with row_id at column index 1"));
+    data.tables.push_back(rowid_table("rowid_last",
+                                      {arrow::field("name", arrow::utf8(), /*nullable=*/true),
+                                       arrow::field("value", arrow::utf8(), /*nullable=*/true),
+                                       tagged("row_id", arrow::int64(), {"is_row_id"}, {""})},
+                                      "last", "int64", "Table with row_id at column index 2"));
+    data.tables.push_back(rowid_table("rowid_string",
+                                      {tagged("row_id", arrow::utf8(), {"is_row_id"}, {""}),
+                                       arrow::field("value", arrow::utf8(), /*nullable=*/true)},
+                                      "first", "string", "Table with string row_id"));
+    data.tables.push_back(
+        rowid_table("rowid_struct",
+                    {tagged("row_id",
+                            arrow::struct_({arrow::field("a", arrow::int64(), /*nullable=*/true),
+                                            arrow::field("b", arrow::utf8(), /*nullable=*/true)}),
+                            {"is_row_id"}, {""}),
+                     arrow::field("value", arrow::utf8(), /*nullable=*/true)},
+                    "first", "struct", "Table with struct row_id"));
 
-    data.tables.push_back(late_mat_table(
-        "late_mat", "Late-materialization table (1000 rows, unique rowid)", {}));
+    data.tables.push_back(
+        late_mat_table("late_mat", "Late-materialization table (1000 rows, unique rowid)", {}));
     // Violates the uniqueness the rewrite assumes, on purpose: the engine
     // trusts the worker's opt-in, so the wrong answer has to be demonstrable.
     data.tables.push_back(late_mat_table(
         "late_mat_dup",
         "Late-materialization table with deliberately non-unique rowid (contract violation)",
         {{"dup_row_id", bool_arg(true)}}));
-    data.tables.push_back(late_mat_table(
-        "late_mat_nulls", "Late-materialization table with NULLs in the ord column",
-        {{"null_ord_stride", int64_arg(7)}}));
+    data.tables.push_back(late_mat_table("late_mat_nulls",
+                                         "Late-materialization table with NULLs in the ord column",
+                                         {{"null_ord_stride", int64_arg(7)}}));
 
     {
         // Same scan and rows as `numbers`; what differs is that its statistics
@@ -770,9 +750,9 @@ void declare_catalog(vgi::Worker& worker) {
         // The same function as `ten_thousand_table`, but with the row count
         // inlined on the table record: the engine reads it from there and
         // never fires the per-bind cardinality call.
-        auto inlined = backed_by("cardinality_inlined_table", "ten_thousand",
-                                 columns({{"n", arrow::int64()}}),
-                                 "Function-backed table with inlined cardinality (10000 rows)");
+        auto inlined =
+            backed_by("cardinality_inlined_table", "ten_thousand", columns({{"n", arrow::int64()}}),
+                      "Function-backed table with inlined cardinality (10000 rows)");
         inlined.cardinality = 10000;
         data.tables.push_back(std::move(inlined));
     }
@@ -780,12 +760,12 @@ void declare_catalog(vgi::Worker& worker) {
     {
         // Not inlined: the backing function resolves a secret during bind, and
         // that two-phase exchange only happens on the scan-function path.
-        auto secret_table = backed_by("secret_demo_table", "secret_demo",
-                                      columns({{"key", arrow::utf8()},
-                                               {"value", arrow::utf8()},
-                                               {"arrow_type", arrow::utf8()}}),
-                                      "Function-backed table over the secret-using "
-                                      "secret_demo function");
+        auto secret_table = backed_by(
+            "secret_demo_table", "secret_demo",
+            columns(
+                {{"key", arrow::utf8()}, {"value", arrow::utf8()}, {"arrow_type", arrow::utf8()}}),
+            "Function-backed table over the secret-using "
+            "secret_demo function");
         secret_table.inline_scan = false;
         data.tables.push_back(std::move(secret_table));
     }
