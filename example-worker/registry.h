@@ -31,6 +31,7 @@ void register_sum_all_columns(vgi::Worker& worker);
 void register_settings_fixtures(vgi::Worker& worker);
 void register_settings_tables(vgi::Worker& worker);
 void register_secret_fixtures(vgi::Worker& worker);
+void register_series(vgi::Worker& worker);
 // Declares the catalog's tables and views. Runs after the function
 // registrations, since a table names the function that scans it.
 void declare_catalog(vgi::Worker& worker);

@@ -19,6 +19,7 @@ add_executable(vgi-example-worker
     table/more.cpp
     table/settings_fixtures.cpp
     table/secrets.cpp
+    table/series.cpp
     catalog_def.cpp
     table_in_out/echo.cpp
     aggregate/basic.cpp

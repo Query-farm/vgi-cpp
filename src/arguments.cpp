@@ -137,6 +137,12 @@ std::optional<int64_t> Arguments::named_int64(const std::string& name) const {
     return std::static_pointer_cast<arrow::Int64Array>(array)->Value(0);
 }
 
+std::optional<double> Arguments::named_double(const std::string& name) const {
+    auto array = cast_scalar(named(name), arrow::float64());
+    if (!array) return std::nullopt;
+    return std::static_pointer_cast<arrow::DoubleArray>(array)->Value(0);
+}
+
 std::optional<std::string> Arguments::named_string(const std::string& name) const {
     auto array = cast_scalar(named(name), arrow::utf8());
     if (!array) return std::nullopt;
