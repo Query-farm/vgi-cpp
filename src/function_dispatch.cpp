@@ -826,6 +826,7 @@ BindParams Dispatcher::read_bind_request(
     const auto attachment = attachment_of(bind_call);
     params.catalog_name = attachment.catalog;
     params.attachment_id = attachment.id;
+    params.attach_options = attachment.options;
     params.transaction_opaque_data =
         wire::get_optional_binary(bind_call, "transaction_opaque_data");
     // Empty strings mean "no clause" on this wire, which is not the same as a
@@ -1076,6 +1077,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.secrets = bind_params.secrets;
     params.catalog_name = bind_params.catalog_name;
     params.attachment_id = bind_params.attachment_id;
+    params.attach_options = bind_params.attach_options;
     params.schema_name = bind_params.schema_name;
     params.at_unit = bind_params.at_unit;
     params.at_value = bind_params.at_value;

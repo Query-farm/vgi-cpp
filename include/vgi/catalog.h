@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include <arrow/array.h>
 #include <arrow/type.h>
 
 #include "vgi/statistics.h"
@@ -170,6 +171,23 @@ struct CatalogMacro {
     std::vector<std::pair<std::string, std::string>> parameter_docs;
 };
 
+// An option a caller may set in the ATTACH statement.
+//
+// Distinct from a setting: a setting is global and mutable, an attach option
+// belongs to one attachment and is fixed for its life. The engine validates
+// the value against `type` before the worker ever sees it, so a wrong-typed
+// option fails the ATTACH rather than the first query.
+struct AttachOptionSpec {
+    std::string name;
+    std::string description;
+    std::shared_ptr<arrow::DataType> type;
+    // The value used when the caller supplies none. Null means there is none;
+    // an option with a default is always satisfiable, so declaring both a
+    // default and `required` is a contradiction and is refused.
+    std::shared_ptr<arrow::Array> default_value;
+    bool required = false;
+};
+
 // A DuckDB setting this catalog introduces.
 //
 // Declared at ATTACH, which is what makes `SET my_setting = ...` work at all:
@@ -226,6 +244,10 @@ struct CatalogModel {
     std::optional<std::string> data_version_spec;
     std::optional<std::string> comment;
     std::vector<std::pair<std::string, std::string>> tags;
+
+    // Options this catalog accepts in an ATTACH statement. The declared
+    // defaults are what an attachment that sets none is given.
+    std::vector<AttachOptionSpec> attach_options;
 
     // Function names this catalog asks the engine to publish into its global,
     // catalog-independent namespace, each under `global_function_prefix`.

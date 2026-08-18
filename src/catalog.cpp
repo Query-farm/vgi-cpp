@@ -20,6 +20,10 @@
 #include <unistd.h>
 #include <tuple>
 
+#include <arrow/array/util.h>
+#include <arrow/compute/api.h>
+#include <arrow/util/base64.h>
+
 #include "arg_schema.h"
 #include "dispatcher.h"
 #include "enums.h"
@@ -29,6 +33,50 @@
 
 namespace vgi {
 namespace {
+// The options this attachment was made with: the declared defaults, with
+// whatever the ATTACH statement set on top.
+//
+// Cast to the declared type rather than taken as-is, because DuckDB names a
+// list's item field and a struct's children its own way; a value that differs
+// only in those names is the same value.
+std::shared_ptr<arrow::RecordBatch> merge_attach_options(
+    const CatalogModel& model, const std::shared_ptr<arrow::RecordBatch>& attach) {
+    if (model.attach_options.empty()) return nullptr;
+
+    std::shared_ptr<arrow::RecordBatch> supplied;
+    if (auto encoded = wire::get_optional_binary(attach, "options"); encoded && !encoded->empty()) {
+        supplied = wire::decode_ipc(*encoded);
+    }
+
+    arrow::FieldVector fields;
+    std::vector<std::shared_ptr<arrow::Array>> values;
+    for (const auto& option : model.attach_options) {
+        fields.push_back(arrow::field(option.name, option.type, /*nullable=*/true));
+
+        std::shared_ptr<arrow::Array> value;
+        if (supplied) {
+            if (auto column = supplied->GetColumnByName(option.name)) {
+                auto casted = arrow::compute::Cast(*column, option.type);
+                if (!casted.ok()) {
+                    throw std::invalid_argument("Cannot cast ATTACH option '" + option.name +
+                                                "' to " + option.type->ToString() + ": " +
+                                                casted.status().message());
+                }
+                value = casted.MoveValueUnsafe();
+            }
+        }
+        if (!value) value = option.default_value;
+        if (!value) {
+            if (option.required) {
+                throw std::invalid_argument("ATTACH option '" + option.name + "' is required");
+            }
+            value = arrow::MakeArrayOfNull(option.type, 1).ValueOrDie();
+        }
+        values.push_back(std::move(value));
+    }
+    return arrow::RecordBatch::Make(arrow::schema(fields), 1, values);
+}
+
 // A fresh id per ATTACH. Random rather than a counter: a worker pool spreads
 // one query's calls over several processes, and two of them would otherwise
 // mint the same id for different attachments.
@@ -400,6 +448,9 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
         }
     }
 
+    Attachment attachment{model.name, resolved_data.value_or(""), name, next_attachment_id(),
+                          merge_attach_options(model, attach)};
+
     auto batch = wire::ResultBuilder(payload_schema_of("catalog_attach"))
                      // Opaque to the engine, which only stores and echoes it.
                      // Both the catalog and the resolved version have to
@@ -407,9 +458,7 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      // which attachment they belong to, and one worker may
                      // serve several catalogs whose schemas and function names
                      // collide.
-                     .set_binary("attach_opaque_data",
-                                 seal_attachment({model.name, resolved_data.value_or(""), name,
-                                                  next_attachment_id()}))
+                     .set_binary("attach_opaque_data", seal_attachment(attachment))
                      .set_bool("supports_transactions", model.supports_transactions)
                      .set_bool("supports_time_travel", supports_time_travel(model))
                      .set_bool("catalog_version_frozen", true)
@@ -479,6 +528,49 @@ void Dispatcher::catalog_transaction_rollback(const vgi_rpc::Request& request) {
     catalog_transaction_commit(request);
 }
 
+// One IPC entry per declared ATTACH option.
+//
+// The declared type travels as a *schema* of a single `value` field rather
+// than as a type name: there is no type-name vocabulary on this wire, and a
+// schema is how every other type crosses it.
+std::vector<std::string> Dispatcher::encode_attach_options(const CatalogModel& model) const {
+    static const auto schema = arrow::schema({
+        arrow::field("name", arrow::utf8(), /*nullable=*/false),
+        arrow::field("description", arrow::utf8(), /*nullable=*/false),
+        arrow::field("type", arrow::binary(), /*nullable=*/false),
+        arrow::field("default_value", arrow::binary(), /*nullable=*/true),
+        arrow::field("required", arrow::boolean(), /*nullable=*/true),
+    });
+
+    std::vector<std::string> items;
+    items.reserve(model.attach_options.size());
+    for (const auto& option : model.attach_options) {
+        if (option.required && option.default_value) {
+            throw std::invalid_argument(
+                "attach option '" + option.name +
+                "' is required but also declares a default; an option with a default is "
+                "always satisfiable without the caller. Drop one.");
+        }
+        const auto value_schema =
+            arrow::schema({arrow::field("value", option.type, /*nullable=*/true)});
+
+        auto builder = wire::ResultBuilder(schema)
+                           .set_string("name", option.name)
+                           .set_string("description", option.description)
+                           .set_binary("type", wire::encode_schema(value_schema))
+                           .set_bool("required", option.required);
+        if (option.default_value) {
+            builder.set_binary("default_value",
+                               wire::encode_ipc(arrow::RecordBatch::Make(
+                                   value_schema, 1, {option.default_value})));
+        } else {
+            builder.set_null("default_value");
+        }
+        items.push_back(wire::encode_ipc(builder.finish()));
+    }
+    return items;
+}
+
 vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
     // Every catalog this worker serves. Discovery runs before any ATTACH, so
     // what each entry says is what the catalog *is* — not what some attachment
@@ -488,6 +580,7 @@ vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
     for (const auto& model : catalogs_) {
         auto builder = wire::ResultBuilder(gen::CatalogInfoSchema());
         builder.set_string("name", model->name);
+        builder.set_binary_list("attach_option_specs", encode_attach_options(*model));
         builder.set_optional_string(
             "implementation_version",
             model->implementation_version.empty()
@@ -1114,8 +1207,13 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
 //
 // Empty means no filter.
 std::string Dispatcher::seal_attachment(const Attachment& attachment) {
+    // The options ride base64-encoded, because the seal is split on NUL and an
+    // IPC stream is full of them.
+    const std::string options =
+        attachment.options ? arrow::util::base64_encode(wire::encode_ipc(attachment.options))
+                           : std::string{};
     return attachment.catalog + '\0' + attachment.data_version + '\0' + attachment.alias +
-           '\0' + attachment.id;
+           '\0' + attachment.id + '\0' + options;
 }
 
 Dispatcher::Attachment Dispatcher::attachment_of(
@@ -1137,14 +1235,17 @@ Dispatcher::Attachment Dispatcher::attachment_of(
         fields.push_back(sealed->substr(start, separator - start));
         start = separator + 1;
     }
-    // Anything that is not the four-field seal is not ours — an older client,
+    // Anything that is not the five-field seal is not ours — an older client,
     // or a catalog we do not serve — and the primary is the honest answer.
-    if (fields.size() != 4 || !find_catalog(fields[0])) return attachment;
+    if (fields.size() != 5 || !find_catalog(fields[0])) return attachment;
 
     attachment.catalog = fields[0];
     attachment.data_version = fields[1];
     attachment.alias = fields[2];
     attachment.id = fields[3];
+    if (!fields[4].empty()) {
+        attachment.options = wire::decode_ipc(arrow::util::base64_decode(fields[4]));
+    }
     return attachment;
 }
 

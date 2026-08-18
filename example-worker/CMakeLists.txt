@@ -40,6 +40,7 @@ add_executable(vgi-example-worker
     copy_from/lines.cpp
     catalog_def.cpp
     twin_catalogs.cpp
+    attach_options.cpp
     table_in_out/echo.cpp
     table_in_out/cached.cpp
     table_in_out/blended.cpp

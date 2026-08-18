@@ -49,6 +49,10 @@ struct BindParams {
     std::shared_ptr<arrow::Schema> copy_from_schema;
     std::string catalog_name;
     std::string schema_name;
+    // The options this attachment was made with, as a one-row batch: the
+    // declared defaults with whatever the ATTACH statement overrode. Null when
+    // the catalog declares none.
+    std::shared_ptr<arrow::RecordBatch> attach_options;
     // A fresh identifier per ATTACH.
     //
     // What distinguishes two sessions on the same catalog: the alias cannot,
@@ -110,6 +114,8 @@ struct ProcessParams {
     Secrets secrets;
     std::string catalog_name;
     std::string schema_name;
+    // The options this attachment was made with, as on `BindParams`.
+    std::shared_ptr<arrow::RecordBatch> attach_options;
     // A fresh identifier per ATTACH, as on `BindParams`.
     std::string attachment_id;
     // The engine's index for the input batch this call carries, when the

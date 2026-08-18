@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
     // wrapper that names one of the other fixtures serves that one alone, and
     // its discovery answer has to list exactly it.
     const bool composite = catalog.name == "example";
-    const bool catalog_name_is_versioned_tables = catalog.name == "versioned_tables";
+    const std::string catalog_name = catalog.name;
     if (catalog.name == "versioned") {
         // The versioned fixture: three data versions, one implementation, and
         // an advertised range. ATTACH resolves against these.
@@ -90,8 +90,14 @@ int main(int argc, char** argv) {
     example::register_transaction_storage(worker);
     example::declare_catalog(worker);
 
-    if (composite || catalog_name_is_versioned_tables) {
+    // A side catalog is registered when this binary is the composite fixture,
+    // and also when the wrapper named that catalog outright — in which case it
+    // *is* the primary and there is nothing else to serve.
+    if (composite || catalog_name == "versioned_tables") {
         example::register_versioned_tables_scans(worker);
+    }
+    if (composite || catalog_name == "attach_options") {
+        example::register_attach_options(worker);
     }
     if (composite) {
         example::register_accumulate(worker);

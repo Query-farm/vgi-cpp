@@ -178,6 +178,7 @@ private:
     // every per-name lookup for that kind.
     // The `FunctionInfo` for each name this catalog publishes globally.
     std::vector<std::string> encode_global_functions(const CatalogModel& model) const;
+    std::vector<std::string> encode_attach_options(const CatalogModel& model) const;
     std::string encode_schema_info(const std::string& owner, const CatalogSchema& schema,
                                    const CatalogSchema* contents) const;
     static std::string encode_macro_info(const CatalogMacro& macro,
@@ -254,6 +255,9 @@ private:
         // state keyed on it. The alias cannot serve: two ATTACHes may use the
         // same one, and a user may attach the same catalog twice.
         std::string id;
+        // The merged attach options as a one-row batch, or null when the
+        // catalog declares none.
+        std::shared_ptr<arrow::RecordBatch> options;
     };
     static std::string seal_attachment(const Attachment& attachment);
     // The attachment a request belongs to. Falls back to the primary catalog

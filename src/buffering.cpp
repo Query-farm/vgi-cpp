@@ -74,6 +74,7 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
     const auto attachment = attachment_of(dto);
     params.catalog_name = attachment.catalog;
     params.attachment_id = attachment.id;
+    params.attach_options = attachment.options;
     params.schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
     params.execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
     params.storage = default_storage();
