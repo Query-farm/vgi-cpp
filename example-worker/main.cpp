@@ -29,6 +29,8 @@ int main(int argc, char** argv) {
         catalog.default_data_version = "1.2.0";
         catalog.comment =
             "Example catalog demonstrating data_version_spec validation and cookie stickiness";
+    } else if (catalog.name == "versioned_tables") {
+        example::declare_versioned_tables(catalog);
     }
     worker.set_catalog(std::move(catalog));
 

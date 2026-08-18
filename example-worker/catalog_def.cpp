@@ -71,7 +71,64 @@ vgi::CatalogTable multi_branch(std::string name, std::vector<vgi::CatalogBranch>
     return table;
 }
 
+vgi::CatalogTable versioned_table(std::string name, std::string scan_function,
+                                  std::shared_ptr<arrow::Schema> schema, std::string comment) {
+    auto table = backed_by(std::move(name), std::move(scan_function), std::move(schema),
+                           std::move(comment));
+    // Not inlined: the engine asks for the scan separately, and only then does
+    // the request carry the attachment whose resolved version decides which
+    // definition of the table it is asking about.
+    table.inline_scan = false;
+    return table;
+}
+
 }  // namespace
+
+// The `versioned_tables` catalog: a table set that changes with the resolved
+// data version, which is what makes `version_schemas` observable from SQL.
+void declare_versioned_tables(vgi::CatalogModel& catalog) {
+    catalog.implementation_version = "11.0.0";
+    catalog.data_version_spec = ">=1.0.0,<4.0.0";
+    catalog.supported_data_versions = {"1.0.0", "1.1.0", "2.0.0", "3.0.0"};
+    catalog.default_data_version = "3.0.0";
+    catalog.supported_implementation_versions = {"10.0.0", "10.1.0", "11.0.0"};
+    catalog.npm_version_resolution = true;
+    catalog.comment = "Catalog whose visible tables depend on the resolved data version";
+
+    const auto animals = versioned_table(
+        "animals", "versioned_tables_animals_scan",
+        columns({{"name", arrow::utf8()}, {"legs", arrow::int64()}, {"sound", arrow::utf8()}}),
+        "Animals table for data_version 1.0.0");
+    const auto animals_color = versioned_table(
+        "animals", "versioned_tables_animals_color_scan",
+        columns({{"name", arrow::utf8()},
+                 {"legs", arrow::int64()},
+                 {"sound", arrow::utf8()},
+                 {"color", arrow::utf8()}}),
+        "Animals table for data_version 1.1.0 (with color)");
+    const auto plants = versioned_table(
+        "plants", "versioned_tables_plants_scan",
+        columns({{"name", arrow::utf8()},
+                 {"kind", arrow::utf8()},
+                 {"height_m", arrow::float64()}}),
+        "Plants table for data_version 2.0.0 and 3.0.0");
+
+    const auto main_with = [](std::vector<vgi::CatalogTable> tables) {
+        vgi::CatalogSchema schema;
+        schema.name = "main";
+        schema.tables = std::move(tables);
+        return std::vector<vgi::CatalogSchema>{std::move(schema)};
+    };
+    catalog.version_schemas = {
+        {"1.0.0", main_with({animals})},
+        {"1.1.0", main_with({animals_color})},
+        {"2.0.0", main_with({animals, plants})},
+        {"3.0.0", main_with({plants})},
+    };
+    // Declared empty as well: the engine asks for the schema list before it
+    // has an attachment to resolve a version against.
+    catalog.schema("main");
+}
 
 void declare_catalog(vgi::Worker& worker) {
     // Settings the catalog introduces. `SET greeting = 'Bonjour'` only works
@@ -136,6 +193,12 @@ void declare_catalog(vgi::Worker& worker) {
                   "Cacheable result echoing the caller's auth principal (identity-scoped)"));
     data.tables.push_back(backed_by("ten_thousand_table", "ten_thousand_table",
                                     columns({{"n", arrow::int64()}})));
+    data.tables.push_back(
+        backed_by("secret_demo_table", "secret_demo",
+                  columns({{"key", arrow::utf8()},
+                           {"value", arrow::utf8()},
+                           {"arrow_type", arrow::utf8()}}),
+                  "Function-backed table over the secret-using secret_demo function"));
     data.tables.push_back(
         backed_by("cache_parallel", "cache_parallel", columns({{"v", arrow::int64()}})));
 

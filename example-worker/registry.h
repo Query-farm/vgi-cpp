@@ -54,5 +54,7 @@ std::vector<vgi::TimeTravelVersion> versioned_data_versions();
 // Declares the catalog's tables and views. Runs after the function
 // registrations, since a table names the function that scans it.
 void declare_catalog(vgi::Worker& worker);
+// Shapes the `versioned_tables` catalog model, before any function registers.
+void declare_versioned_tables(vgi::CatalogModel& catalog);
 
 }  // namespace example
