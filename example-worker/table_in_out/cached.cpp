@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Cacheable maps: exchange-mode functions that advertise `vgi.cache.*`.
 //
 // Advertising is only sound because these are deterministic: the engine may

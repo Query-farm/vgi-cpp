@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // `unnest_tensor_rows(data)` — the streaming inverse of the `nest_tensor`
 // aggregate: one output *row* per tensor cell.
 //

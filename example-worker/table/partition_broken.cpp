@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Fixtures that break, on purpose, one clause each of the two contracts a
 // self-describing batch signs: the partition values it advertises, and the
 // batch index it is ordered by.

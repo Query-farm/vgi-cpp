@@ -5,3 +5,8 @@ vcpkg_installed/
 .cache/
 .claude/
 compile_commands.json
+
+# A local convenience symlink to a vcpkg checkout. Deliberately not tracked:
+# it was an absolute path into one developer's home directory, which is broken
+# for everyone else. Set VCPKG_ROOT instead — CMakePresets.json reads it.
+vcpkg

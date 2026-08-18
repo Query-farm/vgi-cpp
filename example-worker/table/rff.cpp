@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Scans behind the `rff_*` tables, which exercise `required_filters`.
 //
 // The worker only serves metadata and rows here — the engine is what enforces

@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // The secret × table-in-out intersection: a transform whose extra column is a
 // resolved secret's value.
 

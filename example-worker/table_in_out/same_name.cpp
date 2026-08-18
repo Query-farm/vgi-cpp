@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Same-name-in-two-schemas fixtures for the two *exchange* shapes.
 //
 // The scalar analogue lives in `scalar/same_name.cpp`. These two are not

@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // The `attach_options` catalog: one option per Arrow type the wire carries.
 //
 // What it probes is the whole ATTACH-option path — the declared types and

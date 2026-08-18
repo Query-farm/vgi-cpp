@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Two fixtures that probe the *Source* half of a buffering function — the
 // phase that drains what the sink collected — rather than what it collected.
 //

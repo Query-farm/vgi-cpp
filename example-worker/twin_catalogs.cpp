@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // The catalogs beyond `example` that one worker process also serves.
 //
 // `twin_a` and `twin_b` both declare a `main` schema holding a scalar of the

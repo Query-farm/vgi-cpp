@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Table fixtures beyond the plain sequence: projection pushdown, constant
 // columns, a fixed large table, and the two that echo the optimizer hints
 // DuckDB folded into the scan.

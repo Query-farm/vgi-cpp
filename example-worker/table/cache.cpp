@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Result-cache fixtures — table producers that advertise `vgi.cache.*`.
 //
 // Each returns a small deterministic result and folds its cache-control

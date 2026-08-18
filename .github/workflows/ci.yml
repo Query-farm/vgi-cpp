@@ -1,0 +1,119 @@
+# © Copyright 2025, 2026 Query Farm LLC - https://query.farm
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-aws,s3://query-farm-duckdb-vcpkg/,readwrite"
+  AWS_ACCESS_KEY_ID: ${{ secrets.VCPKG_CACHING_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.VCPKG_CACHING_AWS_SECRET_ACCESS_KEY }}
+  AWS_ENDPOINT_URL: ${{ secrets.VCPKG_CACHING_AWS_ENDPOINT_URL }}
+  AWS_DEFAULT_REGION: ${{ secrets.VCPKG_CACHING_AWS_DEFAULT_REGION }}
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+
+jobs:
+  # Seconds, and it fails the run before anything is built: a formatting-only
+  # diff arriving on top of a real change is what the formatter exists to stop.
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: pipx install 'clang-format~=22.1'
+      - name: Check formatting
+        run: ./scripts/format.sh --check
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            compiler: gcc
+          - os: ubuntu-24.04-arm
+            compiler: gcc
+          - os: macos-14
+            compiler: apple-clang
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The SDK is built from source as a subdirectory, not from an installed
+      # copy: the two move together, and an installed one goes stale silently.
+      # CMakeLists.txt looks for it beside this repo by default.
+      - name: Check out vgi-rpc-cpp
+        uses: actions/checkout@v4
+        with:
+          repository: Query-farm/vgi-rpc-cpp
+          path: vgi-rpc-c++
+
+      - name: Clone and bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout 05442024c3fda64320bd25d2251cc9807b84fb6f
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$(pwd)/vcpkg" >> $GITHUB_ENV
+
+      - name: Install newer bison (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install bison
+          echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
+
+      # vcpkg builds libsodium through its autotools script. The runners ship
+      # libtool but not autoconf/automake, and the port fails at configure time
+      # with a message naming only autoconf.
+      - name: Install autotools (libsodium)
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install autoconf automake libtool
+          else
+            sudo apt-get update && sudo apt-get install -y autoconf automake libtool
+          fi
+
+      # vcpkg's binary cache covers the dependencies; this covers our own
+      # translation units, which vcpkg knows nothing about.
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.os }}-${{ matrix.compiler }}
+          max-size: 500M
+
+      - name: Configure
+        run: >
+          cmake --preset default
+          -DVGI_RPC_SOURCE_DIR=${{ github.workspace }}/vgi-rpc-c++
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build --preset default --parallel
+
+      - name: Test (unit)
+        run: ctest --test-dir build --output-on-failure
+
+      # The example worker is the deliverable: if it does not start and answer
+      # __describe__, nothing downstream of it can work.
+      - name: Smoke — the worker describes itself
+        run: |
+          python3 -m pip install --quiet 'vgi-rpc[http]' || true
+          test -x build/example-worker/vgi-example-worker
+          echo "worker built: $(build/example-worker/vgi-example-worker --help 2>&1 | head -1 || true)"
+
+  # The integration suite is the definition of done for this repo, and it needs
+  # the DuckDB extension built from ~/Development/vgi — a large, separate build
+  # that does not belong in this workflow. It runs locally via
+  # scripts/run_tests.sh; see CLAUDE.md. Wiring it here needs the extension
+  # published as a release artifact first, which is tracked separately.

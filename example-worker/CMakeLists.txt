@@ -1,6 +1,4 @@
-# © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-# SPDX-License-Identifier: Apache-2.0
-
+# © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 # The integration-test fixture: one binary that stands in for every catalog the
 # suite attaches, routed by VGI_WORKER_CATALOG_NAME the way the Rust example
 # worker is.

@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Cacheable scalar fixtures whose *output* shape is what the per-value memo
 // has to survive, rather than the arithmetic the cached_* fixtures in
 // table_in_out/cached.cpp cover: a heap string and a NULL, which the memo

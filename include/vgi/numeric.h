@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Result-type rules for arithmetic over Arrow types.
 //
 // A function like `double(x)` or `add_values(a, b)` cannot declare a fixed

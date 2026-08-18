@@ -20,14 +20,22 @@ specification.
 ## Build
 
 ```bash
+git clone https://github.com/Query-farm/vgi-rpc-cpp.git ../vgi-rpc-c++
+export VCPKG_ROOT=/path/to/vcpkg
+
 cmake --preset default   # Debug + tests
 cmake --build build
 ctest --test-dir build
 ```
 
 `vgi-rpc-c++` is built from a sibling checkout by default, since the two move
-together. Override with `-DVGI_RPC_SOURCE_DIR=<path>`, or use an installed
-copy with `-DVGI_USE_INSTALLED_RPC=ON`.
+together and an installed copy goes stale silently. Override with
+`-DVGI_RPC_SOURCE_DIR=<path>`, or use an installed copy with
+`-DVGI_USE_INSTALLED_RPC=ON`.
+
+Note for Linux and macOS: vcpkg builds libsodium through its autotools script,
+so `autoconf` and `automake` need to be installed. Windows uses MSBuild and
+needs neither.
 
 ## A worker
 
@@ -75,4 +83,5 @@ when two runs go at once, since they would otherwise share one log.
 
 ## Licence
 
-Apache-2.0.
+Query Farm Source-Available License, Version 1.0 — see [LICENSE](LICENSE).
+The same licence as `vgi-python` and the DuckDB extension.

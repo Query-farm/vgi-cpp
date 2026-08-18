@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // `nest_tensor(value, {axis: coord, …})` — collect a group's rows into a dense
 // N-D tensor plus per-axis sorted coordinate lists.
 //

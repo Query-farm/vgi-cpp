@@ -1,6 +1,4 @@
-# © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-# SPDX-License-Identifier: Apache-2.0
-
+# © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 # Deliberately thin.  The integration suite in ~/Development/vgi is the
 # definitive test source; what belongs here is internal utility behaviour that
 # suite cannot see — type mapping, argument coercion, wire encoding.

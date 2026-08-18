@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // `large_state(data)` — buffer a megabyte per input batch and report the total.
 //
 // What this probes that the other buffering fixtures do not is *size*: a

@@ -1,7 +1,6 @@
 {
   "name": "vgi-cpp",
   "version": "0.1.0",
-  "license": "Apache-2.0",
   "dependencies": [
     {
       "name": "arrow",
@@ -10,6 +9,7 @@
         "compute"
       ]
     },
+    "libsodium",
     "nlohmann-json",
     {
       "name": "cpp-httplib",

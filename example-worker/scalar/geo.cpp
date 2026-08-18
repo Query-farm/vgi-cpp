@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Geospatial fixtures. Each function exists in three shapes — struct{lat,lon},
 // list<double>, and fixed_size_list<double,2> — because a DuckDB point literal
 // can arrive as any of them and the three are separate overloads to the

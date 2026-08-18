@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Arithmetic scalar fixtures. Each one exercises a distinct part of the
 // contract: a bind-decided result type, a constant argument, varargs, or a
 // type bound.

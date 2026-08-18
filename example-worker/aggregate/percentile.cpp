@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // `vgi_percentile(value, percentile)` — the constant-argument aggregate.
 //
 // The only fixture here whose *result* depends on a value the group states

@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Fixtures whose work is divided once and claimed from a shared queue, plus
 // the two families that describe each emitted batch — by partition id, for the
 // ordered sinks that reassemble parallel output, and by partition value, for

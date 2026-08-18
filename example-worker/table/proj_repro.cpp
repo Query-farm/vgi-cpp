@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // The `projection_repro` app: four scans over one wide schema, shaped like
 // vgi-kafka's `kafka_consume`, that pin value correctness *across* projection
 // pushdown.

@@ -89,10 +89,15 @@ registered dynamically rather than appearing in that list.
 ## Build
 
 ```bash
+export VCPKG_ROOT=~/Development/vgi-rpc-c++/vcpkg   # or any vcpkg checkout
 cmake --preset default    # Debug + tests
 cmake --preset release
 cmake --build build
 ```
+
+`VCPKG_ROOT` rather than a `vcpkg/` symlink in the tree: the symlink that used
+to be committed pointed at an absolute path in one developer's home directory,
+which is broken for every other clone.
 
 `vgi-rpc-c++` is built from the sibling checkout by default (they move
 together, and an installed copy goes stale silently). Override with

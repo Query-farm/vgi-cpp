@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Generators that each probe one thing the engine has to get right: a scan
 // that fails mid-stream, nested output types, named-parameter binding,
 // UNION-typed arguments, and the typed constant-argument getters.

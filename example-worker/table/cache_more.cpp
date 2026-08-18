@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Result-cache fixtures beyond the flat int64 producers in `cache.cpp`.
 //
 // Every one reaches a part of the cache path a plain sequence cannot: nested

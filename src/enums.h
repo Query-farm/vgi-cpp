@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // The dictionary-encoded enum strings the VGI wire carries.
 //
 // Every one of these is serialized as `dictionary(int16, utf8)`. The values are

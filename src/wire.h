@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Reading VGI request parameters and building VGI responses.
 //
 // The shape of the wire, learned once so the 70 method handlers do not each

@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Result-cache fixtures whose output is SINGLE_VALUE partitioned.
 //
 // Two distinct things are under test here. `cache_partitioned` only carries

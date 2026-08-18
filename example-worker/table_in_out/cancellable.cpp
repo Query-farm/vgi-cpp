@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // `slow_cancellable_inout(probe_path, data, sleep_ms := 50)` — a passthrough
 // slow enough to be cancelled mid-stream.
 //

@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // The declarative example catalog: schemas, tables and views.
 //
 // A VGI table is a name bound to a table function. Declaring one here is what

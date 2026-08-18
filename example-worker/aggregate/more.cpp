@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // Aggregate fixtures beyond the three in basic.cpp, each probing one thing the
 // simple cases do not: a second value column, a result type that follows the
 // input, a result type chosen from a secret, varargs, a string-valued

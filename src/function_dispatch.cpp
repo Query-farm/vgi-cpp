@@ -1,6 +1,4 @@
-// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
-// SPDX-License-Identifier: Apache-2.0
-
+// © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 // The function-invocation half of the protocol: `bind`, which settles a call
 // site's output schema, and `init`, which opens the stream that carries the
 // data.
