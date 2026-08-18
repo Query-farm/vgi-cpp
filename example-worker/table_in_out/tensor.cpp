@@ -117,7 +117,7 @@ public:
         return unnest_row_schema(params.input_schema->field(0)->type());
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         auto cells = std::dynamic_pointer_cast<arrow::StructArray>(batch->column(0));

@@ -4,6 +4,8 @@
 #include "vgi/arguments.h"
 
 #include <charconv>
+#include <cstdio>
+#include <cstdlib>
 
 #include <arrow/compute/cast.h>
 
@@ -45,6 +47,7 @@ Arguments Arguments::parse(const std::string& ipc_bytes) {
 
     auto batch = wire::decode_ipc(ipc_bytes);
     if (!batch) return args;
+    if (std::getenv("VGI_PROBE")) fprintf(stderr, "PROBE-SCHEMA %s\n", batch->schema()->ToString(true).c_str());
 
     // DuckDB's form: one `args` struct column whose children are the
     // arguments. Anything else is treated as a direct column-per-argument
@@ -115,6 +118,11 @@ bool Arguments::named_is_null(const std::string& name) const {
 std::shared_ptr<arrow::DataType> Arguments::positional_type(size_t index) const {
     if (index >= positional_fields_.size() || !positional_fields_[index]) return nullptr;
     return positional_fields_[index]->type();
+}
+
+std::shared_ptr<arrow::Field> Arguments::positional_field(size_t index) const {
+    if (index >= positional_fields_.size()) return nullptr;
+    return positional_fields_[index];
 }
 
 std::optional<int64_t> Arguments::const_int64(size_t index) const {

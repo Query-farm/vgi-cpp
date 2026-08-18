@@ -578,7 +578,7 @@ public:
 
     std::optional<vgi::CacheControl> cache_control() const override { return default_ttl(); }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         return {vgi::project_batch(batch, params.output_schema)};
@@ -616,7 +616,7 @@ public:
         return control;
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         return {vgi::project_batch(batch, params.output_schema)};

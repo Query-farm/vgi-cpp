@@ -57,7 +57,7 @@ public:
         return arrow::schema(std::move(fields));
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         // By type, since the secret's name is the user's to choose. Absent

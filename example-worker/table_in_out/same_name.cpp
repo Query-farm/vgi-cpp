@@ -105,7 +105,7 @@ public:
         return tag_schema();
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams&,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         return {tag_rows(schema_, batch)};

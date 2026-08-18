@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,6 +17,35 @@
 #include "vgi/types.h"
 
 namespace vgi {
+
+// One batch a table-in-out emits, and what it says about itself.
+//
+// Convertible from a bare batch on purpose: a function that has nothing to add
+// still writes `return {batch};`, and the annotations exist only for the shapes
+// that need them.
+struct EmittedBatch {
+    EmittedBatch() = default;
+    EmittedBatch(std::shared_ptr<arrow::RecordBatch> batch)  // NOLINT(google-explicit-constructor)
+        : batch(std::move(batch)) {}
+
+    std::shared_ptr<arrow::RecordBatch> batch;
+
+    // Which input row produced each output row, one entry per emitted row.
+    //
+    // Absent means the identity map, which is what the engine assumes — and
+    // under that assumption it requires exactly as many output rows as input
+    // rows. A function that fans one row out to several, or drops one, has to
+    // say which is which or the engine cannot stamp the correlated columns.
+    std::optional<std::vector<int32_t>> parent_rows;
+
+    // A cache advertisement for this batch alone, where `cache_control()`
+    // speaks for every batch the function emits.
+    std::optional<CacheControl> cache_control;
+
+    // Anything else this batch carries, merged last so a fixture can send a
+    // deliberately malformed value the typed fields above could not express.
+    std::map<std::string, std::string> metadata;
+};
 
 // A function that takes a table and produces a table.
 //
@@ -34,7 +65,7 @@ public:
     // is what a filter or a row-wise transform wants.
     virtual std::shared_ptr<arrow::Schema> bind(const BindParams& params) const;
 
-    virtual std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    virtual std::vector<EmittedBatch> process(
         const ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const = 0;
 
@@ -43,10 +74,7 @@ public:
     // `finish` is never called.
     virtual bool has_finish() const { return false; }
 
-    virtual std::vector<std::shared_ptr<arrow::RecordBatch>> finish(
-        const ProcessParams&) const {
-        return {};
-    }
+    virtual std::vector<EmittedBatch> finish(const ProcessParams&) const { return {}; }
 
     // The secrets this call needs resolved, when which ones depends on the
     // arguments — a scope taken from a path argument, say.

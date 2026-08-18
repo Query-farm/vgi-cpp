@@ -52,7 +52,7 @@ public:
         return params.input_schema;
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const int64_t sleep_ms = params.arguments.named_int64("sleep_ms").value_or(50);

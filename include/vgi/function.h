@@ -101,6 +101,11 @@ struct ProcessParams {
     // belongs to it. A function holding state across calls — a buffering sink,
     // an aggregate — keys on this; a stateless one can ignore it.
     std::string execution_id;
+    // The validators a conditional request carries, when the engine holds a
+    // cached answer it would rather revalidate than recompute. A function that
+    // recognises its own etag answers `not_modified` instead of the rows.
+    std::optional<std::string> if_none_match;
+    std::optional<std::string> if_modified_since;
     // The AT clause this call site carried, as on `BindParams`.
     std::optional<std::string> at_unit;
     std::optional<std::string> at_value;

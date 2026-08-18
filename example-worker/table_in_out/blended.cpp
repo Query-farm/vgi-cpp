@@ -21,6 +21,8 @@
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
 
+#include <arrow/util/base64.h>
+
 #include <vgi/worker.h>
 
 #include "scalar/util.h"
@@ -104,7 +106,7 @@ public:
         return arrow::schema({arrow::field("geohash", arrow::utf8(), /*nullable=*/true)});
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const int64_t precision = params.arguments.named_int64("precision").value_or(4);
@@ -170,19 +172,30 @@ public:
         return arrow::schema({arrow::field("i", arrow::int64(), /*nullable=*/true)});
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         auto counts = std::static_pointer_cast<arrow::Int64Array>(
             cast_to(batch->column(0), arrow::int64()));
         arrow::Int64Builder out;
+        // Which input row each output row came from. Without it the engine has
+        // no way to stamp the correlated columns onto a fan-out, and refuses
+        // the batch rather than guess an identity map that cannot hold.
+        std::vector<int32_t> parents;
         for (int64_t row = 0; row < counts->length(); ++row) {
             if (counts->IsNull(row)) continue;
-            for (int64_t i = 0; i < counts->Value(row); ++i) (void)out.Append(i);
+            for (int64_t i = 0; i < counts->Value(row); ++i) {
+                (void)out.Append(i);
+                parents.push_back(static_cast<int32_t>(row));
+            }
         }
         std::shared_ptr<arrow::Array> array;
         (void)out.Finish(&array);
-        return {arrow::RecordBatch::Make(params.output_schema, array->length(), {array})};
+
+        vgi::EmittedBatch emitted{
+            arrow::RecordBatch::Make(params.output_schema, array->length(), {array})};
+        emitted.parent_rows = std::move(parents);
+        return {std::move(emitted)};
     }
 };
 
@@ -211,7 +224,7 @@ public:
         return arrow::schema({arrow::field("row_sum", arrow::float64(), /*nullable=*/true)});
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         bool absolute = false;
@@ -275,7 +288,7 @@ public:
         return arrow::schema({arrow::field("v", arrow::int64(), /*nullable=*/true)});
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>&) const override {
         return {arrow::RecordBatch::MakeEmpty(params.output_schema).ValueOrDie()};
@@ -309,7 +322,7 @@ public:
                               arrow::field("b", arrow::int64(), /*nullable=*/true)});
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const auto& values = static_cast<const arrow::Int64Array&>(
@@ -338,6 +351,81 @@ public:
 
 }  // namespace
 
+// `hostile_provenance(n, mode := …)` — provenance the engine must refuse.
+//
+// The worker is a semi-trusted party: the parent indices it sends are used to
+// index the input batch, so a malformed payload has to be caught rather than
+// followed. Each mode poisons the payload differently, and every one of them
+// must throw on both transports.
+class HostileProvenance : public vgi::TableInOutFunction {
+public:
+    std::string name() const override { return "hostile_provenance"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return blended_metadata("Blended map emitting deliberately malformed provenance",
+                                {"testing", "blended"});
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::column("n", 0, "int64", "Input value, echoed"),
+                vgi::ArgSpec::named("mode", "varchar",
+                                    "Which malformation to emit: range, length or base64")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("hv", arrow::int64(), /*nullable=*/true)});
+    }
+
+    std::vector<vgi::EmittedBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        const auto rows = batch->num_rows();
+        arrow::Int64Builder out;
+        (void)out.Reserve(rows);
+        for (int64_t i = 0; i < rows; ++i) (void)out.Append(i);
+        std::shared_ptr<arrow::Array> array;
+        (void)out.Finish(&array);
+
+        vgi::EmittedBatch emitted{
+            arrow::RecordBatch::Make(params.output_schema, rows, {array})};
+
+        // Written as raw metadata, not through `parent_rows`: the typed field
+        // cannot express any of these, which is the point of it.
+        const auto mode = params.arguments.named_string("mode").value_or("range");
+        std::vector<int32_t> parents;
+        if (mode == "base64") {
+            emitted.metadata[kParentRowKey] = "!!!not base64!!!";
+            return {std::move(emitted)};
+        }
+        for (int64_t i = 0; i < rows; ++i) {
+            // One past the last valid index, which a range check must catch.
+            parents.push_back(static_cast<int32_t>(mode == "range" ? rows : i));
+        }
+        // One int32 too many, which a length check must catch.
+        if (mode == "length") parents.push_back(0);
+        emitted.metadata[kParentRowKey] = encode_parent_rows(parents);
+        return {std::move(emitted)};
+    }
+
+private:
+    static constexpr const char* kParentRowKey = "vgi_rpc.parent_row#b64";
+
+    // The same little-endian packing the SDK does for `parent_rows`, spelled
+    // out here because this fixture has to produce payloads the SDK would
+    // refuse to build.
+    static std::string encode_parent_rows(const std::vector<int32_t>& parents) {
+        std::string raw(parents.size() * sizeof(int32_t), '\0');
+        for (size_t i = 0; i < parents.size(); ++i) {
+            const auto value = static_cast<uint32_t>(parents[i]);
+            raw[i * 4 + 0] = static_cast<char>(value & 0xFF);
+            raw[i * 4 + 1] = static_cast<char>((value >> 8) & 0xFF);
+            raw[i * 4 + 2] = static_cast<char>((value >> 16) & 0xFF);
+            raw[i * 4 + 3] = static_cast<char>((value >> 24) & 0xFF);
+        }
+        return arrow::util::base64_encode(raw);
+    }
+};
+
 void register_blended(vgi::Worker& worker) {
     worker.register_table_in_out(std::make_shared<GeoEncode>(/*with_altitude=*/false));
     worker.register_table_in_out(std::make_shared<GeoEncode>(/*with_altitude=*/true));
@@ -345,6 +433,7 @@ void register_blended(vgi::Worker& worker) {
     worker.register_table_in_out(std::make_shared<RowSum>());
     worker.register_table_in_out(std::make_shared<BlendedDrop>());
     worker.register_table_in_out(std::make_shared<ProjectableBlended>());
+    worker.register_table_in_out(std::make_shared<HostileProvenance>());
 }
 
 }  // namespace example

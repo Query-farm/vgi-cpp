@@ -127,7 +127,7 @@ public:
         return {vgi::ArgSpec::table("data", 0, "Input relation")};
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const int64_t threshold = params.settings.get_int64("threshold").value_or(0);

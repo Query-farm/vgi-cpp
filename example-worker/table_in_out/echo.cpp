@@ -44,7 +44,7 @@ public:
         return {vgi::ArgSpec::table("data", 0, "Input relation")};
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         return {vgi::project_batch(batch, params.output_schema)};
@@ -74,7 +74,7 @@ public:
         return {vgi::ArgSpec::table("data", 0, "Input relation")};
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const int64_t observed = params.output_schema->num_fields();
@@ -128,7 +128,7 @@ public:
         return params.input_schema;
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         const auto count =

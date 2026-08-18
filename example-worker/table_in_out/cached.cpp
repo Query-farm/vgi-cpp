@@ -7,6 +7,7 @@
 // serve a later call an earlier answer, so a function whose result depends on
 // anything outside its arguments must not opt in.
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -79,7 +80,7 @@ public:
         return per_value_cache();
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         return {doubled(params, batch)};
@@ -123,7 +124,7 @@ public:
         return control;
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         return {doubled(params, batch)};
@@ -162,19 +163,37 @@ public:
         return per_value_cache();
     }
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+    std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         auto counts = std::static_pointer_cast<arrow::Int64Array>(
             cast_to(batch->column(0), arrow::int64()));
-        arrow::Int64Builder out;
+
+        // Round-robin rather than contiguous: round k emits value k for every
+        // input row still counting, so an input row's outputs are *not*
+        // adjacent. A contiguous emission would satisfy the aggregates while
+        // hiding a gather that only ever reads runs.
+        int64_t widest = 0;
         for (int64_t row = 0; row < counts->length(); ++row) {
-            if (counts->IsNull(row)) continue;
-            for (int64_t i = 0; i < counts->Value(row); ++i) (void)out.Append(i);
+            if (!counts->IsNull(row)) widest = std::max(widest, counts->Value(row));
+        }
+
+        arrow::Int64Builder out;
+        std::vector<int32_t> parents;
+        for (int64_t k = 0; k < widest; ++k) {
+            for (int64_t row = 0; row < counts->length(); ++row) {
+                if (counts->IsNull(row) || counts->Value(row) <= k) continue;
+                (void)out.Append(k);
+                parents.push_back(static_cast<int32_t>(row));
+            }
         }
         std::shared_ptr<arrow::Array> array;
         (void)out.Finish(&array);
-        return {arrow::RecordBatch::Make(params.output_schema, array->length(), {array})};
+
+        vgi::EmittedBatch emitted{
+            arrow::RecordBatch::Make(params.output_schema, array->length(), {array})};
+        emitted.parent_rows = std::move(parents);
+        return {std::move(emitted)};
     }
 };
 

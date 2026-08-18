@@ -18,6 +18,8 @@
 #include <stdexcept>
 
 #include <arrow/record_batch.h>
+#include <arrow/table.h>
+#include <arrow/util/base64.h>
 #include <arrow/util/key_value_metadata.h>
 #include <vgi_rpc/request.h>
 #include <vgi_rpc/result.h>
@@ -81,6 +83,35 @@ std::string next_execution_id() {
 }
 
 namespace {
+
+// The per-batch and per-tick metadata keys this dispatcher reads and writes.
+//
+// Spelled here rather than at each use because a typo in one of them is
+// silent: an unrecognised key is simply ignored by the other side.
+namespace keys {
+// Per-output-row provenance: base64 of a raw little-endian int32 array with
+// one entry per emitted row, naming the input row that produced it. Raw bytes
+// rather than Arrow IPC — the engine reinterprets them directly.
+constexpr const char* kParentRow = "vgi_rpc.parent_row#b64";
+// Conditional-request validators the engine sends when it holds a cached
+// answer it would like revalidated instead of recomputed.
+constexpr const char* kIfNoneMatch = "vgi.cache.if_none_match";
+constexpr const char* kIfModifiedSince = "vgi.cache.if_modified_since";
+}  // namespace keys
+
+std::string encode_parent_rows(const std::vector<int32_t>& parent_rows) {
+    std::string raw(parent_rows.size() * sizeof(int32_t), '\0');
+    for (size_t i = 0; i < parent_rows.size(); ++i) {
+        // Little-endian by hand: the wire fixes the byte order, and the host's
+        // is only incidentally the same.
+        const auto value = static_cast<uint32_t>(parent_rows[i]);
+        raw[i * 4 + 0] = static_cast<char>(value & 0xFF);
+        raw[i * 4 + 1] = static_cast<char>((value >> 8) & 0xFF);
+        raw[i * 4 + 2] = static_cast<char>((value >> 16) & 0xFF);
+        raw[i * 4 + 3] = static_cast<char>((value >> 24) & 0xFF);
+    }
+    return arrow::util::base64_encode(raw);
+}
 
 // Feeds each input batch through a scalar function and emits exactly one
 // output batch, which is what an exchange stream promises its consumer.
@@ -253,17 +284,107 @@ public:
 
     void exchange(const vgi_rpc::AnnotatedBatch& input, vgi_rpc::OutputCollector& out,
                   vgi_rpc::CallContext&) override {
-        for (const auto& batch : fn_->process(params_, input.batch)) {
-            if (!batch) continue;
+        // Conditional-request validators ride the tick, not the init: an
+        // exchange is asked once per input chunk and the engine may hold a
+        // cached answer for some of them and not others.
+        auto params = params_;
+        params.if_none_match = tick_metadata(input, keys::kIfNoneMatch);
+        params.if_modified_since = tick_metadata(input, keys::kIfModifiedSince);
+
+        emit_merged(fn_->process(params, input.batch), out);
+    }
+
+private:
+    // One data batch per exchange tick is all the wire carries, so several
+    // emitted batches are concatenated — and their provenance with them, since
+    // an output row's parent index is relative to the one input batch either
+    // way.
+    void emit_merged(const std::vector<EmittedBatch>& emitted,
+                     vgi_rpc::OutputCollector& out) const {
+        std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+        std::vector<int32_t> parent_rows;
+        bool have_parents = false;
+        std::map<std::string, std::string> metadata;
+
+        for (const auto& item : emitted) {
+            if (!item.batch) continue;
+            if (item.parent_rows) {
+                if (item.parent_rows->size() != static_cast<size_t>(item.batch->num_rows())) {
+                    throw std::runtime_error(
+                        "table-in-out '" + fn_->name() + "' emitted " +
+                        std::to_string(item.parent_rows->size()) + " parent rows for " +
+                        std::to_string(item.batch->num_rows()) + " output rows");
+                }
+                have_parents = true;
+                parent_rows.insert(parent_rows.end(), item.parent_rows->begin(),
+                                   item.parent_rows->end());
+            } else {
+                // An unannotated batch in an annotated set would leave a hole
+                // in the map, so it takes the identity indices it implies.
+                for (int64_t i = 0; i < item.batch->num_rows(); ++i) {
+                    parent_rows.push_back(static_cast<int32_t>(i));
+                }
+            }
+            if (item.cache_control) {
+                for (const auto& [key, value] : item.cache_control->to_metadata()) {
+                    metadata[key] = value;
+                }
+            }
+            for (const auto& [key, value] : item.metadata) metadata[key] = value;
+            batches.push_back(item.batch);
+        }
+        if (batches.empty()) return;
+
+        auto batch = batches.size() == 1 ? batches.front() : concatenate(batches);
+        if (have_parents) metadata[keys::kParentRow] = encode_parent_rows(parent_rows);
+
+        if (metadata.empty()) {
             if (cache_) {
                 out.emit_batch(batch, cache_);
             } else {
                 out.emit_batch(batch);
             }
+            return;
         }
+        // The function-wide advertisement first, so a per-batch one overrides it.
+        std::vector<std::string> merged_keys;
+        std::vector<std::string> merged_values;
+        if (cache_) {
+            for (int i = 0; i < cache_->size(); ++i) {
+                if (!metadata.count(cache_->key(i))) {
+                    merged_keys.push_back(cache_->key(i));
+                    merged_values.push_back(cache_->value(i));
+                }
+            }
+        }
+        for (const auto& [key, value] : metadata) {
+            merged_keys.push_back(key);
+            merged_values.push_back(value);
+        }
+        out.emit_batch(batch, arrow::key_value_metadata(merged_keys, merged_values));
     }
 
-private:
+    static std::shared_ptr<arrow::RecordBatch> concatenate(
+        const std::vector<std::shared_ptr<arrow::RecordBatch>>& batches) {
+        auto table = arrow::Table::FromRecordBatches(batches);
+        if (!table.ok()) {
+            throw std::runtime_error("table-in-out: " + table.status().ToString());
+        }
+        auto combined = (*table)->CombineChunksToBatch();
+        if (!combined.ok()) {
+            throw std::runtime_error("table-in-out: " + combined.status().ToString());
+        }
+        return combined.MoveValueUnsafe();
+    }
+
+    static std::optional<std::string> tick_metadata(const vgi_rpc::AnnotatedBatch& input,
+                                                    const char* key) {
+        if (!input.custom_metadata) return std::nullopt;
+        const auto index = input.custom_metadata->FindKey(key);
+        if (index < 0) return std::nullopt;
+        return input.custom_metadata->value(index);
+    }
+
     std::shared_ptr<TableInOutFunction> fn_;
     ProcessParams params_;
     std::shared_ptr<arrow::KeyValueMetadata> cache_;

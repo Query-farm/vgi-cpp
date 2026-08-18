@@ -56,6 +56,16 @@ public:
     // needs to decide a result type. Null when absent.
     std::shared_ptr<arrow::DataType> positional_type(size_t index) const;
 
+    // The whole field for positional argument `index`, metadata included.
+    // Null when absent.
+    //
+    // Needed on top of `positional_type()` because DuckDB's lossless types
+    // (HUGEINT, UUID, …) travel as a plain storage type plus an
+    // `ARROW:extension:name` entry in the *field* metadata; a bind that
+    // rebuilds an output field from the type alone drops the annotation and
+    // the value comes back as a BLOB.
+    std::shared_ptr<arrow::Field> positional_field(size_t index) const;
+
     // Typed reads of a constant argument. Absent, null, or a type that cannot
     // be converted yields nullopt rather than throwing — a function usually
     // has a sensible default and the alternative is a throw per call site.
