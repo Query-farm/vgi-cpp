@@ -81,6 +81,14 @@ std::string encode_ipc(const std::shared_ptr<arrow::RecordBatch>& batch);
 // with rows would be both wrong and lossy.
 std::string encode_schema(const std::shared_ptr<arrow::Schema>& schema);
 
+// The schema of an IPC stream, whether or not it carries batches.  Returns
+// null for empty input, which is how an absent optional schema travels.
+std::shared_ptr<arrow::Schema> decode_schema(const std::string& bytes);
+
+// Read a schema-valued parameter: the named binary column, decoded.
+std::shared_ptr<arrow::Schema> get_schema(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                          const std::string& field);
+
 // ── Building results ──────────────────────────────────────────────────────
 
 // A one-row result batch, built field by field against `schema` so a missing

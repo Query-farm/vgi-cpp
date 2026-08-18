@@ -61,6 +61,7 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
     // Implemented handlers, by method name. Anything absent from this map is
     // still registered — see the note above — but refuses when called.
     const std::unordered_map<std::string, UnaryHandler> unary = {
+        {"bind", &Dispatcher::bind},
         {"catalog_attach", &Dispatcher::catalog_attach},
         {"catalog_version", &Dispatcher::catalog_version},
         {"catalog_schemas", &Dispatcher::catalog_schemas},
@@ -80,9 +81,18 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         const std::string name = spec.name;
 
         if (spec.kind == MethodKind::Stream) {
-            // `init` is the only streaming method: an exchange whose input and
-            // output schemas are settled per call by the preceding bind, so
-            // they cannot be declared here.
+            // `init` is the only streaming method, and an exchange rather than
+            // a producer: the engine pushes input batches and reads one output
+            // batch back for each. Its input and output schemas are settled
+            // per call by the preceding bind, so the ones declared here are
+            // only placeholders — the factory returns the real pair.
+            builder.add_exchange(name, spec.params, arrow::schema({}), arrow::schema({}),
+                                 [this, name](const vgi_rpc::Request& req,
+                                              vgi_rpc::CallContext&) {
+                                     trace(name);
+                                     return this->init(req);
+                                 },
+                                 "", global_init_response_schema());
             continue;
         }
 

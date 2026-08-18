@@ -152,6 +152,22 @@ std::string encode_ipc(const std::shared_ptr<arrow::RecordBatch>& batch) {
     return buffer->ToString();
 }
 
+std::shared_ptr<arrow::Schema> decode_schema(const std::string& bytes) {
+    if (bytes.empty()) return nullptr;
+    auto buffer = arrow::Buffer::FromString(bytes);
+    auto source = std::make_shared<arrow::io::BufferReader>(buffer);
+    auto reader = unwrap(arrow::ipc::RecordBatchStreamReader::Open(source),
+                         "reading an embedded IPC schema");
+    return reader->schema();
+}
+
+std::shared_ptr<arrow::Schema> get_schema(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                          const std::string& field) {
+    auto bytes = get_optional_binary(batch, field);
+    if (!bytes) return nullptr;
+    return decode_schema(*bytes);
+}
+
 std::string encode_schema(const std::shared_ptr<arrow::Schema>& schema) {
     auto sink = unwrap(arrow::io::BufferOutputStream::Create(), "allocating a schema sink");
     auto writer = unwrap(arrow::ipc::MakeStreamWriter(sink, schema), "opening a schema writer");

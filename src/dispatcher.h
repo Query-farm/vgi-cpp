@@ -9,11 +9,16 @@
 #include <vector>
 
 #include <vgi_rpc/server.h>
+#include <vgi_rpc/stream.h>
 
 #include "vgi/catalog.h"
 #include "vgi/function.h"
 
 namespace vgi {
+
+// The `init` stream's header schema (`GlobalInitResponse`). Defined in
+// function_dispatch.cpp; registration needs it, and so does the handler.
+const std::shared_ptr<arrow::Schema>& global_init_response_schema();
 
 // Owns the function registries and the catalog identity, and turns them into
 // the RPC methods a VGI engine calls.
@@ -45,6 +50,9 @@ public:
     // 70 methods, and a handler is much easier to review beside its siblings
     // than in a 5,000-line switch.
 
+    vgi_rpc::Result bind(const vgi_rpc::Request& request);
+    vgi_rpc::Stream init(const vgi_rpc::Request& request);
+
     vgi_rpc::Result catalog_attach(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_schemas(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_schema_get(const vgi_rpc::Request& request);
@@ -62,6 +70,13 @@ private:
     // carries.
     static std::string encode_function_info(const ScalarFunction& fn,
                                             const std::string& schema_name);
+
+    const ScalarFunction* find_scalar(const std::string& name) const;
+    // Resolution failure is a user-visible error — the engine advertised this
+    // function from our own discovery answer, so being unable to find it now
+    // means the two disagree.
+    std::shared_ptr<ScalarFunction> require_scalar(const std::string& name) const;
+    BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
 
     CatalogModel catalog_;
     std::vector<std::shared_ptr<ScalarFunction>> scalars_;
