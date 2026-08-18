@@ -48,6 +48,7 @@ int main(int argc, char** argv) {
     example::register_more_tables(worker);
     example::register_sum_all_columns(worker);
     example::register_settings_fixtures(worker);
+    example::register_format_fixtures(worker);
     example::register_settings_tables(worker);
     example::register_secret_fixtures(worker);
     example::register_series(worker);
@@ -57,6 +58,7 @@ int main(int argc, char** argv) {
     example::register_more_aggregates(worker);
     example::register_generators(worker);
     example::register_secret_scalars(worker);
+    example::register_secret_table_in_out(worker);
     example::register_blended(worker);
     example::register_versioned(worker);
     example::register_window_aggregates(worker);

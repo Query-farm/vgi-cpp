@@ -1,10 +1,11 @@
 // © Copyright 2025-2026, Query.Farm LLC - https://query.farm
 // SPDX-License-Identifier: Apache-2.0
 
-// Probe fixtures: global registration, the auth principal, constant-argument
-// packet assembly, and the tensor inverter.
+// Probe fixtures: the resolved secret's contents, global registration, the
+// auth principal, constant-argument packet assembly, and the tensor inverter.
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -16,6 +17,7 @@
 #include <arrow/array/builder_primitive.h>
 #include <arrow/buffer_builder.h>
 #include <arrow/compute/api.h>
+#include <nlohmann/json.hpp>
 
 #include <vgi/worker.h>
 
@@ -34,6 +36,87 @@ std::shared_ptr<arrow::Array> repeat_string(const std::string& value, int64_t ro
     (void)out.Finish(&array);
     return array;
 }
+
+// The secret type both fixtures below ask for, by type rather than by name:
+// the name is whatever the user wrote in `CREATE SECRET`.
+constexpr const char* kSecretType = "vgi_example";
+
+// The first resolved secret carrying `field`, whatever its name or type.
+//
+// The complement of `typed_field`: that one names the type and takes what it
+// finds, this one names the field and takes the first secret that has it.
+std::string any_secret_field(const vgi::Secrets& secrets, const std::string& field) {
+    for (const auto& [name, fields] : secrets.all()) {
+        (void)name;
+        auto value = fields.find(field);
+        if (value != fields.end()) return value->second;
+    }
+    return {};
+}
+
+// `return_secret_value()` — the resolved `vgi_example` secret as JSON.
+//
+// Takes no arguments, so the only thing fixing the row count is the batch the
+// engine ships to give the call one.
+class ReturnSecretValue : public vgi::ScalarFunction {
+public:
+    std::string name() const override { return "return_secret_value"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Return a secret's value";
+        md.return_type = arrow::utf8();
+        md.examples = {{"SELECT return_secret_value()", "Return a secret's value",
+                        std::nullopt}};
+        // Declaring the lookup is what makes the engine resolve it and hand
+        // the values down; an undeclared secret never arrives, however it was
+        // created.
+        md.required_secrets = {{kSecretType, std::nullopt, std::nullopt}};
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
+
+    std::shared_ptr<arrow::RecordBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        nlohmann::json fields = nlohmann::json::object();
+        if (const auto* secret = params.secrets.of_type(kSecretType)) {
+            // Every value is a string here: the engine's field types are
+            // rendered on the way in, and re-deriving them from the text would
+            // be guessing.
+            fields = *secret;
+        }
+        return result(params, repeat_string(fields.dump(), batch->num_rows()));
+    }
+};
+
+// `secret_field()` — one field read by type, one read by field name alone.
+class SecretField : public vgi::ScalarFunction {
+public:
+    std::string name() const override { return "secret_field"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Look up secret fields by name";
+        md.return_type = arrow::utf8();
+        md.examples = {{"SELECT secret_field()", "Look up secret fields by name",
+                        std::nullopt}};
+        md.required_secrets = {{kSecretType, std::nullopt, std::nullopt}};
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
+
+    std::shared_ptr<arrow::RecordBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        const auto port = params.secrets.typed_field(kSecretType, "port").value_or("");
+        const auto name = any_secret_field(params.secrets, "secret_string");
+        return result(params, repeat_string("port=" + port + ";name=" + name,
+                                            batch->num_rows()));
+    }
+};
 
 // `global_scalar(value)` — the scalar half of the global-registration probes.
 //
@@ -431,6 +514,8 @@ public:
 }  // namespace
 
 void register_secret_scalars(vgi::Worker& worker) {
+    worker.register_scalar(std::make_shared<ReturnSecretValue>());
+    worker.register_scalar(std::make_shared<SecretField>());
     worker.register_scalar(std::make_shared<GlobalScalar>());
     worker.register_scalar(std::make_shared<WhoAmI>());
     worker.register_scalar(std::make_shared<BinaryPacket>());

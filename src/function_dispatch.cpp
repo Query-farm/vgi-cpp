@@ -501,13 +501,13 @@ std::vector<SecretLookup> Dispatcher::required_secrets_of(const std::string& nam
         return fn->metadata().required_secrets;
     }
     if (auto fn = find_table_in_out(name, params.schema_name)) {
-        return fn->metadata().required_secrets;
+        return fn->secret_lookups(params);
     }
     if (auto fn = find_table(name, params.schema_name, &params)) {
-        return fn->metadata().required_secrets;
+        return fn->secret_lookups(params);
     }
     auto candidates = scalars_named(name);
-    if (!candidates.empty()) return candidates.front()->metadata().required_secrets;
+    if (!candidates.empty()) return candidates.front()->secret_lookups(params);
     return {};
 }
 

@@ -14,6 +14,7 @@ add_executable(vgi-example-worker
     scalar/types.cpp
     scalar/same_name.cpp
     scalar/settings.cpp
+    scalar/format.cpp
     scalar/secrets.cpp
     table/sequence.cpp
     table/cache.cpp
@@ -33,6 +34,7 @@ add_executable(vgi-example-worker
     table_in_out/cached.cpp
     table_in_out/blended.cpp
     table_in_out/accumulate.cpp
+    table_in_out/secrets.cpp
     aggregate/basic.cpp
     aggregate/more.cpp
     aggregate/window.cpp

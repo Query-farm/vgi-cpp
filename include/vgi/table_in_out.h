@@ -48,6 +48,16 @@ public:
         return {};
     }
 
+    // The secrets this call needs resolved, when which ones depends on the
+    // arguments — a scope taken from a path argument, say.
+    //
+    // Answered from `metadata()` by default, which is enough for a fixed list.
+    // A function whose scope is an argument cannot use that list: `metadata()`
+    // is asked before any call site exists.
+    virtual std::vector<SecretLookup> secret_lookups(const BindParams&) const {
+        return metadata().required_secrets;
+    }
+
     // A result-cache advertisement for this function's output. See
     // `ScalarFunction::cache_control` for when advertising is sound.
     virtual std::optional<CacheControl> cache_control() const { return std::nullopt; }

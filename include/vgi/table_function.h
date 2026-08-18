@@ -99,6 +99,16 @@ public:
         return std::nullopt;
     }
 
+    // The secrets this call needs resolved, when which ones depends on the
+    // arguments — a scope taken from a path argument, say.
+    //
+    // Answered from `metadata()` by default, which is enough for a fixed list.
+    // A function whose scope is an argument cannot use that list: `metadata()`
+    // is asked before any call site exists.
+    virtual std::vector<SecretLookup> secret_lookups(const BindParams&) const {
+        return metadata().required_secrets;
+    }
+
     // Post-execution diagnostics, shown as Extra Info under EXPLAIN ANALYZE.
     //
     // Fired once per scan thread after the stream ends, so it cannot read the
