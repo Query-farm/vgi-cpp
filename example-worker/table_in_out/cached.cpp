@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <arrow/array.h>
+#include <arrow/array/util.h>
 #include <arrow/array/builder_primitive.h>
 
 #include <vgi/worker.h>
@@ -111,24 +112,39 @@ public:
         return arrow::schema({arrow::field("doubled", arrow::int64(), /*nullable=*/true)});
     }
 
-    std::optional<vgi::CacheControl> cache_control() const override {
+    std::vector<vgi::EmittedBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         vgi::CacheControl control;
         // ttl 0 beside a validator is the "no-cache" semantic: keep the bytes,
         // but confirm before reusing them.
         control.ttl_seconds = 0;
         control.revalidatable = true;
-        // A constant validator rather than a digest of the input: the SDK does
-        // not hand a table-in-out its per-batch cache control, so there is
-        // nowhere to compute one per input unit.
-        control.etag = "\"vgi-cpp-reval-double\"";
-        return control;
+        // A constant validator: this map's answer for a given input never
+        // changes, so every revalidation is expected to confirm it.
+        control.etag = kEtag;
+
+        // Answered per emission, because a conditional request is about *this*
+        // input chunk: a matching validator means the engine still holds the
+        // right bytes and must not be sent them again.
+        if (params.if_none_match && *params.if_none_match == kEtag) {
+            control.not_modified = true;
+            vgi::EmittedBatch confirmed{
+                arrow::RecordBatch::Make(params.output_schema, 0,
+                                         std::vector<std::shared_ptr<arrow::Array>>{
+                                             arrow::MakeArrayOfNull(arrow::int64(), 0)
+                                                 .ValueOrDie()})};
+            confirmed.cache_control = control;
+            return {std::move(confirmed)};
+        }
+
+        vgi::EmittedBatch emitted{doubled(params, batch)};
+        emitted.cache_control = control;
+        return {std::move(emitted)};
     }
 
-    std::vector<vgi::EmittedBatch> process(
-        const vgi::ProcessParams& params,
-        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        return {doubled(params, batch)};
-    }
+private:
+    static constexpr const char* kEtag = "\"vgi-cpp-reval-double\"";
 };
 
 // `cached_explode(n)` — a 1:N fan-out, emitting `0..n-1` per input row.

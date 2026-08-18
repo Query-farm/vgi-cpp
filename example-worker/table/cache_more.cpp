@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <arrow/array.h>
+#include <arrow/array/util.h>
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_decimal.h>
 #include <arrow/array/builder_nested.h>
@@ -602,23 +603,45 @@ public:
         return {vgi::ArgSpec::table("data", 0, "Input table")};
     }
 
-    std::optional<vgi::CacheControl> cache_control() const override {
+    std::vector<vgi::EmittedBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         vgi::CacheControl control;
         // ttl 0 with a validator is the "no-cache" semantic: keep the bytes,
         // but confirm before reusing them.
         control.ttl_seconds = 0;
         control.revalidatable = true;
-        // A constant validator rather than a digest of the input: the SDK does
-        // not hand a table-in-out its per-batch cache control, so there is
-        // nowhere to compute one per input.
-        control.etag = "\"vgi-cpp-reval-echo\"";
-        return control;
+        // A constant validator: this fixture's answer never actually changes,
+        // so every revalidation is expected to confirm it.
+        control.etag = kEtag;
+
+        // Per emission rather than per function, because the answer to a
+        // conditional request is about *this* input: a validator that matches
+        // means the stored bytes still stand, and the rows must not be sent
+        // again.
+        if (params.if_none_match && *params.if_none_match == kEtag) {
+            control.not_modified = true;
+            vgi::EmittedBatch confirmed{empty_like(params.output_schema)};
+            confirmed.cache_control = control;
+            return {std::move(confirmed)};
+        }
+
+        vgi::EmittedBatch emitted{vgi::project_batch(batch, params.output_schema)};
+        emitted.cache_control = control;
+        return {std::move(emitted)};
     }
 
-    std::vector<vgi::EmittedBatch> process(
-        const vgi::ProcessParams& params,
-        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        return {vgi::project_batch(batch, params.output_schema)};
+private:
+    static constexpr const char* kEtag = "\"vgi-cpp-reval-echo\"";
+
+    static std::shared_ptr<arrow::RecordBatch> empty_like(
+        const std::shared_ptr<arrow::Schema>& schema) {
+        std::vector<std::shared_ptr<arrow::Array>> columns;
+        columns.reserve(static_cast<size_t>(schema->num_fields()));
+        for (const auto& field : schema->fields()) {
+            columns.push_back(arrow::MakeArrayOfNull(field->type(), 0).ValueOrDie());
+        }
+        return arrow::RecordBatch::Make(schema, 0, columns);
     }
 };
 

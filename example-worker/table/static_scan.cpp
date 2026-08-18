@@ -539,6 +539,11 @@ public:
         md.projection_pushdown = true;
         md.filter_pushdown = true;
         md.auto_apply_filters = true;
+        // Declaring it is what lets the engine rewrite a Top-N over this scan
+        // into a semi-join: fetch the row ids first, then only the surviving
+        // rows' columns. Sound only because this scan's row_id is unique and
+        // stable — a second fetch has to find the same rows again.
+        md.late_materialization = true;
         return md;
     }
 
