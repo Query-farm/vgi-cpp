@@ -20,7 +20,7 @@ namespace vgi {
 namespace {
 // The generated headers carry the namespace of their original consumer, the
 // DuckDB extension.  Alias rather than post-process generated output.
-namespace gen = ::duckdb::vgi::generated;
+namespace gen = ::vgi::generated;
 }  // namespace
 
 Worker::Worker() : disp_(std::make_unique<Dispatcher>()) {}

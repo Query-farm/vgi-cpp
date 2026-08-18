@@ -88,7 +88,7 @@ std::string next_attachment_id() {
 }
 
 
-namespace gen = ::duckdb::vgi::generated;
+namespace gen = ::vgi::generated;
 
 std::shared_ptr<arrow::Schema> advertised_aggregate_schema(const AggregateFunction& fn) {
     if (auto declared = fn.metadata().return_type) {

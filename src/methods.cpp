@@ -13,7 +13,7 @@
 
 namespace vgi {
 namespace {
-namespace gen = ::duckdb::vgi::generated;
+namespace gen = ::vgi::generated;
 
 }  // namespace
 
