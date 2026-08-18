@@ -393,9 +393,114 @@ public:
     }
 };
 
+// `vgi_streaming_sum(value) OVER (PARTITION BY …)` — a running total that
+// continues across chunk boundaries.
+//
+// The streaming shape exists for exactly this: the engine feeds chunks and
+// expects one value per *input row*, with state carried per partition key. A
+// grouped aggregate cannot produce a running total, and a windowed one would
+// re-scan the frame for every row.
+class StreamingSum : public vgi::AggregateFunction {
+public:
+    std::string name() const override { return "vgi_streaming_sum"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Running sum across PARTITION BY keys via the streaming protocol";
+        md.return_type = arrow::int64();
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::column("value", 0, "int64", "Column to sum")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return result_schema(arrow::int64());
+    }
+
+    bool streaming_partitioned() const override { return true; }
+
+    std::shared_ptr<arrow::Array> streaming_chunk(
+        const std::shared_ptr<arrow::RecordBatch>& chunk, size_t partition_key_count,
+        size_t order_key_count, std::map<std::string, std::string>& states) const override {
+        // Columns arrive as [partition keys…, order keys…, values…], so the
+        // value's index is the sum of the two counts rather than 0.
+        const int value_index = static_cast<int>(partition_key_count + order_key_count);
+        auto values = std::static_pointer_cast<arrow::Int64Array>(
+            cast_to(chunk->column(value_index), arrow::int64()));
+
+        arrow::Int64Builder out;
+        (void)out.Reserve(chunk->num_rows());
+        for (int64_t row = 0; row < chunk->num_rows(); ++row) {
+            const auto key = partition_key(chunk, partition_key_count, row);
+            auto& state = states[key];
+            int64_t running = state.empty() ? 0 : std::strtoll(state.c_str(), nullptr, 10);
+            // A NULL contributes nothing but does not reset: the running total
+            // continues, which is what SQL's running SUM does.
+            if (!values->IsNull(row)) {
+                running += values->Value(row);
+                state = std::to_string(running);
+            }
+            (void)out.Append(running);
+        }
+        std::shared_ptr<arrow::Array> array;
+        (void)out.Finish(&array);
+        return array;
+    }
+
+    void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
+                const std::vector<std::shared_ptr<arrow::Array>>& columns) const override {
+        if (columns.empty()) return;
+        auto values = std::static_pointer_cast<arrow::Int64Array>(
+            cast_to(columns[0], arrow::int64()));
+        for (int64_t i = 0; i < group_ids.length(); ++i) {
+            if (values->IsNull(i)) continue;
+            auto& state = states[group_ids.Value(i)];
+            state = std::to_string(decode_total(state) + values->Value(i));
+        }
+    }
+
+    std::string combine(const std::string& target, const std::string& source) const override {
+        return std::to_string(decode_total(target) + decode_total(source));
+    }
+
+    std::shared_ptr<arrow::RecordBatch> finalize(
+        const std::shared_ptr<arrow::Schema>& output_schema, const arrow::Int64Array&,
+        const std::vector<std::optional<std::string>>& states) const override {
+        arrow::Int64Builder out;
+        for (const auto& state : states) {
+            if (state) {
+                (void)out.Append(decode_total(*state));
+            } else {
+                (void)out.AppendNull();
+            }
+        }
+        std::shared_ptr<arrow::Array> array;
+        (void)out.Finish(&array);
+        return arrow::RecordBatch::Make(output_schema, array->length(), {array});
+    }
+
+private:
+    // The partition key's rendered values, joined. Rendered rather than
+    // hashed: a hash collision would silently merge two partitions' totals,
+    // and these keys are short.
+    static std::string partition_key(const std::shared_ptr<arrow::RecordBatch>& chunk,
+                                     size_t key_count, int64_t row) {
+        std::string key;
+        for (size_t i = 0; i < key_count; ++i) {
+            auto scalar = chunk->column(static_cast<int>(i))->GetScalar(row);
+            key += scalar.ok() ? scalar.ValueUnsafe()->ToString() : std::string{};
+            key += "\x1f";
+        }
+        return key;
+    }
+};
+
 }  // namespace
 
 void register_window_aggregates(vgi::Worker& worker) {
+    worker.register_aggregate(std::make_shared<StreamingSum>());
     worker.register_aggregate(std::make_shared<WindowSum>());
     worker.register_aggregate(std::make_shared<WindowMedian>());
     worker.register_aggregate(std::make_shared<WindowListagg>());

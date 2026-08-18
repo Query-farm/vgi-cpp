@@ -91,6 +91,28 @@ public:
 
     virtual bool supports_window() const { return false; }
 
+    // ── Streaming-partitioned aggregation ────────────────────────────────
+    //
+    // A third shape: the engine opens a session, feeds chunks whose columns
+    // are `[partition keys…, order keys…, values…]`, and expects one output
+    // value per *input row*. State is carried across chunks per partition key,
+    // which is what lets a running total continue across a chunk boundary.
+
+    virtual bool streaming_partitioned() const { return false; }
+
+    // Process one chunk, returning one value per row. `states` is the
+    // cross-chunk map, keyed by the partition key's bytes; the framework loads
+    // and persists it around this call.
+    virtual std::shared_ptr<arrow::Array> streaming_chunk(
+        const std::shared_ptr<arrow::RecordBatch>& chunk, size_t partition_key_count,
+        size_t order_key_count, std::map<std::string, std::string>& states) const {
+        (void)chunk;
+        (void)partition_key_count;
+        (void)order_key_count;
+        (void)states;
+        throw std::runtime_error("streaming_chunk() not supported by this aggregate");
+    }
+
     // Evaluate the aggregate over `frames` of `partition`, one value per
     // entry. Each frame is a half-open [begin, end) row range.
     //

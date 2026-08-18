@@ -253,6 +253,100 @@ vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request) 
                                       .finish());
 }
 
+vgi_rpc::Result Dispatcher::aggregate_streaming_open(const vgi_rpc::Request& request) {
+    auto dto = wire::get_ipc(request.batch(), "request");
+    if (!dto) throw std::runtime_error("aggregate_streaming_open: empty request");
+
+    const auto function_name = wire::get_string(dto, "function_name");
+    const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
+    (void)require_aggregate(function_name, schema_name);
+
+    // The session's shape is fixed at open and echoed on every chunk, which
+    // carries none of it — so it is stashed, like every other cross-call
+    // context here.
+    auto execution_id = next_execution_id();
+    auto* store = default_storage().get();
+    store->kv_put(execution_id, "streaming.partition_keys",
+                  std::to_string(wire::get_optional_int64(dto, "partition_key_count").value_or(0)));
+    store->kv_put(execution_id, "streaming.order_keys",
+                  std::to_string(wire::get_optional_int64(dto, "order_key_count").value_or(0)));
+    store->kv_put(execution_id, "streaming.output_schema",
+                  wire::get_optional_binary(dto, "output_schema").value_or(""));
+
+    auto payload = wire::ResultBuilder(payload_schema_of("aggregate_streaming_open"))
+                       .set_binary("execution_id", execution_id)
+                       .fill_defaults()
+                       .finish();
+    return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
+                                      .set_binary("result", wire::encode_ipc(payload))
+                                      .finish());
+}
+
+vgi_rpc::Result Dispatcher::aggregate_streaming_chunk(const vgi_rpc::Request& request) {
+    auto dto = wire::get_ipc(request.batch(), "request");
+    if (!dto) throw std::runtime_error("aggregate_streaming_chunk: empty request");
+
+    const auto function_name = wire::get_string(dto, "function_name");
+    const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
+    const auto execution_id = wire::get_binary(dto, "execution_id");
+    auto fn = require_aggregate(function_name, schema_name);
+
+    auto* store = default_storage().get();
+    const auto count = [&](const char* key) -> size_t {
+        return static_cast<size_t>(
+            std::strtoull(store->kv_get(execution_id, key).value_or("0").c_str(), nullptr, 10));
+    };
+    auto output_schema =
+        wire::decode_schema(store->kv_get(execution_id, "streaming.output_schema").value_or(""));
+
+    auto chunk = wire::decode_ipc(wire::get_binary(dto, "input_batch"));
+    if (!chunk) throw std::runtime_error("aggregate_streaming_chunk: empty chunk");
+
+    // Per-partition state, carried across chunks. Loaded whole rather than per
+    // key because a chunk touches few partitions and the map is small.
+    std::map<std::string, std::string> states;
+    for (const auto& [id, blob] : store->scan(execution_id, "streaming", "", 0, SIZE_MAX)) {
+        (void)id;
+        const auto separator = blob.find('\0');
+        if (separator == std::string::npos) continue;
+        states[blob.substr(0, separator)] = blob.substr(separator + 1);
+    }
+
+    auto values = fn->streaming_chunk(chunk, count("streaming.partition_keys"),
+                                      count("streaming.order_keys"), states);
+
+    // Rewritten wholesale: the log is append-only, so the current state is the
+    // newest entry per key and stale ones are simply never read.
+    for (const auto& [key, state] : states) {
+        store->append(execution_id, "streaming", "", key + std::string(1, '\0') + state);
+    }
+
+    auto result_batch = arrow::RecordBatch::Make(
+        output_schema ? output_schema
+                      : arrow::schema({arrow::field("result", values->type(), true)}),
+        values->length(), {values});
+    auto payload = wire::ResultBuilder(payload_schema_of("aggregate_streaming_chunk"))
+                       .set_binary("result_batch", wire::encode_ipc(result_batch))
+                       .fill_defaults()
+                       .finish();
+    return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
+                                      .set_binary("result", wire::encode_ipc(payload))
+                                      .finish());
+}
+
+vgi_rpc::Result Dispatcher::aggregate_streaming_close(const vgi_rpc::Request& request) {
+    // Must not raise; the session's state is the only thing to release.
+    try {
+        if (auto dto = wire::get_ipc(request.batch(), "request")) {
+            const auto execution_id =
+                wire::get_optional_binary(dto, "execution_id").value_or("");
+            if (!execution_id.empty()) default_storage()->clear(execution_id);
+        }
+    } catch (const std::exception&) {
+    }
+    return empty_envelope();
+}
+
 vgi_rpc::Result Dispatcher::aggregate_window_init(const vgi_rpc::Request& request) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_window_init: empty request");

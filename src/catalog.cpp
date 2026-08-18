@@ -591,6 +591,7 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
             // Declared, or the engine never sends a window request at all and
             // an aggregate that implements `window` is simply never asked.
             .set_bool("supports_window", fn.supports_window())
+            .set_bool("streaming_partitioned", fn.streaming_partitioned())
             .fill_defaults()
             .finish());
 }

@@ -84,6 +84,9 @@ public:
     vgi_rpc::Result aggregate_combine(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_finalize(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_destructor(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_streaming_open(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_streaming_chunk(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_streaming_close(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_window_init(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_window(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_window_batch(const vgi_rpc::Request& request);
