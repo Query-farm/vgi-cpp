@@ -4,52 +4,47 @@ Ordered so that each milestone is testable against `~/Development/vgi`'s suite
 rather than against assertions written here. The suite is the specification;
 anything this file claims that the suite disagrees with is wrong.
 
-## 1. Attach and one scalar function
+Current: **125 of 309 test cases, 4,069 of 4,253 assertions.**
 
-The narrowest end-to-end slice, and the one that proves the wire format:
+## Done
 
-- `catalog_attach`, `catalog_schemas`, `catalog_schema_contents_functions`
-- `bind`, `init`
-- the per-function scalar call path
+1. **Attach and scalar functions** — catalog discovery, `bind`, `init`, the
+   scalar exchange path, overloads resolved by argument type, per-schema
+   registration, type bounds, stability and null handling.
+2. **Table functions** — producer streams, cardinality, parallel scans via
+   `max_workers` + `on_init` + the shared work queue.
+3. **Table-in-out functions** — the exchange path with fan-out, and
+   name-based projection.
+4. **Aggregates** — bind / update / combine / finalize / destructor, with the
+   per-group state rule that keeps an all-NULL group NULL.
+5. **Table buffering** — sink, combine, and a finalize producer, over
+   cross-process storage.
+6. **Catalogs** — schemas, tables bound to scan functions, views.
+7. **Result cache** — `vgi.cache.*` advertisements on the first batch.
+8. **Settings and secrets** — declared at ATTACH, delivered per call, with
+   two-phase secret resolution.
 
-Target: `ATTACH` succeeds and `SELECT upper_case('x')` returns from a C++
-worker. Then the narrowest scalar tests under
-`~/Development/vgi/test/sql/integration/`.
+## Next, roughly by how many tests each unblocks
 
-## 2. The rest of the scalar surface
-
-Overloads, named and constant arguments, `any`-typed arguments, volatility,
-NULL handling, error propagation. `~/Development/vgi-rust/vgi-example-worker/src/scalar/`
-enumerates what the fixtures expect.
-
-## 3. Table functions
-
-`table_function` producer streams, `table_function_cardinality`,
-`table_function_statistics`, projection and filter pushdown.
-
-## 4. Catalogs
-
-Schemas, tables, views, macros, indexes — the ~45 `catalog_*` methods. Read
-only first; DDL and transactions after.
-
-## 5. Aggregates and buffering
-
-The 12 `aggregate_*` methods, then `table_buffering_*`. Windowed aggregates
-last — they are the largest single piece.
-
-## 6. Transports beyond stdio
-
-`--unix` for the pooled launcher (the default regression path in `~/Development/vgi`'s
-Makefile is `test_launcher`, so this is needed earlier than it looks), then
-`--http`.
+- **The remaining fixtures.** Most failures are a missing example function
+  rather than missing capability. `grep 'does not exist'` on the run log lists
+  them.
+- **Filter and projection pushdown** as declared capabilities, with the
+  `pushdown_filters` request field parsed.
+- **COPY from / to** — the `catalog_copy_from_formats` surface and the
+  reader/writer pairing that shares one name.
+- **Multi-branch scans** — `catalog_table_scan_branches_get`.
+- **Time travel** — versioned table schemas selected by the AT clause.
+- **Partitioning, batch indexes, late materialization.**
+- **HTTP transport** — producer streams need the state-token continuation
+  path, which the pipe transport does not exercise.
 
 ## Open questions
 
 - **Namespace of generated code.** `duckdb::vgi::generated` is an artifact of
-  the generators' original consumer. Adding a `--namespace` flag upstream in
+  the generators' original consumer. A `--namespace` flag upstream in
   `vgi-python` is the clean fix. Aliased for now.
 - **Response builders.** `vgi_request_builders.hpp` is client-side. Whether
-  worker-side response builders should be generated too — mirroring what
-  `vgi-rust` does by hand in `vgi-protocol/src/protocol/dtos.rs` — is
-  undecided, and worth settling before hand-writing 69 methods' worth of
-  encoding.
+  worker-side response builders should be generated too is still undecided;
+  the hand-written `ResultBuilder` has held up well enough that it may not be
+  worth it.

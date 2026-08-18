@@ -114,7 +114,39 @@ suite twice to read it.
 
 ## Status
 
-Early. The build, the generated protocol layer, and the public SDK shape
-(`Worker`, `ScalarFunction`, `ArgSpec`, `CatalogModel`) exist. The RPC
-handlers do not — no VGI method is implemented yet, so no integration test
-passes yet. See `docs/roadmap.md`.
+**125 of 309 integration test cases, 4,069 of 4,253 assertions.** Run
+`./scripts/run_tests.sh` for the current figure — it is the only number that
+means anything here.
+
+Implemented in the SDK: scalar / table / table-in-out / aggregate / buffering
+functions, catalogs with tables and views, per-schema registration and
+overload resolution, cross-process storage, result-cache advertisements,
+settings, secrets, and parallel scans.
+
+Not yet: filter and projection pushdown as a *declared* capability, COPY
+from/to, time travel, multi-branch scans, partitioning, batch indexes, late
+materialization, and the HTTP transport's stream-continuation path. Most of
+the remaining failures are unwritten fixtures rather than missing SDK
+capability — `grep 'does not exist' /tmp/vgi-cpp-test-cache/run.log` lists them
+by name.
+
+## Things worth knowing before changing anything
+
+Each of these cost real debugging time, and none is guessable from the code:
+
+- **Every non-void method answers `{result: binary}`.** The generated "result
+  schema" describes what is *inside* those bytes, not the response batch.
+- **`arguments` and `output_schema` are IPC-serialized *schemas*, not
+  batches.** A parameter list is fields plus metadata; `vgi_const` above all,
+  because a const parameter must not appear in the per-row batch.
+- **Two enums spell "scalar".** `FunctionInfo.function_type` is `scalar`; the
+  filter the engine sends is `SCALAR_FUNCTION`. And case is load-bearing —
+  a lowercase `null_handling` is silently ignored, a lowercase
+  `order_dependence` rejects the catalog.
+- **The engine runs several worker processes per query.** A buffering sink
+  fans out across them and finalizes in another, so anything remembered in a
+  member variable is gone. Use `ProcessParams::storage`.
+- **Execution ids must be unique across processes**, since that store is
+  shared by every worker of the uid.
+- **Buffering functions are advertised under the `table` filter.** The engine
+  never asks for `table_buffering`.
