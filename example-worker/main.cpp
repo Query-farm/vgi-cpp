@@ -62,6 +62,7 @@ int main(int argc, char** argv) {
     example::register_secret_table_in_out(worker);
     example::register_blended(worker);
     example::register_versioned(worker);
+    example::register_static_scans(worker);
     example::register_window_aggregates(worker);
     example::register_rff(worker);
     example::register_more_cache(worker);

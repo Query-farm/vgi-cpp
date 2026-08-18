@@ -288,12 +288,6 @@ void declare_catalog(vgi::Worker& worker) {
         numbers.column_statistics = {sequence_statistics("value", 100)};
         data.tables.push_back(std::move(numbers));
     }
-    data.tables.push_back(
-        backed_by("secret_demo_table", "secret_demo",
-                  columns({{"key", arrow::utf8()},
-                           {"value", arrow::utf8()},
-                           {"arrow_type", arrow::utf8()}}),
-                  "Function-backed table over the secret-using secret_demo function"));
     data.tables.push_back(backed_by("cacheable_numbers", "cacheable_numbers",
                                     columns({{"n", arrow::int64()}}),
                                     "Cacheable 10-row result advertising vgi.cache.ttl"));
@@ -416,9 +410,15 @@ void declare_catalog(vgi::Worker& worker) {
 
     for (auto& table : rff_tables()) data.tables.push_back(std::move(table));
 
-    data.views.push_back({"first_ten", "SELECT * FROM sequence(10)", std::nullopt});
+    // In `main`, not `data`: a view is looked up by the schema the user names,
+    // and the suite names `main` for these two.
+    auto& main = worker.catalog().schema("main");
+    main.views.push_back(
+        {"first_ten", "SELECT * FROM sequence(10)", "First 10 integers"});
+    main.views.push_back({"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0",
+                          "Even numbers from 0 to 98"});
     data.views.push_back(
-        {"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0", std::nullopt});
+        {"small_numbers", "SELECT * FROM sequence(5)", std::nullopt});
 
     data.tables.push_back(
         backed_by("cache_projection", "cache_projection",

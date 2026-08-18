@@ -47,6 +47,7 @@ void register_secret_scalars(vgi::Worker& worker);
 void register_secret_table_in_out(vgi::Worker& worker);
 void register_blended(vgi::Worker& worker);
 void register_versioned(vgi::Worker& worker);
+void register_static_scans(vgi::Worker& worker);
 void register_window_aggregates(vgi::Worker& worker);
 void register_rff(vgi::Worker& worker);
 void register_more_cache(vgi::Worker& worker);

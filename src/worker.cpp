@@ -99,9 +99,14 @@ void Worker::run(int argc, char** argv) {
         throw std::runtime_error("cannot initialize Arrow compute: " + status.ToString());
     }
 
+    // The `bad_protocol` fixture advertises an incompatible version through
+    // this override, so the engine's ATTACH fails with a clear mismatch rather
+    // than somewhere later in the query.
+    const char* override_version = std::getenv("VGI_PROTOCOL_VERSION_OVERRIDE");
     vgi_rpc::ServerBuilder builder;
-    builder.enable_describe("vgi")
-        .protocol_version(std::string(gen::VGI_PROTOCOL_VERSION));
+    builder.enable_describe("vgi").protocol_version(
+        override_version && *override_version ? std::string(override_version)
+                                              : std::string(gen::VGI_PROTOCOL_VERSION));
     if (!server_id_.empty()) builder.server_id(server_id_);
     disp_->install(builder);
 

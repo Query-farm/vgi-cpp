@@ -359,7 +359,10 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      .set_int64("catalog_version", 1)
                      .set_bool("attach_opaque_data_required", true)
                      .set_string("default_schema", "main")
-                     .set_bool("supports_column_statistics", false)
+                     // On, and per-table from here: the flag gates every
+                     // declared statistic, so leaving it off silently
+                     // discarded them all.
+                     .set_bool("supports_column_statistics", true)
                      .set_string("global_function_prefix", "")
                      .set_optional_string("resolved_data_version", resolved_data)
                      .set_optional_string("resolved_implementation_version", resolved_impl)
@@ -490,10 +493,17 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table,
         .set_bool("supports_delete", false)
         .set_bool("supports_returning", false)
         .set_bool("supports_column_statistics", !table.column_statistics.empty())
-        .set_int64("cardinality_estimate", table.cardinality.value_or(-1))
-        .set_int64("cardinality_max", table.cardinality.value_or(-1))
         .set_string_map("tags", table.tags)
         .set_string_list_list("required_filters", table.required_filters);
+    // Null, not -1, when the table does not know its size. The engine reads
+    // these as optional, so a present -1 *is* an answer: it takes it, skips
+    // `table_function_cardinality` entirely, and DuckDB clamps it to one row.
+    if (table.cardinality) {
+        builder.set_int64("cardinality_estimate", *table.cardinality)
+            .set_int64("cardinality_max", *table.cardinality);
+    } else {
+        builder.set_null("cardinality_estimate").set_null("cardinality_max");
+    }
     if (table.comment) {
         builder.set_string("comment", *table.comment);
     } else {

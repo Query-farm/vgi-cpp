@@ -24,6 +24,7 @@ add_executable(vgi-example-worker
     table/secrets.cpp
     table/series.cpp
     table/versioned.cpp
+    table/static_scan.cpp
     table/rff.cpp
     table/filters.cpp
     table/cache_more.cpp
