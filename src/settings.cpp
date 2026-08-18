@@ -116,4 +116,43 @@ const std::map<std::string, std::string>* Secrets::secret(
     return it == by_name_.end() ? nullptr : &it->second;
 }
 
+const std::map<std::string, std::string>* Secrets::of_type(const std::string& type) const {
+    for (const auto& [name, fields] : by_name_) {
+        (void)name;
+        auto kind = fields.find("type");
+        if (kind != fields.end() && kind->second == type) return &fields;
+    }
+    return nullptr;
+}
+
+std::optional<std::string> Secrets::typed_field(const std::string& type,
+                                                const std::string& field_name) const {
+    const auto* fields = of_type(type);
+    if (!fields) return std::nullopt;
+    auto value = fields->find(field_name);
+    if (value == fields->end()) return std::nullopt;
+    return value->second;
+}
+
+const std::map<std::string, std::string>* Secrets::for_scope_of_type(
+    const std::string& path, const std::string& type) const {
+    const std::map<std::string, std::string>* best = nullptr;
+    size_t best_length = 0;
+    for (const auto& [name, fields] : by_name_) {
+        (void)name;
+        auto kind = fields.find("type");
+        if (kind == fields.end() || kind->second != type) continue;
+        auto scope = fields.find("scope");
+        // An unscoped secret of the right type is a candidate of length 0: it
+        // matches anything, and loses to any scoped secret that also matches.
+        const std::string prefix = scope == fields.end() ? "" : scope->second;
+        if (!prefix.empty() && path.compare(0, prefix.size(), prefix) != 0) continue;
+        if (!best || prefix.size() >= best_length) {
+            best = &fields;
+            best_length = prefix.size();
+        }
+    }
+    return best;
+}
+
 }  // namespace vgi

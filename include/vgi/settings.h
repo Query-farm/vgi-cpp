@@ -46,8 +46,33 @@ public:
     // One field of one secret, or nullopt if either is absent.
     std::optional<std::string> field(const std::string& secret_name,
                                      const std::string& field_name) const;
-    // Every field of one secret.
+    // Every field of one secret, by the name the user gave it in
+    // `CREATE SECRET <name> (...)`.
     const std::map<std::string, std::string>* secret(const std::string& secret_name) const;
+
+    // Every resolved secret, as (name, fields).
+    //
+    // Needed because a function almost never knows the *name*: it knows the
+    // type it asked for, and the user chose the name. The lookups below are
+    // built on this, and so is anything else that has to search.
+    const std::map<std::string, std::map<std::string, std::string>>& all() const noexcept {
+        return by_name_;
+    }
+
+    // The first secret of `type`. Each resolved secret carries its own `type`
+    // field, which is what makes this answerable.
+    const std::map<std::string, std::string>* of_type(const std::string& type) const;
+    // One field of the first secret of `type`.
+    std::optional<std::string> typed_field(const std::string& type,
+                                           const std::string& field_name) const;
+
+    // The secret of `type` whose scope is the longest prefix of `path`.
+    //
+    // Longest-prefix, not first-match: two secrets may both cover a path — one
+    // scoped to a bucket and one to a prefix within it — and the more specific
+    // is the one the user meant.
+    const std::map<std::string, std::string>* for_scope_of_type(
+        const std::string& path, const std::string& type) const;
 
     bool empty() const noexcept { return by_name_.empty(); }
 

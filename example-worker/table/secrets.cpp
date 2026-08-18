@@ -53,7 +53,10 @@ public:
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         std::vector<std::array<std::string, 3>> rows;
-        if (const auto* secret = params.secrets.secret("vgi_example")) {
+        // By *type*, not by name: the user chose the secret's name in
+        // `CREATE SECRET`, so a fixture cannot know it. Looking it up by name
+        // silently found nothing and emitted zero rows.
+        if (const auto* secret = params.secrets.of_type("vgi_example")) {
             for (const auto& [field, value] : *secret) {
                 rows.push_back({field, value, arrow_type_of(field)});
             }

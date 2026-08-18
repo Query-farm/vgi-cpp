@@ -124,9 +124,11 @@ public:
     vgi::FunctionMetadata metadata() const override {
         auto md = generator_metadata("Generates a sequence with nested struct and list columns",
                                      {"generator", "utility", "testing"});
+        // Projection only. Declaring filter pushdown makes the framework
+        // apply the predicates to this function's *nested* output, and
+        // filtering a struct/list batch that way crashed the engine — see the
+        // note in register_generators.
         md.projection_pushdown = true;
-        md.filter_pushdown = true;
-        md.auto_apply_filters = true;
         return md;
     }
 
@@ -622,11 +624,23 @@ private:
 }  // namespace
 
 void register_generators(vgi::Worker& worker) {
+    // `NestedSequence` is deliberately NOT registered.
+    //
+    // Advertising it segfaults the DuckDB extension — not when it is scanned,
+    // but later, in an unrelated test, which is why it is worth spelling out
+    // rather than leaving as a silent omission. Bisected to the registration
+    // itself: the crash survives turning off its filter and projection
+    // pushdown, so it is something about the advertised record rather than
+    // about anything the function does. Not yet diagnosed.
+    //
+    // The implementation below is kept because it is correct as far as it has
+    // been verified (its batches round-trip and match the reference), and
+    // because whoever picks this up should start from the FunctionInfo it
+    // produces rather than rewrite it.
     worker.register_table(std::make_shared<GeneratorException>());
-    worker.register_table(std::make_shared<NestedSequence>());
     worker.register_table(std::make_shared<NamedParamsEcho>());
-    worker.register_table(std::make_shared<UnionVarargs>());
     worker.register_table(std::make_shared<TypedProbe>());
+    worker.register_table(std::make_shared<UnionVarargs>());
 }
 
 }  // namespace example

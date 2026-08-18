@@ -18,6 +18,7 @@ add_executable(vgi-example-worker
     table/sequence.cpp
     table/cache.cpp
     table/more.cpp
+    table/generators.cpp
     table/settings_fixtures.cpp
     table/secrets.cpp
     table/series.cpp

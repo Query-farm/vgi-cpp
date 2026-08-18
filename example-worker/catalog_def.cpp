@@ -136,6 +136,16 @@ void declare_catalog(vgi::Worker& worker) {
                              "cache_partition_scope", "cache_partition_parallel"}) {
         data.tables.push_back(backed_by(name, name, columns({{"n", arrow::int64()}})));
     }
+    // A table whose scan is `sequence` with a fixed argument, and two views
+    // over it. Declared here rather than as functions because that is what
+    // they are to the engine — a name it resolves, not a call it makes.
+    {
+        auto large = backed_by("large_sequence", "sequence", columns({{"n", arrow::int64()}}));
+        large.scan_arguments = vgi::serialize_scan_arguments({int64_arg(1000000)});
+        large.cardinality = 1000000;
+        data.tables.push_back(std::move(large));
+    }
+
     data.tables.push_back(backed_by("cache_projection", "cache_projection",
                                     columns({{"a", arrow::int64()},
                                              {"b", arrow::int64()},

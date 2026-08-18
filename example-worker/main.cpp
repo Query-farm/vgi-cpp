@@ -53,6 +53,8 @@ int main(int argc, char** argv) {
     example::register_copy_to(worker);
     example::register_cached(worker);
     example::register_more_aggregates(worker);
+    example::register_generators(worker);
+    example::register_secret_scalars(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.
