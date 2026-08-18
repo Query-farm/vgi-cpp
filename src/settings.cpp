@@ -146,8 +146,12 @@ const std::map<std::string, std::string>* Secrets::for_scope_of_type(
         // An unscoped secret of the right type is a candidate of length 0: it
         // matches anything, and loses to any scoped secret that also matches.
         const std::string prefix = scope == fields.end() ? "" : scope->second;
+        // Plain prefix matching, which is DuckDB's own rule for secret scopes:
+        // `s3://bucket` covers `s3://bucket/key` and, deliberately, also
+        // `s3://bucket-two`. Longest prefix wins, and the first registration
+        // wins a tie so the answer does not depend on map iteration order.
         if (!prefix.empty() && path.compare(0, prefix.size(), prefix) != 0) continue;
-        if (!best || prefix.size() >= best_length) {
+        if (!best || prefix.size() > best_length) {
             best = &fields;
             best_length = prefix.size();
         }

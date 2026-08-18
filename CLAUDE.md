@@ -158,3 +158,27 @@ Each of these cost real debugging time, and none is guessable from the code:
 - **A worker pool hands out a different process per RPC**, so aggregate group
   state, buffering state and per-attachment state all belong in
   `FunctionStorage`, not in a member.
+- **`RecordBatch::Make` validates nothing, and neither does the IPC writer.**
+  A batch whose arrays disagree with its schema is written cleanly and read
+  back as *different numbers* — a double column declared int64 decodes to the
+  bit patterns. `wire::encode_ipc` calls `Validate()` on the way out so this
+  fails loudly; do not build a batch some other way.
+- **`ArrayBuilder::type()` and `RecordBatch::column()` return by value.**
+  Binding a reference to `*builder.type()` or to `batch->column(i)` leaves it
+  pointing into something freed at the end of that statement. This has
+  segfaulted twice; `-Wreturn-stack-address` is on for exactly that reason.
+- **A single-branch table honours the AT clause through
+  `catalog_table_scan_branches_get`.** The engine does not fall back to
+  `catalog_table_scan_function_get` once the branches method answers, so
+  resolving the version in only one of the two silently serves the newest
+  version for every AT.
+- **The engine keys its COPY registry on the alias-scoped format name and
+  skips a name it has already registered.** A format declared once as a writer
+  and once as a reader must go out as a single entry with
+  `direction: "both"`, or whichever came second is dropped with no error.
+- **`supports_time_travel` is answered once, at ATTACH, and DuckDB's binder
+  refuses an AT clause outright when it is false** — before any per-table
+  logic runs. Every way a table can say it travels has to be counted there.
+- **A statistic with no bound must send null, not a default.** `[0, 0]` and
+  "no nulls" are promises the optimizer acts on: it will fold `WHERE s > 10`
+  to zero rows on the strength of them.

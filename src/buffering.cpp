@@ -28,23 +28,6 @@ vgi_rpc::Result envelope_of(const std::shared_ptr<arrow::RecordBatch>& payload) 
                                       .finish());
 }
 
-// The `state_ids` parameter is a list<binary>; read it back as strings.
-std::vector<std::string> read_state_ids(const std::shared_ptr<arrow::RecordBatch>& dto,
-                                        const std::string& field) {
-    std::vector<std::string> ids;
-    auto column = dto->GetColumnByName(field);
-    auto list = std::dynamic_pointer_cast<arrow::ListArray>(column);
-    if (!list || list->length() == 0 || list->IsNull(0)) return ids;
-    auto values = std::dynamic_pointer_cast<arrow::BinaryArray>(list->values());
-    if (!values) return ids;
-    const int64_t begin = list->value_offset(0);
-    const int64_t end = list->value_offset(1);
-    for (int64_t i = begin; i < end; ++i) {
-        if (!values->IsNull(i)) ids.push_back(values->GetString(i));
-    }
-    return ids;
-}
-
 }  // namespace
 
 vgi_rpc::LogLevel to_rpc_level(LogLevel level) {
@@ -129,7 +112,11 @@ vgi_rpc::Result Dispatcher::table_buffering_combine(const vgi_rpc::Request& requ
     auto fn = require_buffering(function_name, scope);
 
     auto params = buffering_params(dto, &context);
-    auto finalize_ids = fn->combine(params, read_state_ids(dto, "state_ids"));
+    // Through `wire::` rather than a local reader: the shared one accepts both
+    // binary widths and raises on a shape it does not recognise, where a
+    // hand-rolled one that quietly returned an empty list would have combine
+    // finalize nothing and the sink produce no rows.
+    auto finalize_ids = fn->combine(params, wire::get_binary_list(dto, "state_ids"));
 
     return envelope_of(wire::ResultBuilder(payload_schema_of("table_buffering_combine"))
                            .set_binary_list("finalize_state_ids", finalize_ids)

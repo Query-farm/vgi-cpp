@@ -41,7 +41,7 @@ int64_t resolve(const vgi::Arguments& arguments,
     // to remember anything and every call is its own seed.
     if (!transaction || transaction->empty()) return seed;
 
-    const std::string scope = "txn:" + *transaction;
+    const std::string scope = vgi::transaction_scope(*transaction);
     const std::string key = "txcache:" + arguments.const_string(0).value_or("");
     if (auto stored = storage.kv_get(scope, key)) {
         return std::stoll(*stored);

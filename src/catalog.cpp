@@ -122,8 +122,6 @@ const char* stability_wire_value(Stability stability) {
     return enums::stability::kConsistent;
 }
 
-// The partition kind is carried as a raw wire string rather than an enum so a
-// fixture can name a kind this SDK does not model; empty means unpartitioned.
 // `major.minor.patch`, or nothing when the string is not exactly that.
 std::optional<std::array<uint32_t, 3>> parse_semver(const std::string& text) {
     std::array<uint32_t, 3> parts{};
@@ -217,6 +215,8 @@ std::string resolve_version_npm(const std::optional<std::string>& spec,
     throw unsupported();
 }
 
+// The partition kind is carried as a raw wire string rather than an enum so a
+// fixture can name a kind this SDK does not model; empty means unpartitioned.
 const char* partition_kind_wire_value(const FunctionMetadata& metadata) {
     return metadata.partition_kind.empty() ? partition_kinds::kNotPartitioned
                                            : metadata.partition_kind.c_str();
@@ -243,23 +243,37 @@ vgi_rpc::Result empty_items(const std::string& method) {
 
 }  // namespace
 
+// Whether any table time-travels, or the catalog declared it outright.
+//
+// Answered at ATTACH, and DuckDB's binder refuses an AT clause outright when
+// it is false — so a table that resolves its own versions at bind never gets
+// the chance. Every way a table can say it travels has to be counted here.
+bool Dispatcher::supports_time_travel(const CatalogModel& model) const {
+    if (model.supports_time_travel) return true;
+    const auto travels = [](const CatalogSchema& schema) {
+        for (const auto& table : schema.tables) {
+            if (!table.time_travel.empty() || table.supports_time_travel) return true;
+        }
+        return false;
+    };
+    for (const auto& schema : model.schemas) {
+        if (travels(*schema)) return true;
+    }
+    // A version-shaped catalog keeps its tables here rather than in `schemas`.
+    for (const auto& [version, schemas] : model.version_schemas) {
+        for (const auto& schema : schemas) {
+            if (travels(schema)) return true;
+        }
+    }
+    return false;
+}
+
 // One IPC entry per declared setting.
 //
 // The batch schema is `{name, description, type, default_value}`, where `type`
 // is itself the IPC schema of a single `value` field of the setting's type —
 // a schema inside a schema, which is how a setting's type travels without a
 // type-name vocabulary of its own.
-// Whether any table time-travels, or the catalog declared it outright.
-bool Dispatcher::supports_time_travel(const CatalogModel& model) const {
-    if (model.supports_time_travel) return true;
-    for (const auto& schema : model.schemas) {
-        for (const auto& table : schema->tables) {
-            if (!table.time_travel.empty()) return true;
-        }
-    }
-    return false;
-}
-
 std::vector<std::string> Dispatcher::encode_settings(const CatalogModel& model) const {
     static const auto schema = arrow::schema({
         arrow::field("name", arrow::utf8(), /*nullable=*/false),
@@ -425,6 +439,24 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
         }
     }
 
+    // A version-shaped catalog keeps its tables under `version_schemas`, and
+    // `schema_for` falls back to `model.schemas` — the auto-created empty
+    // `main` — for a version that is not a key there. That reads as a
+    // successful ATTACH of a catalog with no tables, which is a worse answer
+    // than a refusal: nothing errors and `SHOW TABLES` is simply empty.
+    if (!model.version_schemas.empty() &&
+        !model.version_schemas.count(resolved_data.value_or(""))) {
+        throw std::invalid_argument(
+            "data_version \"" + resolved_data.value_or("") +
+            "\" has no schemas; this worker serves one of " +
+            join_quoted([&] {
+                std::vector<std::string> keys;
+                keys.reserve(model.version_schemas.size());
+                for (const auto& [version, schemas] : model.version_schemas) keys.push_back(version);
+                return keys;
+            }()));
+    }
+
     std::optional<std::string> resolved_impl;
     if (!model.implementation_version.empty()) {
         const auto& supported = model.supported_implementation_versions.empty()
@@ -491,13 +523,15 @@ vgi_rpc::Result Dispatcher::catalog_version(const vgi_rpc::Request&) {
 }
 
 void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
-    // Nothing is held per attachment yet. When something is, it is freed here.
+    // Nothing is freed here on purpose. Per-attachment state — a function's
+    // collections, keyed on `attachment_id` — is not the dispatcher's to
+    // reclaim: `FunctionStorage` is scoped by opaque strings the function
+    // chooses, so there is no prefix this could clear without knowing the
+    // scheme every function uses. `FilesystemStorage` sweeps scopes nothing
+    // has touched in a day instead, which bounds it without guessing.
 }
 
 namespace {
-
-// The storage scope one transaction's state lives under.
-std::string transaction_scope(const std::string& id) { return "txn:" + id; }
 
 }  // namespace
 
@@ -518,8 +552,9 @@ vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
 
 void Dispatcher::catalog_transaction_commit(const vgi_rpc::Request& request) {
     // Committing ends the transaction, so whatever it remembered goes with it.
-    // Rollback is the same discard — nothing here is written through to
-    // anything durable, so there is nothing to undo.
+    // Rollback is the same discard: the scope holds only what the transaction
+    // itself put there, and nothing is written through to storage the engine
+    // can see, so there is nothing to undo.
     const auto id = wire::get_optional_binary(request.batch(), "transaction_opaque_data");
     if (id && !id->empty()) default_storage()->clear(transaction_scope(*id));
 }
@@ -598,12 +633,6 @@ vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
                         .finish());
 }
 
-// A table's wire record.
-//
-// `scan_function` and `scan_arguments` are what make a VGI table work: the
-// table is a name bound to a function, and this is the binding. Inlining the
-// scan here saves the engine a `catalog_table_scan_function_get` round trip
-// per query.
 // The version an AT clause selects, or null for a table that does not
 // time-travel.
 //
@@ -666,11 +695,23 @@ const TimeTravelVersion* resolve_version(const CatalogTable& table,
 
 namespace {
 
-// Constraint columns that exist in a schema of `column_count` fields.
-std::vector<int32_t> within(const std::vector<int32_t>& columns, int column_count) {
+// Constraints are declared against the table's newest columns, and an AT read
+// is answered against an older version's. Re-seat each index by *name*, and
+// drop the ones naming a column that version does not have.
+//
+// Re-seating rather than range-checking, because a version that reordered its
+// columns keeps every index in range while meaning something else entirely:
+// `not_null = {2}` for `email` becomes `name`, and DuckDB may fold
+// `WHERE name IS NULL` to zero rows on the strength of it.
+std::vector<int32_t> reseat(const std::vector<int32_t>& columns,
+                            const std::shared_ptr<arrow::Schema>& declared,
+                            const std::shared_ptr<arrow::Schema>& shape) {
     std::vector<int32_t> kept;
+    if (!declared || !shape) return kept;
     for (const auto column : columns) {
-        if (column >= 0 && column < column_count) kept.push_back(column);
+        if (column < 0 || column >= declared->num_fields()) continue;
+        const int seated = shape->GetFieldIndex(declared->field(column)->name());
+        if (seated >= 0) kept.push_back(seated);
     }
     return kept;
 }
@@ -678,11 +719,13 @@ std::vector<int32_t> within(const std::vector<int32_t>& columns, int column_coun
 // The same, for a list of column groups. A group that loses any member is
 // dropped whole: a composite key missing a column is a different constraint,
 // not a narrower one.
-std::vector<std::vector<int32_t>> within(const std::vector<std::vector<int32_t>>& groups,
-                                         int column_count) {
+std::vector<std::vector<int32_t>> reseat(const std::vector<std::vector<int32_t>>& groups,
+                                         const std::shared_ptr<arrow::Schema>& declared,
+                                         const std::shared_ptr<arrow::Schema>& shape) {
     std::vector<std::vector<int32_t>> kept;
     for (const auto& group : groups) {
-        if (within(group, column_count).size() == group.size()) kept.push_back(group);
+        auto seated = reseat(group, declared, shape);
+        if (seated.size() == group.size()) kept.push_back(std::move(seated));
     }
     return kept;
 }
@@ -715,6 +758,12 @@ std::vector<std::string> encode_foreign_keys(const CatalogTable& table,
 
 }  // namespace
 
+// A table's wire record.
+//
+// `scan_function` and `scan_arguments` are what make a VGI table work: the
+// table is a name bound to a function, and this is the binding. Inlining the
+// scan here saves the engine a `catalog_table_scan_function_get` round trip
+// per query.
 std::string Dispatcher::encode_table_info(const CatalogTable& table,
                                           const std::string& schema_name,
                                           const TimeTravelVersion* version) {
@@ -725,26 +774,23 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table,
             .set_string_list("required_extensions", {})
             .finish();
 
-    // An older version has fewer columns, and the constraints are declared
-    // against the newest. One naming a column this version does not have is
-    // dropped rather than sent: the engine rejects an out-of-range index and
-    // the whole AT read fails.
+    // Constraints are declared against `table.columns`; this read may be
+    // answered against an older version's.
     const auto& shape = version ? version->columns : table.columns;
-    const int column_count = shape ? shape->num_fields() : 0;
 
     auto builder = wire::ResultBuilder(gen::TableInfoSchema());
     builder.set_string("name", table.name)
         .set_string("schema_name", schema_name)
-        .set_binary("columns",
-                    wire::encode_schema(version ? version->columns : table.columns))
+        .set_binary("columns", wire::encode_schema(shape))
         .set_binary("scan_function", table.inline_scan ? wire::encode_ipc(scan) : std::string{})
         .set_bool("supports_insert", false)
         .set_bool("supports_update", false)
         .set_bool("supports_delete", false)
         .set_bool("supports_returning", false)
-        .set_int32_list("not_null_constraints", within(table.not_null, column_count))
-        .set_int32_list_list("unique_constraints", within(table.unique, column_count))
-        .set_int32_list_list("primary_key_constraints", within(table.primary_key, column_count))
+        .set_int32_list("not_null_constraints", reseat(table.not_null, table.columns, shape))
+        .set_int32_list_list("unique_constraints", reseat(table.unique, table.columns, shape))
+        .set_int32_list_list("primary_key_constraints",
+                             reseat(table.primary_key, table.columns, shape))
         .set_string_list("check_constraints", table.check)
         .set_binary_list("foreign_key_constraints", encode_foreign_keys(table, schema_name))
         .set_bool("supports_column_statistics", !table.column_statistics.empty())
@@ -844,14 +890,19 @@ vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request& request) {
                         .finish());
 }
 
-// The two blobs a macro carries beyond its name and text.
+// Normalize the engine's function-type filter to the short lowercase form.
 //
-// `parameter_default_values` is a one-row batch, one column per defaulted
-// parameter. `arguments_schema` is one nullable field per parameter *in
-// declaration order* — order is the positional call order — typed from the
-// default where there is one, carrying the description as `vgi_doc`.
 // The wire spells a kind either bare (`scalar`) or suffixed
 // (`scalar_function`); both mean the same thing.
+//
+// Two spellings of the same idea travel on this protocol and they are not the
+// same enum: `FunctionInfo.function_type` is `scalar`, while the filter the
+// engine sends to catalog_schema_contents_functions is DuckDB's own
+// `SCALAR_FUNCTION`. Comparing one against the other silently matches nothing,
+// which surfaces as "Scalar Function with name X does not exist" — a catalog
+// error that says nothing about the enum.
+//
+// Empty means no filter.
 static std::optional<std::string> normalize_function_type(const std::string& type) {
     if (type.empty()) return std::nullopt;
     std::string lower = type;
@@ -864,6 +915,12 @@ static std::optional<std::string> normalize_function_type(const std::string& typ
     return lower;
 }
 
+// The two blobs a macro carries beyond its name and text.
+//
+// `parameter_default_values` is a one-row batch, one column per defaulted
+// parameter. `arguments_schema` is one nullable field per parameter *in
+// declaration order* — order is the positional call order — typed from the
+// default where there is one, carrying the description as `vgi_doc`.
 std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
                                           const std::string& schema_name) {
     std::string defaults;
@@ -937,7 +994,7 @@ vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&) {
     return empty_items("catalog_index_get");
 }
 
-std::string Dispatcher::encode_schema_info(const std::string& owner,
+std::string Dispatcher::encode_schema_info(const std::string& owner, const std::string& handle,
                                            const CatalogSchema& schema,
                                            const CatalogSchema* contents) const {
     // `contents` is what this attachment will actually be shown, which is not
@@ -956,7 +1013,11 @@ std::string Dispatcher::encode_schema_info(const std::string& owner,
     auto builder = wire::ResultBuilder(gen::SchemaInfoSchema())
                        .set_string("name", schema.name)
                        .set_string_map("tags", schema.tags)
-                       .set_binary("attach_opaque_data", owner)
+                       // The sealed handle, not the bare catalog name: this
+                       // field is what a client would send back, and only the
+                       // five-field seal survives `attachment_of`. `owner` is
+                       // the catalog name the scopes below are counted in.
+                       .set_binary("attach_opaque_data", handle)
                        .set_int64_map(
                            "estimated_object_count",
                            {{"view", static_cast<int64_t>(contents->views.size())},
@@ -983,11 +1044,17 @@ std::string Dispatcher::encode_schema_info(const std::string& owner,
 vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
     std::vector<std::string> items;
 
-    const auto owner = attachment_of(request).catalog;
-    const auto* model = find_catalog(owner);
+    // The full seal, not the bare catalog name: `attach_opaque_data` is a
+    // handle, and a client that took one from a SchemaInfo and sent it back
+    // would fail `attachment_of`'s field-count check.
+    const auto attachment = attachment_of(request);
+    const auto owner = seal_attachment(attachment);
+    const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
-        items.push_back(encode_schema_info(owner, *schema, schema_for(request, schema->name)));
+        items.push_back(
+            encode_schema_info(attachment.catalog, owner, *schema,
+                               schema_for(request, schema->name)));
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
                                       .set_binary_list("items", items)
@@ -997,12 +1064,14 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
 vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) {
     const auto wanted = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    const auto owner = attachment_of(request).catalog;
-    const auto* model = find_catalog(owner);
+    const auto attachment = attachment_of(request);
+    const auto owner = seal_attachment(attachment);
+    const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
         if (schema->name != wanted) continue;
-        items.push_back(encode_schema_info(owner, *schema, schema_for(request, wanted)));
+        items.push_back(
+            encode_schema_info(attachment.catalog, owner, *schema, schema_for(request, wanted)));
     }
     // Zero or one item; the engine reads absence as "no such schema".
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_get"))
@@ -1037,10 +1106,19 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
             .set_bool("sampling_pushdown", metadata.sampling_pushdown)
             .set_bool("late_materialization", metadata.late_materialization)
             .set_bool("supports_batch_index", metadata.supports_batch_index)
+            // Always: a buffering function's whole shape is sink then combine
+            // then source, and `finalize_producer` is pure virtual. There is no
+            // buffering function without a finalize phase.
+            .set_bool("has_finalize", true)
             .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent);
+            .set_enum("order_dependent", metadata.order_dependent
+                                             ? enums::order_dependence::kOrderDependent
+                                             : enums::order_dependence::kNotOrderDependent)
+            .set_enum("distinct_dependent",
+                      metadata.distinct_dependent
+                          ? enums::distinct_dependence::kDistinctDependent
+                          : enums::distinct_dependence::kNotDistinctDependent);
     // Only when the function says so: the field is nullable, and writing a
     // value unconditionally would replace the engine's default for every
     // table function that never thought about ordering.
@@ -1078,8 +1156,13 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
             .set_bool("has_finalize", fn.has_finish())
             .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
+            .set_enum("order_dependent", metadata.order_dependent
+                                             ? enums::order_dependence::kOrderDependent
+                                             : enums::order_dependence::kNotOrderDependent)
+            .set_enum("distinct_dependent",
+                      metadata.distinct_dependent
+                          ? enums::distinct_dependence::kDistinctDependent
+                          : enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
             .finish());
 }
@@ -1113,8 +1196,13 @@ std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
             .set_bool("supports_batch_index", metadata.supports_batch_index)
             .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
+            .set_enum("order_dependent", metadata.order_dependent
+                                             ? enums::order_dependence::kOrderDependent
+                                             : enums::order_dependence::kNotOrderDependent)
+            .set_enum("distinct_dependent",
+                      metadata.distinct_dependent
+                          ? enums::distinct_dependence::kDistinctDependent
+                          : enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
             .finish());
 }
@@ -1148,8 +1236,13 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
             .set_bool("filter_pushdown", metadata.filter_pushdown)
             .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
+            .set_enum("order_dependent", metadata.order_dependent
+                                             ? enums::order_dependence::kOrderDependent
+                                             : enums::order_dependence::kNotOrderDependent)
+            .set_enum("distinct_dependent",
+                      metadata.distinct_dependent
+                          ? enums::distinct_dependence::kDistinctDependent
+                          : enums::distinct_dependence::kNotDistinctDependent)
             // Declared, or the engine never sends a window request at all and
             // an aggregate that implements `window` is simply never asked.
             .set_bool("supports_window", fn.supports_window())
@@ -1190,22 +1283,17 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
             .set_bool("sampling_pushdown", metadata.sampling_pushdown)
             .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
+            .set_enum("order_dependent", metadata.order_dependent
+                                             ? enums::order_dependence::kOrderDependent
+                                             : enums::order_dependence::kNotOrderDependent)
+            .set_enum("distinct_dependent",
+                      metadata.distinct_dependent
+                          ? enums::distinct_dependence::kDistinctDependent
+                          : enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
             .finish());
 }
 
-// Normalize the engine's function-type filter to the short lowercase form.
-//
-// Two spellings of the same idea travel on this protocol and they are not the
-// same enum: `FunctionInfo.function_type` is `scalar`, while the filter the
-// engine sends to catalog_schema_contents_functions is DuckDB's own
-// `SCALAR_FUNCTION`. Comparing one against the other silently matches nothing,
-// which surfaces as "Scalar Function with name X does not exist" — a catalog
-// error that says nothing about the enum.
-//
-// Empty means no filter.
 std::string Dispatcher::seal_attachment(const Attachment& attachment) {
     // The options ride base64-encoded, because the seal is split on NUL and an
     // IPC stream is full of them.
@@ -1328,7 +1416,13 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Reques
     std::vector<std::string> items;
     if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& table : schema->tables) {
-            items.push_back(encode_table_info(table, schema_name));
+            // Resolved with no AT clause, which is the newest version — the
+            // same record `catalog_table_get` answers with for an unqualified
+            // read. Describing the table two ways depending on which discovery
+            // call the engine chose is how a table gets typed against one
+            // shape and scanned against another.
+            items.push_back(
+                encode_table_info(table, schema_name, resolve_version(table, {}, {})));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_tables"))
@@ -1391,6 +1485,14 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
     }
     if (!found) throw std::invalid_argument("no table '" + schema_name + "." + name + "'");
 
+    // A single-branch table still honours the AT clause through this call —
+    // the engine does not fall back to `catalog_table_scan_function_get` for
+    // it. Resolving unconditionally also means an AT clause naming a version
+    // that does not exist raises here rather than being ignored.
+    const auto* version =
+        resolve_version(*found, wire::get_optional_string(request.batch(), "at_unit"),
+                        wire::get_optional_string(request.batch(), "at_value"));
+
     std::vector<std::string> branches;
     if (!found->branches) {
         // The single-branch default: a table that never mentioned branches is
@@ -1398,8 +1500,10 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
         // instead would read as "this table has no sources" — which is what a
         // table that *did* declare an empty list is saying.
         auto branch = wire::ResultBuilder(gen::ScanBranchSchema())
-                          .set_string("function_name", found->scan_function)
-                          .set_binary("arguments", found->scan_arguments)
+                          .set_string("function_name",
+                                      version ? version->scan_function : found->scan_function)
+                          .set_binary("arguments",
+                                      version ? version->scan_arguments : found->scan_arguments)
                           .set_bool("writable", false)
                           .fill_defaults()
                           .finish();
@@ -1465,37 +1569,51 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_indexes(const vgi_rpc::Reque
 vgi_rpc::Result Dispatcher::catalog_copy_from_formats(const vgi_rpc::Request&) {
     // Both directions ride this one method — `direction` distinguishes them —
     // which is why its name mentions only "from".
+    //
+    // One entry per *format name*, not one per registration: the engine keys
+    // its COPY registry on the alias-scoped name and skips a name it has
+    // already seen, so emitting a writer and a reader separately under one
+    // name silently drops whichever came second. A name that has both sides
+    // goes out once, as `both`.
     std::vector<std::string> items;
+    std::vector<std::string> order;
+    std::map<std::string, std::pair<const CopyToFunction*, const CopyFromFunction*>> sides;
     for (const auto& writer : copy_to_) {
-        const auto metadata = writer->metadata();
-        auto builder = wire::ResultBuilder(gen::CopyFromFormatInfoSchema());
-        builder.set_string("format_name", writer->format())
-            .set_string("handler", writer->handler_name())
-            .set_string("direction", "to")
-            .set_string("description", metadata.description)
-            .set_bool("ordered", writer->ordered())
-            .set_binary("options",
-                        wire::encode_schema(build_arg_schema(writer->argument_specs())))
-            .set_string_map("tags", metadata.tags);
-        if (auto comment = writer->comment()) {
-            builder.set_string("comment", *comment);
-        } else {
-            builder.set_null("comment");
-        }
-        items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
+        auto& side = sides[writer->format()];
+        if (!side.first && !side.second) order.push_back(writer->format());
+        side.first = writer.get();
     }
     for (const auto& reader : copy_from_) {
-        const auto metadata = reader->metadata();
+        auto& side = sides[reader->format()];
+        if (!side.first && !side.second) order.push_back(reader->format());
+        side.second = reader.get();
+    }
+
+    for (const auto& format : order) {
+        const auto& [writer, reader] = sides[format];
+        // The engine builds one CopyFunction per name and hands the same
+        // handler to both sides of it, so a shared name has to name one
+        // handler. Two different ones cannot be expressed, and dropping one
+        // silently is what this method exists to stop.
+        if (writer && reader && writer->handler_name() != reader->handler_name()) {
+            throw std::invalid_argument(
+                "COPY format '" + format + "' is declared in both directions with different " +
+                "handlers ('" + writer->handler_name() + "' writing, '" +
+                reader->handler_name() + "' reading). One name is one handler.");
+        }
+        const auto metadata = writer ? writer->metadata() : reader->metadata();
+        const auto comment = writer ? writer->comment() : reader->comment();
         auto builder = wire::ResultBuilder(gen::CopyFromFormatInfoSchema());
-        builder.set_string("format_name", reader->format())
-            .set_string("handler", reader->handler_name())
-            .set_string("direction", "from")
+        builder.set_string("format_name", format)
+            .set_string("handler", writer ? writer->handler_name() : reader->handler_name())
+            .set_string("direction", writer && reader ? "both" : (writer ? "to" : "from"))
             .set_string("description", metadata.description)
-            .set_bool("ordered", false)
+            .set_bool("ordered", writer && writer->ordered())
             .set_binary("options",
-                        wire::encode_schema(build_arg_schema(reader->argument_specs())))
+                        wire::encode_schema(build_arg_schema(
+                            writer ? writer->argument_specs() : reader->argument_specs())))
             .set_string_map("tags", metadata.tags);
-        if (auto comment = reader->comment()) {
+        if (comment) {
             builder.set_string("comment", *comment);
         } else {
             builder.set_null("comment");

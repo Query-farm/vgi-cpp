@@ -66,4 +66,12 @@ public:
 // nor lock each other out of the first creator's 0700 directory.
 std::shared_ptr<FunctionStorage> default_storage();
 
+// The storage scope one transaction's state lives under.
+//
+// Public because the two halves of the convention live in different places:
+// a function writes into this scope, and the SDK's `catalog_transaction_commit`
+// is what reclaims it. Spelled as a literal in both, they agree only by luck —
+// and disagreeing is a slow disk leak, not a test failure.
+std::string transaction_scope(const std::string& transaction_opaque_data);
+
 }  // namespace vgi

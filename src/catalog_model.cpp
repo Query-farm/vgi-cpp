@@ -16,7 +16,11 @@ CatalogSchema& CatalogModel::schema(const std::string& schema_name) {
     for (auto& s : schemas) {
         if (s->name == schema_name) return *s;
     }
-    schemas.push_back(std::make_unique<CatalogSchema>(CatalogSchema{schema_name, {}, {}}));
+    // Named, not brace-positional: this list has grown twice, and a positional
+    // one silently stops initializing whatever was appended.
+    auto created = std::make_unique<CatalogSchema>();
+    created->name = schema_name;
+    schemas.push_back(std::move(created));
     return *schemas.back();
 }
 

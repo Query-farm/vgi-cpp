@@ -104,6 +104,9 @@ PushdownFilters PushdownFilters::parse(const std::string& ipc_bytes,
         auto batch = wire::decode_ipc(blob);
         if (!batch) continue;
         for (int i = 0; i < batch->num_columns(); ++i) {
+            // Last batch wins for a repeated column name. Safe under the
+            // contract that extra rows are only slower — a scan that misses a
+            // key emits more than it had to, and the engine still filters.
             filters.join_keys_[batch->schema()->field(i)->name()] = batch->column(i);
         }
     }
@@ -180,6 +183,12 @@ std::vector<std::string> PushdownFilters::filtered_columns() const {
     return columns;
 }
 
+// The widest interval every predicate on `column` agrees a value could be in.
+//
+// Deliberately loosening rather than tightening: bounds from separate branches
+// are combined with min/max, so an OR widens and an AND does not narrow. A
+// scan that trusts these emits a superset, and the engine re-checks every
+// predicate — where a tightened bound would drop rows the query asked for.
 ColumnBounds PushdownFilters::column_bounds(const std::string& column) const {
     ColumnBounds bounds;
     std::vector<std::shared_ptr<Spec>> stack = specs_;
@@ -200,8 +209,11 @@ ColumnBounds PushdownFilters::column_bounds(const std::string& column) const {
         } else if (op == "lt" || op == "le" || op == "lteq" || op == "<" || op == "<=") {
             bounds.max = bounds.max ? std::max(*bounds.max, *value) : *value;
         } else {
-            bounds.min = *value;
-            bounds.max = *value;
+            // Equality pins both ends — but only ever outward, or `n = 5 OR
+            // n = 9` would come back as the single point whichever branch the
+            // stack happened to pop last.
+            bounds.min = bounds.min ? std::min(*bounds.min, *value) : *value;
+            bounds.max = bounds.max ? std::max(*bounds.max, *value) : *value;
         }
     }
     return bounds;

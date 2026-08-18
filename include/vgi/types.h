@@ -31,6 +31,10 @@ struct ArgSpec {
     // A constant argument is evaluated during bind and its value handed to
     // bind(); a column argument arrives per batch in process().
     bool constant = false;
+    // Named parameters only: a required one that the call site omitted is
+    // refused at bind. `ArgSpec::named` clears it, since an optional keyword
+    // argument is the usual case; positional parameters are the engine's to
+    // supply and it always does.
     bool required = true;
     bool varargs = false;
     // Set to declare a concrete Arrow type directly, bypassing `type`. Needed
@@ -67,8 +71,10 @@ struct ArgSpec {
     // Per-argument constraint metadata, surfaced by
     // `vgi_function_arguments()` for discovery. All optional.
     //
-    // A discovery surface, not a validator: the engine renders the bounds as
-    // interval notation and shows a caller what a sensible value looks like.
+    // A discovery surface *and* a contract: the engine renders the bounds as
+    // interval notation to show a caller what a sensible value looks like, and
+    // a constant argument that violates one is refused at bind with an error
+    // naming the function and the argument.
     std::optional<double> ge;
     std::optional<double> le;
     std::optional<double> gt;
@@ -234,6 +240,13 @@ struct FunctionMetadata {
     // What order the engine may assume of this function's rows. Empty leaves
     // the engine's own default in place; the values are in `src/enums.h`.
     std::string order_preservation;
+    // Whether this function's answer depends on the order its input arrives
+    // in, and whether it depends on duplicates being present. Declaring
+    // either constrains what the optimizer may reorder or deduplicate above
+    // the call. Off is the safe default *for the optimizer's freedom*, so a
+    // function that does care has to say so.
+    bool order_dependent = false;
+    bool distinct_dependent = false;
     // Whether the engine may push a TABLESAMPLE SYSTEM clause into this scan.
     //
     // Declaring it hands the function the sampling rate and lets it discard

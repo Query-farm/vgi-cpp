@@ -39,19 +39,40 @@ std::shared_ptr<arrow::DataType> common_numeric(const std::shared_ptr<arrow::Dat
     if (a->id() == Type::DECIMAL128 && b->id() == Type::DECIMAL128) {
         const auto& da = static_cast<const arrow::Decimal128Type&>(*a);
         const auto& db = static_cast<const arrow::Decimal128Type&>(*b);
-        return arrow::decimal128(std::max(da.precision(), db.precision()),
-                                 std::max(da.scale(), db.scale()));
+        // Precision is *not* the max of the two: it has to hold the widest
+        // integer part alongside the widest fractional one, so it is
+        // max(p - s) + max(s). `DECIMAL(10,2)` and `DECIMAL(4,3)` need
+        // DECIMAL(11,3), and max(p) would give DECIMAL(10,3) — one digit short
+        // of representing the first type's own values.
+        const int32_t scale = std::max(da.scale(), db.scale());
+        const int32_t integer_digits =
+            std::max(da.precision() - da.scale(), db.precision() - db.scale());
+        return arrow::decimal128(std::min(integer_digits + scale, 38), scale);
     }
 
     const auto ia = int_info(*a);
     const auto ib = int_info(*b);
     if (ia && ib) {
-        // Same signedness: the wider of the two. Mixed: a signed type wide
-        // enough for both, which int64 always is for the widths above.
+        // Same signedness: the wider of the two.
         if (ia->second == ib->second) return ia->first >= ib->first ? a : b;
-        return arrow::int64();
+        // Mixed: a signed type wide enough for both. int64 covers every pair
+        // here except one — uint64 does not fit, and there is no int128 to
+        // promote to, so that pair goes to float64 and loses precision above
+        // 2^53 rather than silently wrapping.
+        const auto& unsigned_side = ia->second ? *ib : *ia;
+        return unsigned_side.first >= 64 ? arrow::float64() : arrow::int64();
     }
-    return arrow::int64();
+
+    // Two *different* temporal types have no common numeric form: adding a
+    // DATE to a TIMESTAMP is a category error, and answering int64 hands back
+    // the sum of two epoch counts in different units as a plain integer.
+    if (!ia && !ib) {
+        throw std::invalid_argument("no common numeric type for " + a->ToString() + " and " +
+                                    b->ToString());
+    }
+    // One side is an integer and the other is not — a decimal, most likely.
+    // Widen to the non-integer side rather than dropping its scale.
+    return ia ? b : a;
 }
 
 // Cast that reports why, since every caller here would otherwise discard the
@@ -80,11 +101,35 @@ std::shared_ptr<arrow::Array> add_arrays(const std::shared_ptr<arrow::Array>& a,
     return sum.MoveValueUnsafe().make_array();
 }
 
-std::shared_ptr<arrow::DataType> bound_output_type(const ProcessParams& params) {
-    if (!params.output_schema || params.output_schema->num_fields() == 0) {
-        throw std::runtime_error("output schema has no fields");
+// These helpers each produce exactly one column, so the schema they are
+// answering against has to have exactly one field. A wider one is not a
+// harmless mismatch: `RecordBatch::Make` validates nothing, `num_columns()`
+// then reports the schema's field count while the array vector is shorter, and
+// iterating the columns reads off the end of it.
+std::shared_ptr<arrow::DataType> bound_output_type(const ProcessParams& params,
+                                                   const char* what) {
+    if (!params.output_schema || params.output_schema->num_fields() != 1) {
+        throw std::runtime_error(
+            std::string(what) + ": expects a one-column output schema, got " +
+            (params.output_schema ? std::to_string(params.output_schema->num_fields()) +
+                                        " columns"
+                                  : "none"));
     }
     return params.output_schema->field(0)->type();
+}
+
+// Likewise for the input: `RecordBatch::column` does not bounds-check.
+//
+// Returned by value, because it does not hand back a reference into the batch
+// — the `shared_ptr` is materialized per call, and a reference to it dangles.
+std::shared_ptr<arrow::Array> input_column(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                           int index, const char* what) {
+    if (!batch || index >= batch->num_columns()) {
+        throw std::runtime_error(std::string(what) + ": expects at least " +
+                                 std::to_string(index + 1) + " input column(s), got " +
+                                 std::to_string(batch ? batch->num_columns() : 0));
+    }
+    return batch->column(index);
 }
 
 }  // namespace
@@ -128,6 +173,10 @@ bool is_multipliable_type(const arrow::DataType& type) {
 
 std::shared_ptr<arrow::DataType> promote_for_addition(
     const std::shared_ptr<arrow::DataType>& type) {
+    // int64 for an unresolved type, and deliberately: a scalar function's
+    // `bind` runs before the engine has typed every argument, so a null here
+    // is the ordinary "not yet" and not an error. Refusing it fails the bind of
+    // any function that advertises a return type from its first argument.
     if (!type) return arrow::int64();
     if (is_temporal_type(*type)) return type;
     switch (type->id()) {
@@ -161,7 +210,8 @@ std::shared_ptr<arrow::DataType> common_type_for_addition(
 
 std::shared_ptr<arrow::RecordBatch> double_first(
     const ProcessParams& params, const std::shared_ptr<arrow::RecordBatch>& batch) {
-    const auto type = bound_output_type(params);
+    const auto type = bound_output_type(params, "double_first");
+    const auto first = input_column(batch, 0, "double_first");
 
     if (type->id() == Type::DECIMAL128) {
         // Widen, add, then narrow back with checking on. Adding in the capped
@@ -176,7 +226,7 @@ std::shared_ptr<arrow::RecordBatch> double_first(
         // input, whose precision caps at 38.
         const auto& capped = static_cast<const arrow::Decimal128Type&>(*type);
         const auto wide = arrow::decimal256(75, capped.scale());
-        auto widened = cast_or_throw(batch->column(0), wide);
+        auto widened = cast_or_throw(first, wide);
         auto summed = add_arrays(widened, widened, "double");
         // Checked, so an overflowing sum raises rather than wrapping. Arrow
         // C++ spells this the opposite way from arrow-rs, where `safe: false`
@@ -186,16 +236,16 @@ std::shared_ptr<arrow::RecordBatch> double_first(
         return arrow::RecordBatch::Make(params.output_schema, narrowed->length(), {narrowed});
     }
 
-    auto column = cast_or_throw(batch->column(0), type);
+    auto column = cast_or_throw(first, type);
     auto summed = cast_or_throw(add_arrays(column, column, "double"), type);
     return arrow::RecordBatch::Make(params.output_schema, summed->length(), {summed});
 }
 
 std::shared_ptr<arrow::RecordBatch> add_two(
     const ProcessParams& params, const std::shared_ptr<arrow::RecordBatch>& batch) {
-    const auto type = bound_output_type(params);
-    auto a = cast_or_throw(batch->column(0), type);
-    auto b = cast_or_throw(batch->column(1), type);
+    const auto type = bound_output_type(params, "add_two");
+    auto a = cast_or_throw(input_column(batch, 0, "add_two"), type);
+    auto b = cast_or_throw(input_column(batch, 1, "add_two"), type);
     auto summed = cast_or_throw(add_arrays(a, b, "add"), type);
     return arrow::RecordBatch::Make(params.output_schema, summed->length(), {summed});
 }

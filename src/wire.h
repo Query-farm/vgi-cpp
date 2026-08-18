@@ -79,11 +79,11 @@ std::optional<std::string> get_optional_enum(
 // dataclass is represented.
 std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes);
 
-// A `list<binary>` or `list<large_binary>` parameter, as its elements.
 // A `list<int64>` parameter, as its elements.
 std::vector<int64_t> get_int64_list(const std::shared_ptr<arrow::RecordBatch>& batch,
                                     const std::string& field);
 
+// A `list<binary>` or `list<large_binary>` parameter, as its elements.
 std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatch>& batch,
                                         const std::string& field);
 
@@ -156,11 +156,10 @@ public:
     // A list<binary> column: each element is an encoded IPC stream.
     ResultBuilder& set_binary_list(const std::string& field,
                                    const std::vector<std::string>& values);
-    // A map<utf8, utf8> column.  Arrow spells map entries key/value (not
-    // keys/values), which is what the canonical Python protocol emits.
+    // A `list<utf8>` column.
     ResultBuilder& set_string_list(const std::string& field,
                                    const std::vector<std::string>& values);
-    // A `list<list<utf8>>` column.
+    // A `list<int32>` column.
     ResultBuilder& set_int32_list(const std::string& field,
                                   const std::vector<int32_t>& values);
     ResultBuilder& set_int32_list_list(const std::string& field,
@@ -176,6 +175,8 @@ public:
     // The `examples` column: a list of {sql, description, expected_output}.
     ResultBuilder& set_examples(const std::string& field,
                                 const std::vector<FunctionExample>& examples);
+    // A map<utf8, …> column.  Arrow spells map entries key/value (not
+    // keys/values), which is what the canonical Python protocol emits.
     ResultBuilder& set_int64_map(const std::string& field,
                                  const std::vector<std::pair<std::string, int64_t>>& entries);
     ResultBuilder& set_string_map(

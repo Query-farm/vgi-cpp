@@ -121,6 +121,7 @@ vgi::CatalogTable versioned_table(std::string name, std::string scan_function,
 vgi::ColumnStatistics sequence_statistics(std::string column, int64_t count) {
     vgi::ColumnStatistics stat;
     stat.column_name = std::move(column);
+    stat.has_null = false;
     stat.min = vgi::StatValue::integer(0);
     stat.max = vgi::StatValue::integer(count - 1);
     stat.distinct_count = count;
@@ -138,12 +139,13 @@ std::shared_ptr<arrow::Field> tagged(std::string name,
         ->WithMetadata(arrow::key_value_metadata(std::move(keys), std::move(values)));
 }
 
-// One column's bounds. `has_null=false, has_not_null=true` are the defaults and
-// describe every column here but `products.quantity`.
+// One column's bounds. Every column built through here holds no nulls but
+// `products.quantity`, which says so for itself.
 vgi::ColumnStatistics stat(std::string column, vgi::StatValue min, vgi::StatValue max,
                            int64_t distinct) {
     vgi::ColumnStatistics statistics;
     statistics.column_name = std::move(column);
+    statistics.has_null = false;
     statistics.min = std::move(min);
     statistics.max = std::move(max);
     statistics.distinct_count = distinct;
@@ -490,17 +492,19 @@ void declare_catalog(vgi::Worker& worker) {
     }
 
     {
-        // Inlined, and that is what makes AT work here: `catalog_table_get`
-        // already carries the AT clause, so the record it returns can name the
-        // version's own scan arguments. Left un-inlined the engine never asked
-        // for the scan separately, and every AT ran version 3.
+        // Left un-inlined on purpose, so the suite covers the path where the
+        // engine asks for the scan separately. Both paths resolve the AT
+        // clause — `catalog_table_get` inlines the version's own scan
+        // arguments, and `catalog_table_scan_branches_get` resolves it again
+        // for the single-branch default. Inlining this hid the second one, and
+        // it was silently serving the newest version for every AT.
         vgi::CatalogTable versioned;
         versioned.name = "versioned_data";
         versioned.time_travel = versioned_data_versions();
         versioned.columns = versioned.time_travel.back().columns;
         versioned.scan_function = "versioned_data_scan";
         versioned.scan_arguments = versioned.time_travel.back().scan_arguments;
-        versioned.inline_scan = true;
+        versioned.inline_scan = false;
         versioned.comment =
             "Versioned data table demonstrating time travel with schema evolution";
         data.tables.push_back(std::move(versioned));
@@ -544,8 +548,9 @@ void declare_catalog(vgi::Worker& worker) {
                           {{"n", "Sequence index 0..9"}}});
     // Commented, but with no column comments: a commented view is not a view
     // with commented columns, and the pair of them proves the two are separate.
-    main.views.push_back({"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0",
-                          "Even numbers from 0 to 98"});
+    main.views.push_back({.name = "even_numbers",
+                          .definition = "SELECT * FROM sequence(100) WHERE n % 2 = 0",
+                          .comment = "Even numbers from 0 to 98"});
     // Over the `numbers` table rather than over `sequence` directly: what it
     // probes is that a view can name another catalog object.
     data.views.push_back({"small_numbers",

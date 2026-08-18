@@ -12,12 +12,14 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <regex>
 #include <sstream>
 
 #include <unistd.h>
 #include <stdexcept>
 
 #include <arrow/record_batch.h>
+#include <nlohmann/json.hpp>
 #include <arrow/array/util.h>
 #include <arrow/table.h>
 #include <arrow/util/base64.h>
@@ -200,18 +202,42 @@ private:
 // the remaining tie. A polymorphic parameter matches anything and scores
 // nothing, which is what makes a concrete overload win over an `any` one
 // rather than the other way round.
+// Whether `value` appears in `choices`, which is declared as a JSON array.
+//
+// A `choices` that is not a JSON array is the declaration's bug; accepting
+// everything is the safer reading of it than refusing everything.
+bool json_array_contains(const std::string& choices, const std::string& value) {
+    try {
+        const auto parsed = nlohmann::json::parse(choices);
+        if (!parsed.is_array()) return true;
+        for (const auto& choice : parsed) {
+            if (choice.is_string() ? choice.get<std::string>() == value
+                                   : choice.dump() == value) {
+                return true;
+            }
+        }
+        return false;
+    } catch (const nlohmann::json::exception&) {
+        return true;
+    }
+}
+
 int score_overload(const std::vector<ArgSpec>& specs,
                    const std::function<std::shared_ptr<arrow::DataType>(size_t)>& actual_type) {
     int score = 0;
-    for (size_t i = 0; i < specs.size(); ++i) {
+    for (const auto& spec : specs) {
+        // `spec.index` is the call position, which is not the position in this
+        // vector: specs may be listed in any order, and a named-only one has
+        // no call position at all.
+        if (!spec.index || *spec.index < 0) continue;
         // An exact Arrow type wins, but a VGI type *name* is just as much a
         // declaration — `constant_arg(..., "varchar", ...)` names utf8 and has
         // to take part in resolution, or two overloads that differ only by
         // their named types are indistinguishable and the first always wins.
-        auto declared = specs[i].arrow_type;
-        if (!declared) declared = arg_type_to_arrow(specs[i].type);
+        auto declared = spec.arrow_type;
+        if (!declared) declared = arg_type_to_arrow(spec.type);
         if (!declared || declared->id() == arrow::Type::NA) continue;
-        auto actual = actual_type(i);
+        auto actual = actual_type(static_cast<size_t>(*spec.index));
         if (!actual) continue;
         if (declared->Equals(*actual)) {
             ++score;
@@ -291,15 +317,21 @@ public:
                 if_modified_since_ = std::move(since);
             }
         }
+        // Bound before anything that can log, not only in `produce`: the hook
+        // below runs first, and a producer holding a collector from an earlier
+        // tick would write into one that has already been destroyed.
+        bind_log(out);
         // Re-read every tick, not only the first: the engine re-sends them as
         // the join's build side fills in, and the last one is the tightest.
+        //
+        // Kept per-tick rather than folded into `filters_`: they describe this
+        // tick's build side, and a later tick that carries none must fall back
+        // to the static predicates rather than keep stale dynamic ones.
+        dynamic_filters_.reset();
         if (auto encoded = metadata_value(input.custom_metadata, keys::kDynamicFilters)) {
             auto decoded = arrow::util::base64_decode(*encoded);
-            auto dynamic = PushdownFilters::parse(decoded);
-            if (producer_) producer_->on_dynamic_filters(dynamic);
-            // Applied as well, for the same reason the init-time filters are:
-            // a function that only advertises the capability gets it for free.
-            if (!filters_.empty()) filters_ = std::move(dynamic);
+            dynamic_filters_ = PushdownFilters::parse(decoded);
+            if (producer_) producer_->on_dynamic_filters(*dynamic_filters_);
         }
         produce(out, context);
     }
@@ -311,11 +343,7 @@ public:
             out.finish();
             return;
         }
-        // Bound per tick, since the collector is created per tick: a producer
-        // holding one from an earlier tick would write into a dead sink.
-        producer_->set_log([&out](LogLevel level, const std::string& message) {
-            out.client_log(to_rpc_level(level), message);
-        });
+        bind_log(out);
         if (!asked_) {
             asked_ = true;
             producer_->on_conditional_request(if_none_match_, if_modified_since_);
@@ -327,8 +355,11 @@ public:
         }
         // Applied here rather than in the producer so a function that only
         // advertises the capability gets it for free, and one that uses the
-        // filters itself is not filtered twice.
-        if (!filters_.empty()) batch = filters_.apply(batch);
+        // filters itself is not filtered twice. This tick's dynamic filters
+        // supersede the static ones when it carried any — they are the
+        // tighter predicate, derived from the same scan.
+        const PushdownFilters& active = dynamic_filters_ ? *dynamic_filters_ : filters_;
+        if (!active.empty()) batch = active.apply(batch);
 
         // Validated before it leaves.
         //
@@ -360,8 +391,19 @@ public:
     }
 
 private:
+    // Bound per tick, since the collector is created per tick: a producer
+    // holding one from an earlier tick would write into a dead sink.
+    void bind_log(vgi_rpc::OutputCollector& out) {
+        if (!producer_) return;
+        producer_->set_log([&out](LogLevel level, const std::string& message) {
+            out.client_log(to_rpc_level(level), message);
+        });
+    }
+
     std::unique_ptr<TableProducer> producer_;
     PushdownFilters filters_;
+    // This tick's join-side predicate, if it carried one.
+    std::optional<PushdownFilters> dynamic_filters_;
     // What the engine asked for, which a producer that ignores the projection
     // does not emit.
     std::shared_ptr<arrow::Schema> output_schema_;
@@ -706,11 +748,12 @@ std::shared_ptr<ScalarFunction> Dispatcher::resolve_scalar(const std::string& na
 // which mentions neither, and the user is left guessing which of several
 // arguments was wrong.
 void Dispatcher::check_type_bounds(const ScalarFunction& fn, const BindParams& params) {
-    const auto specs = fn.argument_specs();
-    for (size_t i = 0; i < specs.size(); ++i) {
-        const auto& spec = specs[i];
+    for (const auto& spec : fn.argument_specs()) {
         if (!spec.type_bound || !spec.type_bound->accepts) continue;
-        auto type = params.input_type(i);
+        // Indexed by the declared call position, not by where the spec happens
+        // to sit in the vector.
+        if (!spec.index || *spec.index < 0) continue;
+        auto type = params.input_type(static_cast<size_t>(*spec.index));
         // No resolved type means the engine did not supply one — nothing to
         // check against, and refusing here would reject a legitimate call.
         if (!type) continue;
@@ -725,13 +768,25 @@ void Dispatcher::check_type_bounds(const ScalarFunction& fn, const BindParams& p
 void Dispatcher::check_arg_constraints(const std::string& function_name,
                                        const std::vector<ArgSpec>& specs,
                                        const Arguments& arguments) {
-    for (size_t i = 0; i < specs.size(); ++i) {
-        const auto& spec = specs[i];
+    for (const auto& spec : specs) {
+        // `spec.index` is the call position. Using the loop position instead
+        // checks each constraint against whichever argument happens to sit at
+        // the same offset in the spec vector, which is only the same argument
+        // when the specs were declared in index order.
+        const auto position =
+            spec.index && *spec.index >= 0 ? static_cast<size_t>(*spec.index) : 0;
+
+        // A named parameter the declaration marked required has to be there.
+        // Positional ones are the engine's to supply and it always does.
+        if (!spec.index && spec.required && !arguments.named(spec.name)) {
+            throw std::invalid_argument("function '" + function_name + "' requires argument '" +
+                                        spec.name + "'");
+        }
 
         // An explicit SQL NULL for a constant is a caller error, and one worth
         // naming here: left to the function it becomes an absent value, which
         // silently takes the default instead of failing.
-        const bool supplied_null = spec.index ? arguments.positional_is_null(i)
+        const bool supplied_null = spec.index ? arguments.positional_is_null(position)
                                               : arguments.named_is_null(spec.name);
         // Named-only parameters are read as constants too, even though they
         // carry no `vgi_const` marker; a column argument is exempt, since a
@@ -744,21 +799,48 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
                                         spec.name + "' cannot be NULL");
         }
 
-        if (!spec.ge && !spec.le && !spec.gt && !spec.lt) continue;
         // Only a constant can be checked here: a column's values are not known
         // until process(), and the engine re-checks nothing on our behalf.
-        if (!spec.constant) continue;
-        const auto value = arguments.const_double(i);
-        if (!value) continue;
+        if (!spec.constant && spec.index) continue;
 
         const auto refuse = [&](const std::string& bound) {
             throw std::invalid_argument("function '" + function_name + "' argument '" +
                                         spec.name + "' must be " + bound);
         };
-        if (spec.ge && *value < *spec.ge) refuse(">= " + std::to_string(*spec.ge));
-        if (spec.gt && *value <= *spec.gt) refuse("> " + std::to_string(*spec.gt));
-        if (spec.le && *value > *spec.le) refuse("<= " + std::to_string(*spec.le));
-        if (spec.lt && *value >= *spec.lt) refuse("< " + std::to_string(*spec.lt));
+
+        if (spec.ge || spec.le || spec.gt || spec.lt) {
+            const auto value = spec.index ? arguments.const_double(position)
+                                          : arguments.named_double(spec.name);
+            if (value) {
+                if (spec.ge && *value < *spec.ge) refuse(">= " + std::to_string(*spec.ge));
+                if (spec.gt && *value <= *spec.gt) refuse("> " + std::to_string(*spec.gt));
+                if (spec.le && *value > *spec.le) refuse("<= " + std::to_string(*spec.le));
+                if (spec.lt && *value >= *spec.lt) refuse("< " + std::to_string(*spec.lt));
+            }
+        }
+
+        // `choices` and `pattern` are enforced, not merely advertised — both
+        // references validate them, and a worker that only shows them in
+        // discovery accepts calls the reference refuses.
+        if (spec.choices || spec.pattern) {
+            const auto text = spec.index ? arguments.const_string(position)
+                                         : arguments.named_string(spec.name);
+            if (text) {
+                if (spec.choices && !json_array_contains(*spec.choices, *text)) {
+                    refuse("one of " + *spec.choices);
+                }
+                if (spec.pattern) {
+                    try {
+                        if (!std::regex_search(*text, std::regex(*spec.pattern))) {
+                            refuse("a match for /" + *spec.pattern + "/");
+                        }
+                    } catch (const std::regex_error&) {
+                        // An unparseable pattern is the declaration's bug, not
+                        // the caller's; refusing every call would be worse.
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -873,15 +955,28 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
     // whichever probe runs first, which is arbitrary. A COPY format's reader
     // and writer deliberately share a name, so this is not hypothetical.
     const auto declared_kind = wire::get_optional_enum(bind_call, "function_type");
+    // A COPY format's reader is a table function and its writer a buffering
+    // one, and they deliberately share a name. Probing buffering first would
+    // hand the writer to a COPY FROM; probing tables first would hand the
+    // reader to a COPY TO. The declared kind is what breaks the tie.
+    const bool prefers_table = declared_kind == enums::function_type::kTable;
     std::shared_ptr<arrow::Schema> output_schema;
-    if (auto sink = find_buffering(function_name, scope_of(params))) {
+    std::shared_ptr<TableBufferingFunction> sink;
+    if (!prefers_table) sink = find_buffering(function_name, scope_of(params));
+    if (sink) {
         output_schema = sink->bind(params);
+        check_arg_constraints(function_name, sink->argument_specs(), params.arguments);
     } else if (auto transform = find_table_in_out(function_name, scope_of(params))) {
         check_arg_constraints(function_name, transform->argument_specs(), params.arguments);
         output_schema = transform->bind(params);
     } else if (auto table = find_table(function_name, scope_of(params), &params)) {
         check_arg_constraints(function_name, table->argument_specs(), params.arguments);
         output_schema = table->bind(params);
+    } else if (auto late = find_buffering(function_name, scope_of(params))) {
+        // Declared `table` but no table function of that name: the declaration
+        // is a hint, not a guarantee.
+        output_schema = late->bind(params);
+        check_arg_constraints(function_name, late->argument_specs(), params.arguments);
     } else {
         auto fn = resolve_scalar(function_name, params);
         check_type_bounds(*fn, params);
@@ -1121,7 +1216,13 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         wire::get_binary_list(init_request, "join_keys"));
 
     int64_t max_workers = 1;
-    if (auto table = find_table(function_name, scope_of(params), &bind_params)) {
+    // Same tie-break as `bind`: a COPY TO whose writer shares a name with a
+    // reader must not divide the reader's work into the shared queue.
+    const bool buffering =
+        wire::get_optional_enum(bind_call, "function_type") ==
+            enums::function_type::kTableBuffering &&
+        find_buffering(function_name, scope_of(params)) != nullptr;
+    if (auto table = buffering ? nullptr : find_table(function_name, scope_of(params), &bind_params)) {
         max_workers = std::max<int64_t>(1, table->max_workers(params));
         // Only the primary init divides the work, and only once. A follow-on
         // worker calling this too would push the same chunks again.

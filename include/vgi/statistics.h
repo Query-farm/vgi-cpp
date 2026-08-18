@@ -40,13 +40,17 @@ private:
 // What the optimizer is told about one column.
 //
 // Bounds are a promise: a scan that reports [0, 99] and then emits 100 has
-// already had the row pruned away by a filter that trusted the promise, so a
-// function that cannot bound a column must not report it at all.
+// already had the row pruned away by a filter that trusted the promise. So
+// they are optional, and every default here is the one that promises nothing:
+// an unset bound travels as null, and a column is assumed to hold nulls until
+// someone says otherwise. Reporting a bound you cannot stand behind — or
+// leaving a default in place that happens to say [0, 0] and never null — is
+// how a scan comes back with no rows and no error.
 struct ColumnStatistics {
     std::string column_name;
-    StatValue min;
-    StatValue max;
-    bool has_null = false;
+    std::optional<StatValue> min;
+    std::optional<StatValue> max;
+    bool has_null = true;
     bool has_not_null = true;
     std::optional<int64_t> distinct_count;
     std::optional<bool> contains_unicode;

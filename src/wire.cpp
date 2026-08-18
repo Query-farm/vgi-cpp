@@ -172,11 +172,20 @@ std::optional<std::string> get_optional_enum(
     if (!has_column(batch, field)) return std::nullopt;
     auto arr = typed_column<arrow::DictionaryArray>(batch, field, "dictionary");
     if (arr->IsNull(0)) return std::nullopt;
+    // Absent and malformed are different answers: only a null cell means the
+    // caller did not send one. A dictionary of the wrong shape is a protocol
+    // violation, and reporting it as "absent" hands the handler a default
+    // where it should have raised.
     auto values = std::dynamic_pointer_cast<arrow::StringArray>(arr->dictionary());
-    if (!values) return std::nullopt;
+    if (!values) fail("param '" + field + "' is a dictionary of non-strings");
     const auto* indices = dynamic_cast<const arrow::Int16Array*>(arr->indices().get());
-    if (!indices) return std::nullopt;
-    return values->GetString(indices->Value(0));
+    if (!indices) fail("param '" + field + "' has non-int16 dictionary indices");
+    const auto index = indices->Value(0);
+    if (index < 0 || index >= values->length()) {
+        fail("param '" + field + "' dictionary index " + std::to_string(index) +
+             " is out of range");
+    }
+    return values->GetString(index);
 }
 
 std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes) {
@@ -230,9 +239,10 @@ std::vector<int64_t> get_int64_list(const std::shared_ptr<arrow::RecordBatch>& b
     std::vector<int64_t> items;
     if (!has_column(batch, field)) return items;
     auto list = std::dynamic_pointer_cast<arrow::ListArray>(column(batch, field));
-    if (!list || list->length() == 0 || list->IsNull(0)) return items;
+    if (!list) fail("param '" + field + "' is not a list");
+    if (list->length() == 0 || list->IsNull(0)) return items;
     auto values = std::dynamic_pointer_cast<arrow::Int64Array>(list->values());
-    if (!values) return items;
+    if (!values) fail("param '" + field + "' is not a list of int64");
     for (int64_t i = list->value_offset(0); i < list->value_offset(1); ++i) {
         if (!values->IsNull(i)) items.push_back(values->Value(i));
     }
@@ -244,7 +254,8 @@ std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatc
     std::vector<std::string> items;
     if (!has_column(batch, field)) return items;
     auto list = std::dynamic_pointer_cast<arrow::ListArray>(column(batch, field));
-    if (!list || list->length() == 0 || list->IsNull(0)) return items;
+    if (!list) fail("param '" + field + "' is not a list");
+    if (list->length() == 0 || list->IsNull(0)) return items;
 
     const int64_t begin = list->value_offset(0);
     const int64_t end = list->value_offset(1);
@@ -255,10 +266,13 @@ std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatc
         }
         return items;
     }
-    if (auto narrow = std::dynamic_pointer_cast<arrow::BinaryArray>(list->values())) {
-        for (int64_t i = begin; i < end; ++i) {
-            if (!narrow->IsNull(i)) items.push_back(narrow->GetString(i));
-        }
+    auto narrow = std::dynamic_pointer_cast<arrow::BinaryArray>(list->values());
+    // An empty list of the wrong element type is indistinguishable from an
+    // empty list of the right one at every caller, and "combine received no
+    // states" is a silently wrong answer rather than a failure.
+    if (!narrow) fail("param '" + field + "' is not a list of binary");
+    for (int64_t i = begin; i < end; ++i) {
+        if (!narrow->IsNull(i)) items.push_back(narrow->GetString(i));
     }
     return items;
 }
@@ -271,6 +285,17 @@ std::shared_ptr<arrow::RecordBatch> get_ipc(
 }
 
 std::string encode_ipc(const std::shared_ptr<arrow::RecordBatch>& batch) {
+    // `RecordBatch::Make` validates nothing, and the IPC writer validates
+    // nothing either: a batch whose arrays disagree with its schema is written
+    // out cleanly and read back as *different numbers* — a double column
+    // declared int64 decodes to the bit patterns. Nothing errors anywhere.
+    // Checking on the way out turns that into an exception naming the step.
+    //
+    // `Validate` rather than `ValidateFull`: the structural check is what
+    // catches the mismatch, and it is O(columns) rather than O(rows).
+    if (auto status = batch->Validate(); !status.ok()) {
+        throw std::runtime_error("encoding an invalid IPC batch: " + status.ToString());
+    }
     auto sink = unwrap(arrow::io::BufferOutputStream::Create(), "allocating an IPC sink");
     auto writer = unwrap(arrow::ipc::MakeStreamWriter(sink, batch->schema()),
                          "opening an IPC writer");
@@ -432,6 +457,22 @@ ResultBuilder& ResultBuilder::set_string_list_list(
     return *this;
 }
 
+// A struct child by *name*, since all three children of the entries built
+// below are utf8 and a positional lookup could not tell them apart: a reorder
+// upstream would transpose secret type and scope, or a SQL example and its
+// description, with nothing to catch it.
+arrow::StringBuilder* string_child(arrow::StructBuilder& entry, const char* name) {
+    // The type is held by value: `ArrayBuilder::type()` hands back a
+    // `shared_ptr` by value, so binding a reference to `*entry.type()` leaves
+    // it pointing into a type freed at the end of that statement.
+    const auto type = entry.type();
+    const int index = static_cast<const arrow::StructType&>(*type).GetFieldIndex(name);
+    if (index < 0) fail(std::string("struct has no '") + name + "' field");
+    auto* builder = dynamic_cast<arrow::StringBuilder*>(entry.field_builder(index));
+    if (!builder) fail(std::string("struct field '") + name + "' is not a string");
+    return builder;
+}
+
 ResultBuilder& ResultBuilder::set_secret_lookups(
     const std::string& field,
     const std::vector<std::tuple<std::string, std::string, std::string>>& lookups) {
@@ -445,15 +486,13 @@ ResultBuilder& ResultBuilder::set_secret_lookups(
     auto* entry = dynamic_cast<arrow::StructBuilder*>(list->value_builder());
     if (!entry) fail("result field '" + field + "' is not a list of structs");
 
+    auto* type_builder = string_child(*entry, "secret_type");
+    auto* scope_builder = string_child(*entry, "scope");
+    auto* name_builder = string_child(*entry, "secret_name");
+
     check_ok(list->Append(), "opening secrets field '" + field + "'");
     for (const auto& [type, scope, name] : lookups) {
         check_ok(entry->Append(), "opening a secret lookup");
-        auto* type_builder = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(0));
-        auto* scope_builder = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(1));
-        auto* name_builder = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(2));
-        if (!type_builder || !scope_builder || !name_builder) {
-            fail("unexpected secret-lookup struct layout");
-        }
         check_ok(type_builder->Append(type), "appending secret_type");
         check_ok(scope.empty() ? scope_builder->AppendNull() : scope_builder->Append(scope),
                  "appending secret scope");
@@ -469,7 +508,8 @@ ResultBuilder& ResultBuilder::set_examples(const std::string& field,
                                            const std::vector<FunctionExample>& examples) {
     const int index = field_index(field);
     // Build against the schema's own struct type rather than a locally
-    // declared one: field order and nullability are the generator's to decide.
+    // declared one, and reach its children by name: field order and
+    // nullability are the generator's to decide.
     const auto& list_type = schema_->field(index)->type();
     std::unique_ptr<arrow::ArrayBuilder> raw;
     check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), list_type, &raw),
@@ -479,13 +519,13 @@ ResultBuilder& ResultBuilder::set_examples(const std::string& field,
     auto* entry = dynamic_cast<arrow::StructBuilder*>(list->value_builder());
     if (!entry) fail("result field '" + field + "' is not a list of structs");
 
+    auto* sql = string_child(*entry, "sql");
+    auto* description = string_child(*entry, "description");
+    auto* expected = string_child(*entry, "expected_output");
+
     check_ok(list->Append(), "opening examples field '" + field + "'");
     for (const auto& example : examples) {
         check_ok(entry->Append(), "opening an example struct");
-        auto* sql = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(0));
-        auto* description = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(1));
-        auto* expected = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(2));
-        if (!sql || !description || !expected) fail("unexpected example struct layout");
         check_ok(sql->Append(example.sql), "appending example sql");
         check_ok(description->Append(example.description), "appending example description");
         check_ok(example.expected_output ? expected->Append(*example.expected_output)

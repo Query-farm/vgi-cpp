@@ -119,15 +119,29 @@ void Worker::run(int argc, char** argv) {
     // Transport from argv, matching the Rust and Python workers so one
     // wrapper script can drive any of them.
     std::vector<std::string> args(argv + 1, argv + argc);
+    // A malformed transport argument is a startup error, not a reason to fall
+    // through to stdio: `--unix` with no path served the pipe transport on a
+    // socket the caller was already waiting on, which reads as a hang.
+    const auto refuse = [](const std::string& message) {
+        std::fprintf(stderr, "vgi worker: %s\n", message.c_str());
+        std::exit(2);
+    };
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--unix" && i + 1 < args.size()) {
+        if (args[i] == "--unix") {
+            if (i + 1 >= args.size()) refuse("--unix needs a socket path");
             server->serve_unix(args[i + 1]);
             std::exit(0);
         }
         if (args[i] == "--http") {
             int port = 0;
             if (i + 1 < args.size() && args[i + 1].rfind("--", 0) != 0) {
-                port = std::atoi(args[i + 1].c_str());
+                const auto& value = args[i + 1];
+                char* end = nullptr;
+                const long parsed = std::strtol(value.c_str(), &end, 10);
+                if (end == value.c_str() || *end != '\0' || parsed < 0 || parsed > 65535) {
+                    refuse("--http needs a port in 0..65535, got '" + value + "'");
+                }
+                port = static_cast<int>(parsed);
             }
             server->serve_http("127.0.0.1", port);
             std::exit(0);

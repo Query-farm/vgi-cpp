@@ -190,17 +190,23 @@ private:
 
 // Repeat a one-row array `count` times, preserving its exact type — which is
 // what makes the DuckDB-lossless extension types survive the round trip.
+//
+// Built from a scalar rather than by `Take`-ing index 0 `count` times: taking
+// from a nested value whose child is empty (`[]::INT[]`, `MAP {}`) recurses
+// into a gather with a zero-length source, and Arrow asserts on the null
+// buffer pointer that comes with it. A debug or sanitizer build aborts there.
 std::shared_ptr<arrow::Array> repeat_value(const std::shared_ptr<arrow::Array>& value,
                                            int64_t count) {
-    arrow::UInt32Builder indices;
-    (void)indices.Reserve(count);
-    for (int64_t i = 0; i < count; ++i) (void)indices.Append(0);
-    std::shared_ptr<arrow::Array> index_array;
-    (void)indices.Finish(&index_array);
-
-    auto taken = arrow::compute::Take(*value, *index_array);
-    if (!taken.ok()) throw std::runtime_error("repeat: " + taken.status().message());
-    return taken.MoveValueUnsafe();
+    if (value->length() == 0) {
+        auto nulls = arrow::MakeArrayOfNull(value->type(), count);
+        if (!nulls.ok()) throw std::runtime_error("repeat: " + nulls.status().message());
+        return nulls.MoveValueUnsafe();
+    }
+    auto scalar = value->GetScalar(0);
+    if (!scalar.ok()) throw std::runtime_error("repeat: " + scalar.status().message());
+    auto repeated = arrow::MakeArrayFromScalar(*scalar.MoveValueUnsafe(), count);
+    if (!repeated.ok()) throw std::runtime_error("repeat: " + repeated.status().message());
+    return repeated.MoveValueUnsafe();
 }
 
 // A producer that emits one prepared batch and stops.

@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 
 #include <arrow/array.h>
 #include <arrow/array/builder_binary.h>
@@ -47,14 +49,25 @@ StatValue StatValue::bytes(std::string value) {
 
 namespace {
 
-std::shared_ptr<arrow::DataType> type_of(StatValue::Kind kind) {
-    switch (kind) {
-        case StatValue::Kind::Float64: return arrow::float64();
-        case StatValue::Kind::Utf8: return arrow::utf8();
-        case StatValue::Kind::Binary: return arrow::binary();
-        case StatValue::Kind::Int64: break;
+// `Finish` leaves the target null on failure and the null goes straight into
+// an array constructor that will not complain. Every Finish here goes through
+// this instead.
+template <typename Builder>
+std::shared_ptr<arrow::Array> finish(Builder& builder) {
+    std::shared_ptr<arrow::Array> array;
+    if (auto status = builder.Finish(&array); !status.ok()) {
+        throw std::runtime_error("statistics: " + status.ToString());
     }
-    return arrow::int64();
+    return array;
+}
+
+// The kind a statistic's *row* is carried as: its min, or its max if it has no
+// min. One kind per row, not one per bound — the min and max unions share a
+// type-id array, which is what lets the engine decode them with one reader.
+std::optional<StatValue::Kind> row_kind(const ColumnStatistics& stat) {
+    if (stat.min) return stat.min->kind();
+    if (stat.max) return stat.max->kind();
+    return std::nullopt;
 }
 
 // The one member of a sparse union child, or a null where the row's value is
@@ -62,8 +75,13 @@ std::shared_ptr<arrow::DataType> type_of(StatValue::Kind kind) {
 // so the nulls are not optional padding — they are the layout.
 std::shared_ptr<arrow::Array> build_child(const std::vector<ColumnStatistics>& statistics,
                                           bool minimum, StatValue::Kind kind) {
-    const auto value_of = [&](const ColumnStatistics& stat) -> const StatValue& {
-        return minimum ? stat.min : stat.max;
+    const auto value_of = [&](const ColumnStatistics& stat) -> const StatValue* {
+        // Gated on the row's kind, not the bound's: a row carried as utf8
+        // contributes nothing to the int64 child even if one of its two bounds
+        // happens to be an integer.
+        if (row_kind(stat) != kind) return nullptr;
+        const auto& value = minimum ? stat.min : stat.max;
+        return value ? &*value : nullptr;
     };
 
     std::shared_ptr<arrow::Array> array;
@@ -71,53 +89,53 @@ std::shared_ptr<arrow::Array> build_child(const std::vector<ColumnStatistics>& s
         case StatValue::Kind::Float64: {
             arrow::DoubleBuilder builder;
             for (const auto& stat : statistics) {
-                const auto& value = value_of(stat);
-                if (value.kind() == kind) {
-                    (void)builder.Append(value.floating_value());
+                const auto* value = value_of(stat);
+                if (value && value->kind() == kind) {
+                    (void)builder.Append(value->floating_value());
                 } else {
                     (void)builder.AppendNull();
                 }
             }
-            (void)builder.Finish(&array);
+            array = finish(builder);
             break;
         }
         case StatValue::Kind::Utf8: {
             arrow::StringBuilder builder;
             for (const auto& stat : statistics) {
-                const auto& value = value_of(stat);
-                if (value.kind() == kind) {
-                    (void)builder.Append(value.string_value());
+                const auto* value = value_of(stat);
+                if (value && value->kind() == kind) {
+                    (void)builder.Append(value->string_value());
                 } else {
                     (void)builder.AppendNull();
                 }
             }
-            (void)builder.Finish(&array);
+            array = finish(builder);
             break;
         }
         case StatValue::Kind::Binary: {
             arrow::BinaryBuilder builder;
             for (const auto& stat : statistics) {
-                const auto& value = value_of(stat);
-                if (value.kind() == kind) {
-                    (void)builder.Append(value.string_value());
+                const auto* value = value_of(stat);
+                if (value && value->kind() == kind) {
+                    (void)builder.Append(value->string_value());
                 } else {
                     (void)builder.AppendNull();
                 }
             }
-            (void)builder.Finish(&array);
+            array = finish(builder);
             break;
         }
         case StatValue::Kind::Int64: {
             arrow::Int64Builder builder;
             for (const auto& stat : statistics) {
-                const auto& value = value_of(stat);
-                if (value.kind() == kind) {
-                    (void)builder.Append(value.integer_value());
+                const auto* value = value_of(stat);
+                if (value && value->kind() == kind) {
+                    (void)builder.Append(value->integer_value());
                 } else {
                     (void)builder.AppendNull();
                 }
             }
-            (void)builder.Finish(&array);
+            array = finish(builder);
             break;
         }
     }
@@ -130,13 +148,15 @@ std::shared_ptr<arrow::Array> build_union(const std::vector<ColumnStatistics>& s
     arrow::Int8Builder type_ids;
     (void)type_ids.Reserve(static_cast<int64_t>(statistics.size()));
     for (const auto& stat : statistics) {
-        const auto& value = minimum ? stat.min : stat.max;
-        const auto found = std::find(order.begin(), order.end(), value.kind());
+        // A row with no bounds at all still needs a type id — sparse union
+        // rows always name a child. Child 0's slot is null for it either way.
+        const auto kind = row_kind(stat);
+        const auto found =
+            kind ? std::find(order.begin(), order.end(), *kind) : order.end();
         (void)type_ids.Append(
             found == order.end() ? 0 : static_cast<int8_t>(found - order.begin()));
     }
-    std::shared_ptr<arrow::Array> ids;
-    (void)type_ids.Finish(&ids);
+    auto ids = finish(type_ids);
 
     arrow::ArrayVector children;
     std::vector<std::string> names;
@@ -168,9 +188,10 @@ std::string serialize_column_statistics(const std::vector<ColumnStatistics>& sta
         if (std::find(order.begin(), order.end(), kind) == order.end()) order.push_back(kind);
     };
     for (const auto& stat : statistics) {
-        remember(stat.min.kind());
-        remember(stat.max.kind());
+        if (auto kind = row_kind(stat)) remember(*kind);
     }
+    // A union has to have a child even when every bound is absent.
+    if (order.empty()) order.push_back(StatValue::Kind::Int64);
 
     arrow::StringBuilder names;
     arrow::BooleanBuilder has_null;
@@ -202,13 +223,9 @@ std::string serialize_column_statistics(const std::vector<ColumnStatistics>& sta
     auto minimums = build_union(statistics, /*minimum=*/true, order);
     auto maximums = build_union(statistics, /*minimum=*/false, order);
 
-    std::vector<std::shared_ptr<arrow::Array>> columns(6);
-    (void)names.Finish(&columns[0]);
-    (void)has_null.Finish(&columns[1]);
-    (void)has_not_null.Finish(&columns[2]);
-    (void)distinct_count.Finish(&columns[3]);
-    (void)contains_unicode.Finish(&columns[4]);
-    (void)max_string_length.Finish(&columns[5]);
+    const std::vector<std::shared_ptr<arrow::Array>> columns{
+        finish(names),           finish(has_null),         finish(has_not_null),
+        finish(distinct_count),  finish(contains_unicode), finish(max_string_length)};
 
     auto schema = arrow::schema({
         arrow::field("column_name", arrow::utf8(), true),

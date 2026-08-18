@@ -6,6 +6,15 @@ project(vgi-cpp VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# On, because they earn their keep here: -Wreturn-stack-address caught a
+# reference bound into a temporary `shared_ptr` that the whole integration
+# suite ran past, and -Wmissing-field-initializers catches a brace-positional
+# aggregate that silently stopped initializing a field someone appended.
+# Scoped to our own targets — vcpkg's headers are not ours to clean.
+if(NOT MSVC)
+  add_compile_options(-Wall -Wextra)
+endif()
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ── The vgi-rpc C++ port ──────────────────────────────────────────────────

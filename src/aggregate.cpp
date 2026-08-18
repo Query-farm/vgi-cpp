@@ -122,9 +122,11 @@ vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request) {
         throw std::runtime_error("aggregate '" + function_name + "' bound to no schema");
     }
 
-    // The execution id keys this aggregation's state for its whole life. It
-    // has to be unique across concurrent aggregations in one worker, which a
-    // counter gives us — the engine treats it as opaque.
+    // The execution id keys this aggregation's state for its whole life, and
+    // that state lives on disk under $TMPDIR — shared by every worker process
+    // the pool spawns. So it has to be unique across *processes*, not just
+    // within one: `next_execution_id` qualifies its counter with the pid and
+    // two clocks for exactly that reason. The engine treats it as opaque.
     auto execution_id = next_execution_id();
     // Stashed for finalize, which carries no arguments of its own.
     if (auto arguments = wire::get_optional_binary(dto, "arguments"); arguments) {
@@ -438,6 +440,13 @@ vgi_rpc::Result Dispatcher::window_result(const std::shared_ptr<arrow::RecordBat
     auto partition = wire::decode_ipc(*stored);
     auto output_schema =
         wire::decode_schema(store->kv_get(execution_id, schema_key(partition_id)).value_or(""));
+    if (!output_schema) {
+        // `window_init` is what stores it. Reaching `window` without one means
+        // the init never arrived or carried no schema, and building a batch
+        // against a null schema dereferences it.
+        throw std::runtime_error("aggregate_window: partition " +
+                                 std::to_string(partition_id) + " has no output schema");
+    }
 
     const auto starts = wire::get_int64_list(dto, "frame_starts");
     const auto ends = wire::get_int64_list(dto, "frame_ends");
@@ -448,7 +457,8 @@ vgi_rpc::Result Dispatcher::window_result(const std::shared_ptr<arrow::RecordBat
         size_t next = 0;
         for (int64_t count : per_row) {
             std::vector<std::pair<int64_t, int64_t>> row;
-            for (int64_t i = 0; i < count && next < starts.size(); ++i, ++next) {
+            for (int64_t i = 0; i < count && next < starts.size() && next < ends.size();
+                 ++i, ++next) {
                 row.emplace_back(starts[next], ends[next]);
             }
             frames.push_back(std::move(row));
@@ -497,7 +507,7 @@ vgi_rpc::Result Dispatcher::aggregate_destructor(const vgi_rpc::Request& request
         // behind forever, and in a pooled worker "forever" is the life of the
         // process. Both references ignore the group list here and clear the
         // execution outright.
-        default_storage()->clear(execution_id);
+        if (!execution_id.empty()) default_storage()->clear(execution_id);
     } catch (const std::exception&) {
     }
     return empty_envelope();

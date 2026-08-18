@@ -60,20 +60,33 @@ std::map<std::string, std::string> partition_metadata(
         // MinMax gives a struct scalar {min, max}; the wire wants them as two
         // rows of one column, so they are unpacked rather than passed through.
         const auto& pair = static_cast<const arrow::StructScalar&>(*extent.scalar());
-        if (pair.value.size() < 2) continue;
+        // Raised, not skipped, for the same reason the MinMax failure above
+        // is: a partition column that silently drops out of the metadata
+        // surfaces from the engine as "expected N columns, got M", which names
+        // neither the column nor the cause and costs a bisect to attribute.
+        const auto refuse = [&](const std::string& why) {
+            throw std::runtime_error("partition metadata for '" + field->name() + "': " + why);
+        };
+        if (pair.value.size() < 2) refuse("min/max is not a pair");
 
         // Built as one two-element array rather than concatenating two
         // one-element ones: `take` with indices [0, 0] over a min/max pair is
         // awkward, and building directly avoids depending on which Arrow
         // header Concatenate happens to live in.
         std::unique_ptr<arrow::ArrayBuilder> builder;
-        if (!arrow::MakeBuilder(arrow::default_memory_pool(), column->type(), &builder).ok()) {
-            continue;
+        if (auto status = arrow::MakeBuilder(arrow::default_memory_pool(), column->type(),
+                                             &builder);
+            !status.ok()) {
+            refuse(status.ToString());
         }
-        if (!builder->AppendScalar(*pair.value[0]).ok()) continue;
-        if (!builder->AppendScalar(*pair.value[1]).ok()) continue;
+        if (auto status = builder->AppendScalar(*pair.value[0]); !status.ok()) {
+            refuse(status.ToString());
+        }
+        if (auto status = builder->AppendScalar(*pair.value[1]); !status.ok()) {
+            refuse(status.ToString());
+        }
         auto both = builder->Finish();
-        if (!both.ok()) continue;
+        if (!both.ok()) refuse(both.status().ToString());
 
         fields.push_back(arrow::field(field->name(), column->type(), /*nullable=*/true));
         bounds.push_back(both.MoveValueUnsafe());

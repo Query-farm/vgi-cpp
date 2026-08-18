@@ -173,13 +173,16 @@ private:
     static std::string encode_table_info(const CatalogTable& table,
                                          const std::string& schema_name,
                                          const TimeTravelVersion* version = nullptr);
-    // One `SchemaInfo` entry, with the object counts the engine treats as a
-    // hard guarantee: a declared zero lets it skip both the bulk listing and
-    // every per-name lookup for that kind.
     // The `FunctionInfo` for each name this catalog publishes globally.
     std::vector<std::string> encode_global_functions(const CatalogModel& model) const;
     std::vector<std::string> encode_attach_options(const CatalogModel& model) const;
-    std::string encode_schema_info(const std::string& owner, const CatalogSchema& schema,
+    // One `SchemaInfo` entry, with the object counts the engine treats as a
+    // hard guarantee: a declared zero lets it skip both the bulk listing and
+    // every per-name lookup for that kind.
+    // `owner` is the catalog name the counts are scoped in; `handle` is the
+    // sealed `attach_opaque_data` the record carries back to the caller.
+    std::string encode_schema_info(const std::string& owner, const std::string& handle,
+                                   const CatalogSchema& schema,
                                    const CatalogSchema* contents) const;
     static std::string encode_macro_info(const CatalogMacro& macro,
                                          const std::string& schema_name);
@@ -228,7 +231,9 @@ private:
     static void check_type_bounds(const ScalarFunction& fn, const BindParams& params);
     std::vector<SecretLookup> required_secrets_of(const std::string& name,
                                                   const BindParams& params) const;
-    // Reject a constant argument outside the range its spec declares.
+    // Reject a constant argument that violates what its spec declares: a
+    // range, a closed set of choices, a pattern, an explicit NULL where the
+    // parameter is not a column, or a required named argument left out.
     //
     // Declaring a range is a discovery surface *and* a contract: a caller told
     // that `count` is `[0, +inf)` should be refused at bind rather than have a
@@ -242,7 +247,7 @@ private:
 
     BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
 
-    // The three fields `attach_opaque_data` seals, as sealed at ATTACH.
+    // The five fields `attach_opaque_data` seals, as sealed at ATTACH.
     //
     // Sealed rather than sent as separate columns because most catalog calls
     // carry nothing else that identifies the attachment: the wire has one

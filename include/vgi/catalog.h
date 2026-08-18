@@ -50,13 +50,6 @@ struct TimeTravelVersion {
     std::optional<int> timestamp_year;
 };
 
-// A table the catalog advertises.
-//
-// A VGI table is not storage: it is a *name* bound to a table function that
-// produces its rows. `SELECT * FROM cat.data.numbers` resolves the table, reads
-// its scan function, and calls that. The columns declared here are what the
-// planner types the query against before any scan runs, so they have to match
-// what the scan actually emits.
 // A foreign key on a table, by column *name* rather than index — the wire
 // carries names here, and a name survives a schema that gains a column.
 struct ForeignKey {
@@ -65,6 +58,13 @@ struct ForeignKey {
     std::vector<std::string> referenced_columns;
 };
 
+// A table the catalog advertises.
+//
+// A VGI table is not storage: it is a *name* bound to a table function that
+// produces its rows. `SELECT * FROM cat.data.numbers` resolves the table, reads
+// its scan function, and calls that. The columns declared here are what the
+// planner types the query against before any scan runs, so they have to match
+// what the scan actually emits.
 struct CatalogTable {
     std::string name;
     std::shared_ptr<arrow::Schema> columns;
@@ -131,9 +131,10 @@ struct CatalogTable {
     // Whether the scan function travels inside the table record.
     //
     // Inlined, the engine skips `catalog_table_scan_function_get` entirely —
-    // one fewer round trip per query. Not inlined, it asks, which is what a
-    // table whose scan depends on the query (a time-travel AT clause, say)
-    // needs.
+    // one fewer round trip per query, and the inlined binding is the one the
+    // AT-resolved version supplies. Not inlined, the engine asks, either
+    // through that method or through `catalog_table_scan_branches_get`; both
+    // resolve the clause, so either setting travels correctly.
     bool inline_scan = true;
 };
 

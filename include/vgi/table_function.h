@@ -43,8 +43,10 @@ public:
     // The next batch, or null when the scan is exhausted.
     virtual std::shared_ptr<arrow::RecordBatch> next_batch() = 0;
 
-    // Called once before the first `next_batch`, with a sink for messages the
-    // client should see.
+    // Called before every tick, with a sink for messages the client should
+    // see. The sink lives only until that tick's reply is written, so keep the
+    // callback rather than the collector it closes over — the framework hands
+    // over a fresh one each time for exactly that reason.
     //
     // A producer that has something to say — a warning about an argument, a
     // note about what it skipped — has nowhere else to put it: stdout is the
