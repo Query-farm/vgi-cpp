@@ -105,6 +105,7 @@ vgi_rpc::Result Dispatcher::table_buffering_process(const vgi_rpc::Request& requ
 
     auto batch = wire::decode_ipc(wire::get_binary(dto, "input_batch"));
     auto params = buffering_params(dto, &context);
+    params.input_batch_index = wire::get_optional_int64(dto, "batch_index");
     auto state_id = batch ? fn->process(params, batch) : std::string{};
 
     return envelope_of(wire::ResultBuilder(payload_schema_of("table_buffering_process"))

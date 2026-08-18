@@ -72,6 +72,10 @@ public:
     // Whether the function accumulates across the whole stream and flushes at
     // the end. Declaring it drives the engine's FINALIZE phase; without it,
     // `finish` is never called.
+    //
+    // The finalize runs per *substream*, and may land on a worker that never
+    // saw a tick — so whatever `finish` reports has to have been written to
+    // `ProcessParams::storage` under the substream id, not held in memory.
     virtual bool has_finish() const { return false; }
 
     virtual std::vector<EmittedBatch> finish(const ProcessParams&) const { return {}; }

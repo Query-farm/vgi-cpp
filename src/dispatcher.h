@@ -220,6 +220,9 @@ private:
                                       const std::vector<ArgSpec>& specs,
                                       const Arguments& arguments);
 
+    std::vector<ArgSpec> argument_specs_of(const std::string& name,
+                                           const BindParams& params) const;
+
     BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
 
     // The schema `name`, as this attachment sees it.

@@ -15,6 +15,8 @@
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
+#include "vgi/types.h"
+
 namespace vgi {
 
 // A call's argument values, as they arrive on the wire.
@@ -55,6 +57,17 @@ public:
     // The declared type of positional argument `index`, which is what a bind
     // needs to decide a result type. Null when absent.
     std::shared_ptr<arrow::DataType> positional_type(size_t index) const;
+
+    // Re-seat the wire's constant-only arguments at the positions `specs`
+    // declares them at.
+    //
+    // The engine ships *only* the constant arguments, numbered densely, since
+    // a column argument's values arrive in the input batch instead. So
+    // `multiply(value, factor)` — a column then a constant — puts `factor` on
+    // the wire as `positional_0`, while the function, its metadata and every
+    // other SDK count it as argument 1. Without this the two disagree by the
+    // number of column arguments that precede each constant.
+    void remap_positional(const std::vector<ArgSpec>& specs);
 
     // The whole field for positional argument `index`, metadata included.
     // Null when absent.

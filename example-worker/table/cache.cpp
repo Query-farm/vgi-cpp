@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -99,15 +100,31 @@ public:
            vgi::CacheControl cache_control)
         : schema_(std::move(schema)), value_(value), cache_control_(std::move(cache_control)) {}
 
+    void on_conditional_request(const std::optional<std::string>& if_none_match,
+                                const std::optional<std::string>&) override {
+        // The answer is unchanged whenever the caller quotes back the etag
+        // this fixture always emits, so a match means the stored payload still
+        // stands.
+        confirmed_ = cache_control_.etag && if_none_match && *if_none_match == *cache_control_.etag;
+    }
+
     std::shared_ptr<arrow::RecordBatch> next_batch() override {
         if (done_) return nullptr;
         done_ = true;
+
+        auto control = cache_control_;
+        // A zero-row batch, because the engine serves the bytes it already
+        // holds: sending the rows again would be the answer it asked not to
+        // get.
+        const int64_t rows = confirmed_ ? 0 : 1;
+        control.not_modified = confirmed_;
+
         arrow::Int64Builder builder;
-        (void)builder.Append(value_);
+        if (!confirmed_) (void)builder.Append(value_);
         std::shared_ptr<arrow::Array> array;
         (void)builder.Finish(&array);
-        metadata_ = cache_control_.to_metadata();
-        return arrow::RecordBatch::Make(schema_, 1, {array});
+        metadata_ = control.to_metadata();
+        return arrow::RecordBatch::Make(schema_, rows, {array});
     }
 
     std::map<std::string, std::string> last_metadata() const override { return metadata_; }
@@ -116,6 +133,7 @@ private:
     std::shared_ptr<arrow::Schema> schema_;
     int64_t value_;
     vgi::CacheControl cache_control_;
+    bool confirmed_ = false;
     bool done_ = false;
     std::map<std::string, std::string> metadata_;
 };

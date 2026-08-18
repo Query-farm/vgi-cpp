@@ -208,6 +208,23 @@ struct FunctionMetadata {
     // On, the framework filters each emitted batch, which is what a fixture
     // that merely advertises the capability wants.
     bool auto_apply_filters = false;
+    // Whether the engine may rewrite a scan of this function into a
+    // late-materialization plan: fetch the row ids first, then fetch only the
+    // surviving rows' columns.
+    //
+    // Only sound for a function whose rows have a stable, unique row id —
+    // without that the second fetch cannot find them again.
+    bool late_materialization = false;
+    // Whether the engine must stamp each input batch with its index.
+    //
+    // A buffering sink that reassembles the input's order needs it; without
+    // declaring it the index is not sent, and asking for it later finds
+    // nothing.
+    bool requires_input_batch_index = false;
+    // Whether the order rows arrive in matters to a buffering sink, and
+    // whether the order its finalize emits them in matters to the engine.
+    bool sink_order_dependent = false;
+    bool source_order_dependent = false;
     // Whether this function tags its batches with `vgi_batch_index`.
     //
     // Declaring it is what lets the engine hand the scan to several workers

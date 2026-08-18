@@ -99,6 +99,19 @@ constexpr const char* kIfNoneMatch = "vgi.cache.if_none_match";
 constexpr const char* kIfModifiedSince = "vgi.cache.if_modified_since";
 }  // namespace keys
 
+std::optional<std::string> metadata_value(
+    const std::shared_ptr<const arrow::KeyValueMetadata>& metadata, const char* key) {
+    if (!metadata) return std::nullopt;
+    const auto index = metadata->FindKey(key);
+    if (index < 0) return std::nullopt;
+    return metadata->value(index);
+}
+
+std::optional<std::string> request_metadata(const vgi_rpc::Request& request,
+                                            const char* key) {
+    return metadata_value(request.metadata(), key);
+}
+
 std::string encode_parent_rows(const std::vector<int32_t>& parent_rows) {
     std::string raw(parent_rows.size() * sizeof(int32_t), '\0');
     for (size_t i = 0; i < parent_rows.size(); ++i) {
@@ -205,10 +218,53 @@ int score_overload(const std::vector<ArgSpec>& specs,
     return score;
 }
 
+// Drains a prepared list of batches, for the phases that compute their whole
+// answer before the stream starts.
+class BatchesProducer : public TableProducer {
+public:
+    explicit BatchesProducer(std::vector<std::shared_ptr<arrow::RecordBatch>> batches)
+        : batches_(std::move(batches)) {}
+
+    std::shared_ptr<arrow::RecordBatch> next_batch() override {
+        if (next_ >= batches_.size()) return nullptr;
+        return batches_[next_++];
+    }
+
+private:
+    std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    size_t next_ = 0;
+};
+
 class TableProduce : public vgi_rpc::ProducerState {
 public:
     TableProduce(std::unique_ptr<TableProducer> producer, PushdownFilters filters = {})
         : producer_(std::move(producer)), filters_(std::move(filters)) {}
+
+    // Conditional-request validators from the init request, which is where
+    // they arrive for a producer: over HTTP the first tick is folded into the
+    // init, so waiting for a tick would miss them entirely.
+    void set_validators(std::optional<std::string> if_none_match,
+                        std::optional<std::string> if_modified_since) {
+        if_none_match_ = std::move(if_none_match);
+        if_modified_since_ = std::move(if_modified_since);
+    }
+
+    // Overriding `process` rather than `produce`: the validators ride the
+    // first tick's metadata, and `produce` never sees the tick. Over HTTP the
+    // first tick is folded into the init, which is why the init's metadata is
+    // the fallback.
+    void process(const vgi_rpc::AnnotatedBatch& input, vgi_rpc::OutputCollector& out,
+                 vgi_rpc::CallContext& context) override {
+        if (!asked_) {
+            if (auto etag = metadata_value(input.custom_metadata, keys::kIfNoneMatch)) {
+                if_none_match_ = std::move(etag);
+            }
+            if (auto since = metadata_value(input.custom_metadata, keys::kIfModifiedSince)) {
+                if_modified_since_ = std::move(since);
+            }
+        }
+        produce(out, context);
+    }
 
     void produce(vgi_rpc::OutputCollector& out, vgi_rpc::CallContext&) override {
         // A null producer is the buffering sink phase, which emits nothing:
@@ -222,6 +278,10 @@ public:
         producer_->set_log([&out](LogLevel level, const std::string& message) {
             out.client_log(to_rpc_level(level), message);
         });
+        if (!asked_) {
+            asked_ = true;
+            producer_->on_conditional_request(if_none_match_, if_modified_since_);
+        }
         auto batch = producer_->next_batch();
         if (!batch) {
             out.finish();
@@ -263,6 +323,11 @@ public:
 private:
     std::unique_ptr<TableProducer> producer_;
     PushdownFilters filters_;
+    std::optional<std::string> if_none_match_;
+    std::optional<std::string> if_modified_since_;
+    // Asked once, before the first batch: a producer that answered
+    // `not_modified` has nothing more to decide.
+    bool asked_ = false;
 };
 
 // Drives a table-in-out function: one input batch in, zero or more out.
@@ -671,6 +736,17 @@ std::vector<SecretLookup> Dispatcher::required_secrets_of(const std::string& nam
     return {};
 }
 
+// The argument specs `name` declares, whichever registry it lives in.
+std::vector<ArgSpec> Dispatcher::argument_specs_of(const std::string& name,
+                                                   const BindParams& params) const {
+    if (auto fn = find_buffering(name, params.schema_name)) return fn->argument_specs();
+    if (auto fn = find_table_in_out(name, params.schema_name)) return fn->argument_specs();
+    if (auto fn = find_table(name, params.schema_name, &params)) return fn->argument_specs();
+    auto candidates = scalars_named(name);
+    if (!candidates.empty()) return candidates.front()->argument_specs();
+    return {};
+}
+
 BindParams Dispatcher::read_bind_request(
     const std::shared_ptr<arrow::RecordBatch>& bind_call) const {
     BindParams params;
@@ -699,6 +775,8 @@ BindParams Dispatcher::read_bind_request(
         if (format != copy_to->end()) params.copy_to_format = format->second;
         if (path != copy_to->end()) params.copy_to_path = path->second;
     }
+    params.arguments.remap_positional(
+        argument_specs_of(wire::get_string(bind_call, "function_name"), params));
     if (auto copy_from = wire::get_struct_fields(bind_call, "copy_from")) {
         auto format = copy_from->find("format");
         auto path = copy_from->find("file_path");
@@ -944,6 +1022,10 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     const bool primary = execution_id.empty();
     if (primary) execution_id = next_execution_id();
     params.execution_id = execution_id;
+    // Client-minted and stable across a substream's init, ticks and finalize,
+    // which is what a per-substream finalize keys its accumulated rows on.
+    params.substream_id =
+        wire::get_optional_binary(init_request, "substream_id").value_or(std::string{});
 
     // Optimizer hints, all absent unless the plan shape let DuckDB fold the
     // clause into the scan. The two enum fields are dictionary-encoded, so
@@ -1033,8 +1115,11 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         stream.input_schema = arrow::schema({});
         auto auto_apply = table->metadata().auto_apply_filters ? params.pushdown_filters
                                                               : PushdownFilters{};
-        stream.state =
+        auto produce =
             std::make_shared<TableProduce>(table->init(params), std::move(auto_apply));
+        produce->set_validators(request_metadata(request, keys::kIfNoneMatch),
+                                request_metadata(request, keys::kIfModifiedSince));
+        stream.state = std::move(produce);
         return stream;
     }
 
@@ -1044,6 +1129,22 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     };
 
     if (auto transform = find_table_in_out(function_name, params.schema_name)) {
+        // Two shapes behind one name, as for buffering: the FINALIZE phase is
+        // a producer that drains what this substream's ticks accumulated, and
+        // every other phase is the ordinary exchange.
+        const auto phase = wire::get_optional_enum(init_request, "phase").value_or("");
+        if (phase == enums::phase::kFinalize) {
+            stream.input_schema = arrow::schema({});
+            auto batches = transform->finish(params);
+            std::vector<std::shared_ptr<arrow::RecordBatch>> rows;
+            rows.reserve(batches.size());
+            for (auto& emitted : batches) {
+                if (emitted.batch) rows.push_back(std::move(emitted.batch));
+            }
+            stream.state = std::make_shared<TableProduce>(
+                std::make_unique<BatchesProducer>(std::move(rows)));
+            return stream;
+        }
         stream.input_schema = input_schema_or_empty();
         stream.state = std::make_shared<TableInOutExchange>(std::move(transform),
                                                             std::move(params));

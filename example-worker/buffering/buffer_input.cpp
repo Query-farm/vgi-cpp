@@ -3,6 +3,7 @@
 
 // Table-buffering fixtures: sink the whole relation, then produce.
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -83,14 +84,22 @@ public:
     // how the engine recovers from a worker error mid-COPY or mid-aggregation.
     enum class Failure { None, Combine, Finalize, Process };
 
-    explicit BufferInput(std::string name, Failure failure = Failure::None)
-        : name_(std::move(name)), failure_(failure) {}
+    // `by_batch_index` asks the engine to stamp each input chunk with its
+    // source index, and reassembles the input's order from it in combine.
+    BufferInput(std::string name, Failure failure = Failure::None, bool by_batch_index = false)
+        : name_(std::move(name)), failure_(failure), by_batch_index_(by_batch_index) {}
 
     std::string name() const override { return name_; }
 
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
-        md.description = "Collects all input batches and emits during finalization";
+        md.description = by_batch_index_
+                             ? "buffer_input variant using batch_index to reconstruct order"
+                             : "Collects all input batches and emits during finalization";
+        if (by_batch_index_) {
+            md.categories = {"test", "ordering"};
+            md.requires_input_batch_index = true;
+        }
         return md;
     }
 
@@ -111,7 +120,25 @@ public:
             throw std::invalid_argument("Intentional exception during process()");
         }
         if (batch && batch->num_rows() > 0) {
-            params.storage->append(params.execution_id, kNamespace, "", encode_batch(batch));
+            if (by_batch_index_) {
+                // Absent here means the engine never stamped it, which is a
+                // broken declaration rather than a source that has no order —
+                // the engine synthesizes an index for the sources that cannot
+                // supply one.
+                if (!params.input_batch_index) {
+                    throw std::runtime_error(
+                        name_ +
+                        ".process() received no batch_index; requires_input_batch_index is "
+                        "not reaching the engine");
+                }
+                // Written to a staging namespace, because the order they
+                // arrive in is exactly what has to be undone.
+                params.storage->append(params.execution_id, kUnsortedNamespace, "",
+                                       encode_indexed(*params.input_batch_index,
+                                                      encode_batch(batch)));
+            } else {
+                params.storage->append(params.execution_id, kNamespace, "", encode_batch(batch));
+            }
         }
         // Every sink writes into the one execution-scoped log, so the state id
         // is the execution id and combine has nothing to reconcile.
@@ -123,6 +150,24 @@ public:
         (void)state_ids;
         if (failure_ == Failure::Combine) {
             throw std::invalid_argument("Intentional exception during combine()");
+        }
+        if (by_batch_index_) {
+            // Combine is the one call that sees every sink's output, so it is
+            // the only place the input's order can be put back.
+            auto staged =
+                params.storage->scan(params.execution_id, kUnsortedNamespace, "", 0, SIZE_MAX);
+            std::vector<std::pair<int64_t, std::string>> ordered;
+            ordered.reserve(staged.size());
+            for (const auto& [id, blob] : staged) {
+                (void)id;
+                ordered.push_back(decode_indexed(blob));
+            }
+            std::sort(ordered.begin(), ordered.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (const auto& [index, bytes] : ordered) {
+                (void)index;
+                params.storage->append(params.execution_id, kNamespace, "", bytes);
+            }
         }
         return {params.execution_id};
     }
@@ -137,8 +182,31 @@ public:
     }
 
 private:
+    // A little-endian index prefix, so a staged entry carries the order it
+    // belongs in without a second key.
+    static std::string encode_indexed(int64_t index, const std::string& payload) {
+        std::string bytes(sizeof(index), '\0');
+        for (size_t i = 0; i < sizeof(index); ++i) {
+            bytes[i] = static_cast<char>((static_cast<uint64_t>(index) >> (8 * i)) & 0xFF);
+        }
+        return bytes + payload;
+    }
+
+    static std::pair<int64_t, std::string> decode_indexed(const std::string& blob) {
+        if (blob.size() < sizeof(int64_t)) return {0, {}};
+        uint64_t index = 0;
+        for (size_t i = 0; i < sizeof(int64_t); ++i) {
+            index |= static_cast<uint64_t>(static_cast<unsigned char>(blob[i])) << (8 * i);
+        }
+        return {static_cast<int64_t>(index), blob.substr(sizeof(int64_t))};
+    }
+
+    // Where the batches wait between arriving and being ordered.
+    static constexpr const char* kUnsortedNamespace = "buf.unsorted";
+
     std::string name_;
     Failure failure_;
+    bool by_batch_index_;
 };
 
 }  // namespace
@@ -147,7 +215,8 @@ void register_buffering(vgi::Worker& worker) {
     worker.register_buffering(std::make_shared<BufferInput>("buffer_input"));
     worker.register_buffering(std::make_shared<BufferInput>("echo_buffering"));
     worker.register_buffering(std::make_shared<BufferInput>("ordered_buffer_input"));
-    worker.register_buffering(std::make_shared<BufferInput>("batch_index_buffer_input"));
+    worker.register_buffering(std::make_shared<BufferInput>(
+        "batch_index_buffer_input", BufferInput::Failure::None, /*by_batch_index=*/true));
     worker.register_buffering(std::make_shared<BufferInput>("slow_cancellable_buffering"));
 
     // Failure fixtures: each raises in one phase, so the tests can check that

@@ -47,6 +47,7 @@ void register_generators(vgi::Worker& worker);
 void register_secret_scalars(vgi::Worker& worker);
 void register_secret_table_in_out(vgi::Worker& worker);
 void register_same_name_exchange(vgi::Worker& worker);
+void register_substream_finalize(vgi::Worker& worker);
 void register_unnest_tensor_rows(vgi::Worker& worker);
 void register_cancellable_inout(vgi::Worker& worker);
 void register_large_state(vgi::Worker& worker);
@@ -64,6 +65,7 @@ void register_cache_partitions(vgi::Worker& worker);
 void register_partitioned(vgi::Worker& worker);
 void register_partition_broken(vgi::Worker& worker);
 void register_accumulate(vgi::Worker& worker);
+void register_cached_scalars(vgi::Worker& worker);
 std::vector<vgi::CatalogTable> rff_tables();
 std::vector<vgi::TimeTravelVersion> versioned_data_versions();
 // Declares the catalog's tables and views. Runs after the function

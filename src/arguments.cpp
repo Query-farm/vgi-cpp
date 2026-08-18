@@ -117,6 +117,33 @@ std::shared_ptr<arrow::DataType> Arguments::positional_type(size_t index) const 
     return positional_fields_[index]->type();
 }
 
+void Arguments::remap_positional(const std::vector<ArgSpec>& specs) {
+    if (positional_.empty() || specs.empty()) return;
+
+    std::vector<size_t> declared;
+    size_t highest = 0;
+    for (const auto& spec : specs) {
+        if (!spec.index || *spec.index < 0) continue;
+        const auto position = static_cast<size_t>(*spec.index);
+        highest = std::max(highest, position);
+        if (spec.constant) declared.push_back(position);
+    }
+    // Nothing to re-seat when every argument is already a constant, and
+    // nothing to guess at when the call site sent as many as were declared —
+    // the second case is the hand-built form, which is already positional.
+    if (declared.size() == specs.size()) return;
+    if (positional_.size() > highest) return;
+
+    std::vector<std::shared_ptr<arrow::Array>> arrays(highest + 1);
+    std::vector<std::shared_ptr<arrow::Field>> fields(highest + 1);
+    for (size_t i = 0; i < declared.size() && i < positional_.size(); ++i) {
+        arrays[declared[i]] = positional_[i];
+        if (i < positional_fields_.size()) fields[declared[i]] = positional_fields_[i];
+    }
+    positional_ = std::move(arrays);
+    positional_fields_ = std::move(fields);
+}
+
 std::shared_ptr<arrow::Field> Arguments::positional_field(size_t index) const {
     if (index >= positional_fields_.size()) return nullptr;
     return positional_fields_[index];

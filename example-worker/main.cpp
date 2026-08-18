@@ -62,6 +62,7 @@ int main(int argc, char** argv) {
     example::register_secret_scalars(worker);
     example::register_secret_table_in_out(worker);
     example::register_same_name_exchange(worker);
+    example::register_substream_finalize(worker);
     example::register_unnest_tensor_rows(worker);
     example::register_cancellable_inout(worker);
     example::register_large_state(worker);
@@ -79,6 +80,7 @@ int main(int argc, char** argv) {
     example::register_partitioned(worker);
     example::register_partition_broken(worker);
     example::register_accumulate(worker);
+    example::register_cached_scalars(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.

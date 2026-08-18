@@ -98,6 +98,18 @@ struct ProcessParams {
     Secrets secrets;
     std::string catalog_name;
     std::string schema_name;
+    // The engine's index for the input batch this call carries, when the
+    // function declared `requires_input_batch_index`. Absent otherwise, which
+    // is different from zero.
+    std::optional<int64_t> input_batch_index;
+    // The client's id for the streaming substream this call belongs to, when
+    // the engine fanned a table-in-out out across several.
+    //
+    // Distinct from `execution_id`, which this worker mints: a substream id is
+    // stable across the substream's init, every tick and its finalize even
+    // when a load balancer routes them to different backends, which is what
+    // lets a per-substream finalize find what its own ticks accumulated.
+    std::string substream_id;
     // The engine's id for this function execution, echoed on every call that
     // belongs to it. A function holding state across calls — a buffering sink,
     // an aggregate — keys on this; a stateless one can ignore it.

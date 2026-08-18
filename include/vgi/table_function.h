@@ -53,6 +53,16 @@ public:
         (void)log;
     }
 
+    // The validators a conditional request carried, handed over before the
+    // first `next_batch`.
+    //
+    // A producer that recognises its own etag answers by emitting a zero-row
+    // batch whose `last_metadata` says `not_modified`, and the engine serves
+    // the payload it already holds. Ignoring them is always safe — the rows
+    // are then recomputed, which is slower and not wrong.
+    virtual void on_conditional_request(const std::optional<std::string>& /*if_none_match*/,
+                                        const std::optional<std::string>& /*if_modified_since*/) {}
+
     // Wire metadata for the batch just returned. Called once after each
     // `next_batch` that produced one.
     //

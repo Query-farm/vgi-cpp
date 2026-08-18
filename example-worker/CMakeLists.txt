@@ -16,6 +16,7 @@ add_executable(vgi-example-worker
     scalar/settings.cpp
     scalar/format.cpp
     scalar/secrets.cpp
+    scalar/cached.cpp
     table/sequence.cpp
     table/cache.cpp
     table/more.cpp
@@ -43,6 +44,7 @@ add_executable(vgi-example-worker
     table_in_out/cancellable.cpp
     table_in_out/tensor.cpp
     table_in_out/same_name.cpp
+    table_in_out/substream.cpp
     aggregate/basic.cpp
     aggregate/more.cpp
     aggregate/window.cpp
