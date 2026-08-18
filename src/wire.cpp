@@ -497,6 +497,21 @@ ResultBuilder& ResultBuilder::set_examples(const std::string& field,
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_int64_map(
+    const std::string& field, const std::vector<std::pair<std::string, int64_t>>& entries) {
+    auto key_builder = std::make_shared<arrow::StringBuilder>();
+    auto item_builder = std::make_shared<arrow::Int64Builder>();
+    arrow::MapBuilder b(arrow::default_memory_pool(), key_builder, item_builder);
+    check_ok(b.Append(), "opening map result field '" + field + "'");
+    for (const auto& [key, value] : entries) {
+        check_ok(key_builder->Append(key), "appending map key to '" + field + "'");
+        check_ok(item_builder->Append(value), "appending map value to '" + field + "'");
+    }
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(b.Finish(), "finishing map result field '" + field + "'");
+    return *this;
+}
+
 ResultBuilder& ResultBuilder::set_string_map(
     const std::string& field,
     const std::vector<std::pair<std::string, std::string>>& entries) {

@@ -92,10 +92,13 @@ struct CatalogTable {
 
     // Sources this table is stitched from.
     //
-    // Empty means the single `scan_function` above is the whole table. A
-    // non-empty list *overrides* it: the engine asks for the branches and
-    // reads each in turn.
-    std::vector<CatalogBranch> branches;
+    // Absent means the single `scan_function` above is the whole table. Present
+    // *overrides* it: the engine asks for the branches and reads each in turn —
+    // including when the list is empty, which is a table that declares itself
+    // multi-branch and then offers no branch, and which the engine refuses.
+    // That is a different thing from a table that never mentioned branches, so
+    // the two cannot share one empty vector.
+    std::optional<std::vector<CatalogBranch>> branches;
     // DuckDB extensions the branches need (`iceberg`, `parquet`).
     std::vector<std::string> required_extensions;
 
@@ -142,6 +145,27 @@ struct CatalogView {
     std::optional<std::string> comment;
 };
 
+// A macro: a name bound to SQL the engine substitutes at the call site.
+//
+// Unlike a view, a macro takes parameters, and unlike a function it never
+// reaches the worker at run time — the engine expands it. Declaring one is
+// therefore pure catalog metadata.
+struct CatalogMacro {
+    std::string name;
+    // Order is load-bearing: it is the positional order of the call.
+    std::vector<std::string> parameters;
+    std::string definition;
+    // A table macro is called in FROM, a scalar one in an expression.
+    bool table_macro = false;
+    std::optional<std::string> comment;
+    // Defaults for trailing parameters, by name. Integers only, which is what
+    // the wire carries.
+    std::vector<std::pair<std::string, int64_t>> defaults;
+    // Per-parameter descriptions, surfaced by `vgi_function_arguments()`
+    // through the same `vgi_doc` channel a function's arguments use.
+    std::vector<std::pair<std::string, std::string>> parameter_docs;
+};
+
 // A DuckDB setting this catalog introduces.
 //
 // Declared at ATTACH, which is what makes `SET my_setting = ...` work at all:
@@ -172,6 +196,7 @@ struct CatalogSchema {
     std::vector<std::pair<std::string, std::string>> tags;
     std::vector<CatalogTable> tables;
     std::vector<CatalogView> views;
+    std::vector<CatalogMacro> macros;
 };
 
 // The catalog a worker advertises: what `ATTACH '<name>' (TYPE vgi)` binds to.

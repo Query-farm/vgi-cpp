@@ -206,20 +206,80 @@ protected:
 };
 
 // `cache_scoped_txn(n := 10)` — cacheable only within one transaction.
-class CacheScopedTxn : public CachedNumbers {
+//
+// Every row carries the invocation's nonce alongside its index, so the
+// transaction boundary is provable from the data: a second scan in the same
+// transaction returns the same nonce (served) and one in a new transaction a
+// fresh one (recomputed), without reading a log.
+class CacheScopedTxn : public vgi::TableFunction {
 public:
-    CacheScopedTxn()
-        : CachedNumbers("cache_scoped_txn",
-                        "Emits n rows cacheable only within the transaction", "n",
-                        /*takes_ttl=*/false) {}
+    std::string name() const override { return "cache_scoped_txn"; }
 
-protected:
-    vgi::CacheControl cache_control(const vgi::ProcessParams&) const override {
+    vgi::FunctionMetadata metadata() const override {
+        return cache_metadata("Emits n rows cacheable only within the transaction");
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::named("n", "int64", "Number of rows to generate")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("n", arrow::int64(), /*nullable=*/true),
+                              arrow::field("nonce", arrow::int64(), /*nullable=*/true)});
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         vgi::CacheControl control;
         control.ttl_seconds = kDefaultTtlSeconds;
         control.scope = "transaction";
-        return control;
+        // Drawn in init, which the engine only reaches on a miss.
+        return std::make_unique<Producer>(
+            params.output_schema,
+            std::max<int64_t>(0, params.arguments.named_int64("n").value_or(10)), next_nonce(),
+            std::move(control));
     }
+
+private:
+    class Producer : public vgi::TableProducer {
+    public:
+        Producer(std::shared_ptr<arrow::Schema> schema, int64_t rows, int64_t nonce,
+                 vgi::CacheControl control)
+            : schema_(std::move(schema)),
+              rows_(rows),
+              nonce_(nonce),
+              control_(std::move(control)) {}
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            if (emitted_) return nullptr;
+            emitted_ = true;
+            arrow::Int64Builder indices;
+            arrow::Int64Builder nonces;
+            (void)indices.Reserve(rows_);
+            (void)nonces.Reserve(rows_);
+            for (int64_t row = 0; row < rows_; ++row) {
+                (void)indices.Append(row);
+                (void)nonces.Append(nonce_);
+            }
+            std::shared_ptr<arrow::Array> index_array;
+            std::shared_ptr<arrow::Array> nonce_array;
+            (void)indices.Finish(&index_array);
+            (void)nonces.Finish(&nonce_array);
+            metadata_ = control_.to_metadata();
+            return arrow::RecordBatch::Make(schema_, rows_, {index_array, nonce_array});
+        }
+
+        std::map<std::string, std::string> last_metadata() const override {
+            return metadata_;
+        }
+
+    private:
+        std::shared_ptr<arrow::Schema> schema_;
+        int64_t rows_;
+        int64_t nonce_;
+        vgi::CacheControl control_;
+        bool emitted_ = false;
+        std::map<std::string, std::string> metadata_;
+    };
 };
 
 // `cache_nonce()` — one row whose value changes on every real invocation.
@@ -366,14 +426,23 @@ public:
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        // ttl 0 beside a validator is the "no-cache" semantic: the engine keeps
+        // the bytes but marks them stale at once, so every repeat asks rather
+        // than assumes. A non-zero TTL here would make the entry fresh and the
+        // conditional path would never run.
         vgi::CacheControl control;
-        control.ttl_seconds = kDefaultTtlSeconds;
+        control.ttl_seconds = 0;
         control.revalidatable = true;
         // A constant ETag: the fixture's result never actually changes, so
         // every revalidation is expected to confirm freshness.
-        control.etag = "\"vgi-cpp-fixture\"";
+        control.etag = kEtag;
         return std::make_unique<OneRow>(params.output_schema, next_nonce(), std::move(control));
     }
+
+private:
+    // Spelled as the canonical Python fixture spells it, so a conditional
+    // request recorded against one implementation matches the other.
+    static constexpr const char* kEtag = "\"rev-v1\"";
 };
 
 // `cache_parallel(rows, batch_size := 24000)` — the one cache fixture that
@@ -528,7 +597,9 @@ private:
             : schema_(std::move(schema)), rows_(rows) {}
 
         std::shared_ptr<arrow::RecordBatch> next_batch() override {
-            if (emitted_) throw std::runtime_error("cache_poison: intentional mid-stream error");
+            if (emitted_) {
+                throw std::runtime_error("cache_poison: intentional mid-stream failure");
+            }
             emitted_ = true;
             vgi::CacheControl control;
             control.ttl_seconds = kDefaultTtlSeconds;
@@ -548,8 +619,8 @@ private:
     };
 };
 
-// `cache_projection(n)` — three columns, built only where the bound schema
-// names them, so a test can see what projection pushdown asked for.
+// `cache_projection()` — three columns, built only where the bound schema names
+// them, so a test can see what projection pushdown asked for.
 class CacheProjection : public vgi::TableFunction {
 public:
     std::string name() const override { return "cache_projection"; }
@@ -560,9 +631,7 @@ public:
         return md;
     }
 
-    std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::named("n", "int64", "Number of rows to generate")};
-    }
+    std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
         return arrow::schema({arrow::field("a", arrow::int64(), true),
@@ -571,30 +640,28 @@ public:
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        return std::make_unique<Producer>(
-            params.output_schema,
-            std::max<int64_t>(0, params.arguments.named_int64("n").value_or(4)));
+        return std::make_unique<Producer>(params.output_schema);
     }
 
 private:
     class Producer : public vgi::TableProducer {
     public:
-        Producer(std::shared_ptr<arrow::Schema> schema, int64_t rows)
-            : schema_(std::move(schema)), rows_(rows) {}
+        explicit Producer(std::shared_ptr<arrow::Schema> schema) : schema_(std::move(schema)) {}
 
         std::shared_ptr<arrow::RecordBatch> next_batch() override {
             if (emitted_) return nullptr;
             emitted_ = true;
 
-            // Scales differ per column so a transposition shows up as wrong
-            // values rather than plausible ones.
+            // Scales differ per column, and no value repeats across them, so a
+            // cross-served projection shows up as wrong values rather than
+            // plausible ones.
             std::vector<std::shared_ptr<arrow::Array>> columns;
             for (int i = 0; i < schema_->num_fields(); ++i) {
                 const auto& name = schema_->field(i)->name();
                 const int64_t scale = name == "b" ? 10 : (name == "c" ? 100 : 1);
                 arrow::Int64Builder builder;
-                (void)builder.Reserve(rows_);
-                for (int64_t row = 0; row < rows_; ++row) (void)builder.Append(row * scale);
+                (void)builder.Reserve(kRows);
+                for (int64_t row = 1; row <= kRows; ++row) (void)builder.Append(row * scale);
                 std::shared_ptr<arrow::Array> array;
                 (void)builder.Finish(&array);
                 columns.push_back(array);
@@ -602,7 +669,7 @@ private:
             vgi::CacheControl control;
             control.ttl_seconds = kDefaultTtlSeconds;
             metadata_ = control.to_metadata();
-            return arrow::RecordBatch::Make(schema_, rows_, columns);
+            return arrow::RecordBatch::Make(schema_, kRows, columns);
         }
 
         std::map<std::string, std::string> last_metadata() const override {
@@ -610,8 +677,9 @@ private:
         }
 
     private:
+        static constexpr int64_t kRows = 3;
+
         std::shared_ptr<arrow::Schema> schema_;
-        int64_t rows_;
         bool emitted_ = false;
         std::map<std::string, std::string> metadata_;
     };
@@ -622,14 +690,6 @@ private:
 void register_cache(vgi::Worker& worker) {
     worker.register_table(std::make_shared<CachePoison>());
     worker.register_table(std::make_shared<CacheProjection>());
-    // Variants that differ from `cacheable_numbers` only in name; the tests
-    // use distinct names so one query's cache entry cannot serve another's.
-    for (const char* name : {"cache_partitioned", "cache_partition_scope",
-                             "cache_partition_parallel"}) {
-        worker.register_table(std::make_shared<CachedNumbers>(
-            name, "Cacheable sequence fixture", "n", /*takes_ttl=*/true,
-            /*positional_rows=*/true));
-    }
     worker.register_table(std::make_shared<CacheParallel>());
     worker.register_table(std::make_shared<MultiCol>());
     worker.register_table(std::make_shared<CacheBig>());

@@ -60,6 +60,11 @@ int main(int argc, char** argv) {
     example::register_generators(worker);
     example::register_secret_scalars(worker);
     example::register_secret_table_in_out(worker);
+    example::register_same_name_exchange(worker);
+    example::register_unnest_tensor_rows(worker);
+    example::register_cancellable_inout(worker);
+    example::register_large_state(worker);
+    example::register_source_shapes(worker);
     example::register_blended(worker);
     example::register_versioned(worker);
     example::register_static_scans(worker);
@@ -69,7 +74,9 @@ int main(int argc, char** argv) {
     example::register_nest_tensor(worker);
     example::register_rff(worker);
     example::register_more_cache(worker);
+    example::register_cache_partitions(worker);
     example::register_partitioned(worker);
+    example::register_partition_broken(worker);
     example::register_accumulate(worker);
     example::declare_catalog(worker);
 

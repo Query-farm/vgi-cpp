@@ -33,6 +33,10 @@ public:
         md.description = "Passthrough function that emits each input batch unchanged";
         md.categories = {"utility", "debug"};
         md.tags = {{"category", "debug"}, {"type", "passthrough"}};
+        // Declared so the bound output schema arrives already narrowed: the
+        // plan-shape assertions check that DuckDB pushed the projection in
+        // rather than stacking a narrowing PROJECTION above the operator.
+        md.projection_pushdown = true;
         return md;
     }
 
@@ -60,6 +64,9 @@ public:
         vgi::FunctionMetadata md;
         md.description = "Emits len(observed_output_schema) per column — projection probe";
         md.categories = {"test", "pushdown"};
+        // The witness only says something when the narrowing actually reaches
+        // the worker, which is what declaring this buys.
+        md.projection_pushdown = true;
         return md;
     }
 

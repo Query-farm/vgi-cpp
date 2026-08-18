@@ -90,7 +90,7 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
-        md.description = "Buffers every input batch and replays them at finalize";
+        md.description = "Collects all input batches and emits during finalization";
         return md;
     }
 
@@ -148,9 +148,6 @@ void register_buffering(vgi::Worker& worker) {
     worker.register_buffering(std::make_shared<BufferInput>("echo_buffering"));
     worker.register_buffering(std::make_shared<BufferInput>("ordered_buffer_input"));
     worker.register_buffering(std::make_shared<BufferInput>("batch_index_buffer_input"));
-    worker.register_buffering(std::make_shared<BufferInput>("buffer_emit_wide"));
-    worker.register_buffering(std::make_shared<BufferInput>("ordered_source"));
-    worker.register_buffering(std::make_shared<BufferInput>("large_state"));
     worker.register_buffering(std::make_shared<BufferInput>("slow_cancellable_buffering"));
 
     // Failure fixtures: each raises in one phase, so the tests can check that

@@ -7,6 +7,7 @@
 // turns `SELECT * FROM ex.data.cacheable_numbers` into a call to the
 // `cacheable_numbers` function — the table has no storage of its own.
 
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,15 @@ vgi::CatalogTable backed_by(std::string name, std::string scan_function,
     return table;
 }
 
+// A one-element array holding `value`, for a named scan argument.
+std::shared_ptr<arrow::Array> string_arg(const std::string& value) {
+    arrow::StringBuilder builder;
+    (void)builder.Append(value);
+    std::shared_ptr<arrow::Array> array;
+    (void)builder.Finish(&array);
+    return array;
+}
+
 // A one-element array holding `value`, for a scan argument.
 std::shared_ptr<arrow::Array> int64_arg(int64_t value) {
     arrow::Int64Builder builder;
@@ -61,7 +71,8 @@ vgi::CatalogBranch sequence_branch(int64_t count,
     return branch;
 }
 
-vgi::CatalogTable multi_branch(std::string name, std::vector<vgi::CatalogBranch> branches) {
+vgi::CatalogTable multi_branch(std::string name, std::vector<vgi::CatalogBranch> branches,
+                               std::string comment = {}) {
     vgi::CatalogTable table;
     table.name = std::move(name);
     table.columns = columns({{"n", arrow::int64()}});
@@ -69,7 +80,28 @@ vgi::CatalogTable multi_branch(std::string name, std::vector<vgi::CatalogBranch>
     // here as well would be a second, contradictory answer.
     table.branches = std::move(branches);
     table.inline_scan = false;
+    if (!comment.empty()) table.comment = std::move(comment);
     return table;
+}
+
+// The scratch directory the suite writes native branch files into. The tests
+// name it as `${VGI_TEST_BRANCH_DIR}` and the catalog has to resolve to the
+// same place, or the branch points at a file that was never written.
+std::string branch_path(const std::string& name) {
+    const char* configured = std::getenv("VGI_TEST_BRANCH_DIR");
+    std::string dir = configured && *configured ? configured : "/tmp";
+    while (!dir.empty() && dir.back() == '/') dir.pop_back();
+    return dir + "/" + name;
+}
+
+// A branch served by a DuckDB table function rather than by this worker —
+// `read_parquet`, `read_csv_auto`, `iceberg_scan`. The engine calls it itself;
+// nothing about it reaches the worker again.
+vgi::CatalogBranch native_branch(std::string function_name, const std::string& file) {
+    vgi::CatalogBranch branch;
+    branch.function_name = std::move(function_name);
+    branch.scan_arguments = vgi::serialize_scan_arguments({string_arg(branch_path(file))});
+    return branch;
 }
 
 vgi::CatalogTable versioned_table(std::string name, std::string scan_function,
@@ -136,15 +168,6 @@ std::string wkb_point(double x, double y) {
     wkb.append(reinterpret_cast<const char*>(&x), sizeof(x));
     wkb.append(reinterpret_cast<const char*>(&y), sizeof(y));
     return wkb;
-}
-
-// A one-element array holding `value`, for a named scan argument.
-std::shared_ptr<arrow::Array> string_arg(const std::string& value) {
-    arrow::StringBuilder builder;
-    (void)builder.Append(value);
-    std::shared_ptr<arrow::Array> array;
-    (void)builder.Finish(&array);
-    return array;
 }
 
 std::shared_ptr<arrow::Array> bool_arg(bool value) {
@@ -301,9 +324,10 @@ void declare_catalog(vgi::Worker& worker) {
     data.tables.push_back(
         backed_by("cache_no_store", "cache_no_store", columns({{"n", arrow::int64()}}),
                   "Advertises vgi.cache.no_store — must never be cached"));
-    data.tables.push_back(
-        backed_by("cache_scoped_txn", "cache_scoped_txn", columns({{"n", arrow::int64()}}),
-                  "Advertises vgi.cache.scope=transaction"));
+    data.tables.push_back(backed_by(
+        "cache_scoped_txn", "cache_scoped_txn",
+        columns({{"n", arrow::int64()}, {"nonce", arrow::int64()}}),
+        "Advertises vgi.cache.scope=transaction"));
     // Uncommented on purpose: `cache_bench` is a scaling fixture called
     // directly, and `table/comments.test` pins the commented set exactly.
     data.tables.push_back(
@@ -331,11 +355,69 @@ void declare_catalog(vgi::Worker& worker) {
 
     // Multi-branch tables: one logical relation stitched from several scans.
     data.tables.push_back(
-        multi_branch("multi_branch_numbers", {sequence_branch(50), sequence_branch(50)}));
-    data.tables.push_back(multi_branch("multi_branch_filtered_numbers",
-                                       {sequence_branch(100, "n < 50"),
-                                        sequence_branch(100, "n >= 50")}));
-    data.tables.push_back(multi_branch("multi_branch_empty", {}));
+        multi_branch("multi_branch_numbers", {sequence_branch(50), sequence_branch(50)},
+                     "Multi-branch: UNION of sequence(50) + sequence(50) — used by "
+                     "multi_branch_scan.test"));
+    data.tables.push_back(
+        multi_branch("multi_branch_filtered_numbers",
+                     {sequence_branch(100, "n < 50"), sequence_branch(100, "n >= 50")},
+                     "Multi-branch with complementary branch_filters — exercises pruning"));
+    data.tables.push_back(
+        multi_branch("multi_branch_empty", {},
+                     "Multi-branch: empty branches list — used by "
+                     "multi_branch_empty_branches.test"));
+
+    // Heterogeneous branches: one arm is this worker, the others are DuckDB's
+    // own readers over files the test writes first. What they probe is that a
+    // branch the worker never serves still stitches into the same relation.
+    data.tables.push_back(
+        multi_branch("multi_branch_hetero",
+                     {sequence_branch(50),
+                      native_branch("read_parquet", "vgi_hetero_branch.parquet")},
+                     "Multi-branch: sequence(50) + read_parquet — used by "
+                     "multi_branch_heterogeneous.test"));
+    data.tables.push_back(
+        multi_branch("multi_branch_nopushdown",
+                     {sequence_branch(50),
+                      native_branch("read_csv_auto", "vgi_nopushdown_branch.csv")},
+                     "Multi-branch: VGI + read_csv — used by "
+                     "multi_branch_pushdown_incapable.test"));
+    {
+        // Declared for parity only: the iceberg branch is scanned solely by the
+        // gated multi_branch_iceberg.test, which the language suites skip.
+        auto iceberg = multi_branch(
+            "multi_branch_iceberg",
+            {sequence_branch(50), native_branch("iceberg_scan", "vgi_iceberg_branch")},
+            "Multi-branch: sequence(50) + iceberg_scan — used by multi_branch_iceberg.test");
+        iceberg.required_extensions = {"iceberg"};
+        data.tables.push_back(std::move(iceberg));
+    }
+    {
+        // Three parquet files whose columns differ in order and in count; the
+        // engine reconciles them against the declared schema, which is why this
+        // table declares two columns rather than the usual one.
+        auto recon = multi_branch(
+            "multi_branch_recon",
+            {native_branch("read_parquet", "vgi_recon_a_b.parquet"),
+             native_branch("read_parquet", "vgi_recon_b_a.parquet"),
+             native_branch("read_parquet", "vgi_recon_a_only.parquet")},
+            "Multi-branch: column reconciliation — used by "
+            "multi_branch_reconciliation.test");
+        recon.columns = columns({{"a", arrow::int64()}, {"b", arrow::int64()}});
+        data.tables.push_back(std::move(recon));
+    }
+    {
+        // Two writable arms, which the engine refuses: a write has to have one
+        // destination, and a table that names two has not said which.
+        auto writable_a = sequence_branch(10);
+        writable_a.writable = true;
+        auto writable_b = sequence_branch(10);
+        writable_b.writable = true;
+        data.tables.push_back(
+            multi_branch("multi_branch_two_writable", {writable_a, writable_b},
+                         "Multi-branch with two writable=True arms — used by "
+                         "multi_branch_two_writable.test"));
+    }
 
     data.tables.push_back(
         backed_by("cache_poison", "cache_poison", columns({{"n", arrow::int64()}}),
@@ -350,10 +432,6 @@ void declare_catalog(vgi::Worker& worker) {
     data.tables.push_back(
         backed_by("cache_external_fail", "cache_external_fail", columns({{"n", arrow::int64()}}),
                   "Cacheable first batch then an unresolvable external-location pointer"));
-    for (const char* name : {"cache_partitioned", "cache_partition_scope",
-                             "cache_partition_parallel"}) {
-        data.tables.push_back(backed_by(name, name, columns({{"n", arrow::int64()}})));
-    }
 
     // Time travel is the point: each version resolves to its own scan
     // arguments, so an `AT` clause keys a distinct cache entry.
@@ -418,6 +496,31 @@ void declare_catalog(vgi::Worker& worker) {
     // and the suite names `main` for these two.
     auto& main = worker.catalog().schema("main");
     main.comment = "Example functions for testing VGI";
+    // Macros never reach the worker at run time — the engine substitutes the
+    // text — so declaring them is the whole implementation.
+    main.macros.push_back({"vgi_multiply",
+                           {"x", "y"},
+                           "x * y",
+                           /*table_macro=*/false,
+                           "Multiply two values",
+                           {},
+                           {{"x", "First factor"}, {"y", "Second factor"}}});
+    main.macros.push_back({"vgi_clamp",
+                           {"val", "lo", "hi"},
+                           "GREATEST(lo, LEAST(hi, val))",
+                           /*table_macro=*/false,
+                           "Clamp a value between lo and hi (defaults: 0..100)",
+                           {{"lo", 0}, {"hi", 100}},
+                           {{"val", "Value to clamp"},
+                            {"lo", "Lower bound (inclusive)"},
+                            {"hi", "Upper bound (inclusive)"}}});
+    main.macros.push_back({"vgi_range_table",
+                           {"n"},
+                           "SELECT * FROM range(n)",
+                           /*table_macro=*/true,
+                           "Table macro returning range of values",
+                           {},
+                           {{"n", "Number of rows to generate"}}});
     main.views.push_back(
         {"first_ten", "SELECT * FROM sequence(10)", "First 10 integers"});
     main.views.push_back({"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0",

@@ -37,11 +37,12 @@ public:
         md.description = "Echoes pushed-down filter predicates in output";
         md.categories = {"generator", "diagnostic"};
         md.filter_pushdown = true;
-        // Deliberately *not* projection_pushdown. This fixture reports what it
-        // was told, and the engine narrowing its output to the filtered column
-        // alone would leave the report column unbuilt — the report is the
-        // point, so the whole row is always produced.
-        md.projection_pushdown = false;
+        // On, and load-bearing: DuckDB will not install a join filter on a get
+        // that does not take projection pushdown, so without this the join-key
+        // tests see no filters at all. The report column survives because the
+        // projection is whatever the query selected, and a query that asks for
+        // the report gets it.
+        md.projection_pushdown = true;
         // Reports the filters *and* applies them. The engine trusts a function
         // that declares filter_pushdown to have honoured the predicate, so
         // advertising without applying returns rows the WHERE excluded.

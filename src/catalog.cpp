@@ -427,7 +427,7 @@ const TimeTravelVersion* resolve_version(const CatalogTable& table,
                                          const std::optional<std::string>& at_value) {
     const bool has_clause = at_unit && !at_unit->empty();
     if (table.time_travel.empty()) {
-        if (has_clause && table.branches.empty() && !table.supports_time_travel) {
+        if (has_clause && !table.branches && !table.supports_time_travel) {
             throw std::invalid_argument("this table does not support time travel");
         }
         return nullptr;
@@ -654,29 +654,125 @@ vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request& request) {
                         .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_macro_get(const vgi_rpc::Request&) {
-    return empty_items("catalog_macro_get");
+// The two blobs a macro carries beyond its name and text.
+//
+// `parameter_default_values` is a one-row batch, one column per defaulted
+// parameter. `arguments_schema` is one nullable field per parameter *in
+// declaration order* — order is the positional call order — typed from the
+// default where there is one, carrying the description as `vgi_doc`.
+std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
+                                          const std::string& schema_name) {
+    std::string defaults;
+    if (!macro.defaults.empty()) {
+        arrow::FieldVector fields;
+        std::vector<std::shared_ptr<arrow::Array>> values;
+        for (const auto& [name, value] : macro.defaults) {
+            fields.push_back(arrow::field(name, arrow::int64(), /*nullable=*/false));
+            arrow::Int64Builder builder;
+            (void)builder.Append(value);
+            std::shared_ptr<arrow::Array> array;
+            (void)builder.Finish(&array);
+            values.push_back(std::move(array));
+        }
+        defaults = wire::encode_ipc(arrow::RecordBatch::Make(arrow::schema(fields), 1, values));
+    }
+
+    std::string arguments;
+    if (!macro.parameters.empty() || !macro.parameter_docs.empty()) {
+        arrow::FieldVector fields;
+        for (const auto& name : macro.parameters) {
+            const bool has_default =
+                std::any_of(macro.defaults.begin(), macro.defaults.end(),
+                            [&](const auto& entry) { return entry.first == name; });
+            auto field = arrow::field(name, has_default ? arrow::int64() : arrow::null(),
+                                      /*nullable=*/true);
+            const auto doc = std::find_if(
+                macro.parameter_docs.begin(), macro.parameter_docs.end(),
+                [&](const auto& entry) { return entry.first == name; });
+            // Presence-only, as everywhere else: an empty doc is an absent key.
+            if (doc != macro.parameter_docs.end() && !doc->second.empty()) {
+                field = field->WithMetadata(
+                    arrow::key_value_metadata({"vgi_doc"}, {doc->second}));
+            }
+            fields.push_back(std::move(field));
+        }
+        arguments = wire::encode_schema(arrow::schema(fields));
+    }
+
+    auto builder = wire::ResultBuilder(gen::MacroInfoSchema());
+    builder.set_string("name", macro.name)
+        .set_string("schema_name", schema_name)
+        .set_enum("macro_type", macro.table_macro ? "table" : "scalar")
+        .set_string_list("parameters", macro.parameters)
+        .set_binary("parameter_default_values", defaults)
+        .set_string("definition", macro.definition)
+        .set_binary("arguments_schema", arguments);
+    if (macro.comment) {
+        builder.set_string("comment", *macro.comment);
+    } else {
+        builder.set_null("comment");
+    }
+    return wire::encode_ipc(builder.fill_defaults().finish());
+}
+
+vgi_rpc::Result Dispatcher::catalog_macro_get(const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto name = wire::get_string(request.batch(), "name");
+    std::vector<std::string> items;
+    if (const auto* schema = schema_for(request, schema_name)) {
+        for (const auto& macro : schema->macros) {
+            if (macro.name == name) items.push_back(encode_macro_info(macro, schema_name));
+        }
+    }
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_macro_get"))
+                        .set_binary_list("items", items)
+                        .finish());
 }
 
 vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&) {
     return empty_items("catalog_index_get");
 }
 
+std::string Dispatcher::encode_schema_info(const CatalogSchema& schema) const {
+    // The engine reads a zero as a promise, not an estimate: it then skips
+    // both the bulk `catalog_schema_contents_*` call and every per-name lookup
+    // for that kind. Undercounting therefore hides objects rather than costing
+    // a round trip, which is why these are exact counts and not guesses.
+    const auto size = [](const auto& registrations) {
+        return static_cast<int64_t>(registrations.size());
+    };
+
+    auto builder = wire::ResultBuilder(gen::SchemaInfoSchema())
+                       .set_string("name", schema.name)
+                       .set_string_map("tags", schema.tags)
+                       .set_binary("attach_opaque_data", catalog_.name)
+                       .set_int64_map(
+                           "estimated_object_count",
+                           {{"view", static_cast<int64_t>(schema.views.size())},
+                            {"macro", static_cast<int64_t>(schema.macros.size())},
+                            {"table", static_cast<int64_t>(schema.tables.size())},
+                            {"scalar_function", size(scalars_in_schema(schema.name))},
+                            {"aggregate_function", size(aggregates_in_schema(schema.name))},
+                            // Every kind the engine registers as a table
+                            // function, which is three of ours: a table-in-out
+                            // and a buffering sink are table functions to it.
+                            {"table_function",
+                             size(tables_in_schema(schema.name)) +
+                                 size(table_in_outs_in_schema(schema.name)) +
+                                 size(bufferings_in_schema(schema.name))},
+                            {"index", 0}});
+    if (schema.comment) {
+        builder.set_string("comment", *schema.comment);
+    } else {
+        builder.set_null("comment");
+    }
+    return wire::encode_ipc(builder.fill_defaults().finish());
+}
+
 vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request&) {
     std::vector<std::string> items;
     items.reserve(catalog_.schemas.size());
-    for (const auto& schema : catalog_.schemas) {
-        auto builder = wire::ResultBuilder(gen::SchemaInfoSchema())
-                           .set_string("name", schema->name)
-                           .set_string_map("tags", schema->tags)
-                           .set_binary("attach_opaque_data", catalog_.name);
-        if (schema->comment) {
-            builder.set_string("comment", *schema->comment);
-        } else {
-            builder.set_null("comment");
-        }
-        items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
-    }
+    for (const auto& schema : catalog_.schemas) items.push_back(encode_schema_info(*schema));
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
                                       .set_binary_list("items", items)
                                       .finish());
@@ -685,13 +781,8 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request&) {
 vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) {
     const auto wanted = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    for (const auto& schema_name : catalog_.schema_names()) {
-        if (schema_name != wanted) continue;
-        items.push_back(wire::encode_ipc(wire::ResultBuilder(gen::SchemaInfoSchema())
-                                             .set_string("name", schema_name)
-                                             .set_binary("attach_opaque_data", catalog_.name)
-                                             .fill_defaults()
-                                             .finish()));
+    for (const auto& schema : catalog_.schemas) {
+        if (schema->name == wanted) items.push_back(encode_schema_info(*schema));
     }
     // Zero or one item; the engine reads absence as "no such schema".
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_get"))
@@ -1009,10 +1100,11 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
     if (!found) throw std::invalid_argument("no table '" + schema_name + "." + name + "'");
 
     std::vector<std::string> branches;
-    if (found->branches.empty()) {
-        // The single-branch default: a table with no declared branches is one
-        // branch, its own scan function. Answering with an empty list instead
-        // would read as "this table has no sources".
+    if (!found->branches) {
+        // The single-branch default: a table that never mentioned branches is
+        // one branch, its own scan function. Answering with an empty list
+        // instead would read as "this table has no sources" — which is what a
+        // table that *did* declare an empty list is saying.
         auto branch = wire::ResultBuilder(gen::ScanBranchSchema())
                           .set_string("function_name", found->scan_function)
                           .set_binary("arguments", found->scan_arguments)
@@ -1021,7 +1113,7 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
                           .finish();
         branches.push_back(wire::encode_ipc(branch));
     } else {
-        for (const auto& source : found->branches) {
+        for (const auto& source : *found->branches) {
             auto builder = wire::ResultBuilder(gen::ScanBranchSchema());
             builder.set_string("function_name", source.function_name)
                 .set_binary("arguments", source.scan_arguments)
@@ -1051,8 +1143,17 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Request&) {
-    return empty_items("catalog_schema_contents_macros");
+vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "name");
+    std::vector<std::string> items;
+    if (const auto* schema = schema_for(request, schema_name)) {
+        for (const auto& macro : schema->macros) {
+            items.push_back(encode_macro_info(macro, schema_name));
+        }
+    }
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_macros"))
+                        .set_binary_list("items", items)
+                        .finish());
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_indexes(const vgi_rpc::Request&) {

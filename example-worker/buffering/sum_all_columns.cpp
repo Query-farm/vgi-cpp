@@ -4,6 +4,7 @@
 // `sum_all_columns(data)` — a column-wise sum across every input batch,
 // emitted as a single row.
 
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -26,6 +27,11 @@ namespace example {
 namespace {
 
 constexpr const char* kNamespace = "sums";
+
+// One entry per process() call, for the fixture that has to raise on the
+// second batch. Separate from the partials so an empty sum log still means
+// "nothing was summed".
+constexpr const char* kCountNamespace = "count";
 
 std::string encode_batch(const std::shared_ptr<arrow::RecordBatch>& batch) {
     auto sink = arrow::io::BufferOutputStream::Create().ValueOrDie();
@@ -113,7 +119,9 @@ std::shared_ptr<arrow::RecordBatch> sum_batch(const std::shared_ptr<arrow::Recor
 
 class Once : public vgi::TableProducer {
 public:
-    explicit Once(std::shared_ptr<arrow::RecordBatch> batch) : batch_(std::move(batch)) {}
+    Once(std::shared_ptr<arrow::RecordBatch> batch,
+         std::map<std::string, std::string> metadata = {})
+        : batch_(std::move(batch)), metadata_(std::move(metadata)) {}
 
     std::shared_ptr<arrow::RecordBatch> next_batch() override {
         if (!batch_) return nullptr;
@@ -122,13 +130,16 @@ public:
         return batch;
     }
 
+    std::map<std::string, std::string> last_metadata() const override { return metadata_; }
+
 private:
     std::shared_ptr<arrow::RecordBatch> batch_;
+    std::map<std::string, std::string> metadata_;
 };
 
 class SumAllColumns : public vgi::TableBufferingFunction {
 public:
-    enum class Failure { None, Finalize };
+    enum class Failure { None, Finalize, Process };
 
     explicit SumAllColumns(std::string name, Failure failure = Failure::None)
         : name_(std::move(name)), failure_(failure) {}
@@ -137,6 +148,13 @@ public:
 
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
+        if (failure_ != Failure::None) {
+            md.description = failure_ == Failure::Finalize
+                                 ? "Test function that raises exception during finalize"
+                                 : "Test function that raises exception during process";
+            md.categories = {"test", "error"};
+            return md;
+        }
         md.description = name_ == "sum_all_columns_simple_distributed"
                              ? "Distributed sum using the buffered (Sink+Combine+Source) model"
                              : "Computes column-wise sums across all batches";
@@ -165,6 +183,21 @@ public:
 
     std::string process(const vgi::ProcessParams& params,
                         const std::shared_ptr<arrow::RecordBatch>& batch) override {
+        if (failure_ == Failure::Process) {
+            // Counted through the log rather than a member: several worker
+            // processes sink one query in parallel, and "the second batch" is
+            // only meaningful across all of them. Nothing is summed on this
+            // path, so finalize sees an empty log and emits the zero row.
+            params.storage->append(params.execution_id, kCountNamespace, "", "");
+            const auto seen =
+                params.storage->scan(params.execution_id, kCountNamespace, "", 0, SIZE_MAX)
+                    .size();
+            if (seen % 2 == 0) {
+                throw std::invalid_argument("Intentional exception on batch " +
+                                            std::to_string(seen));
+            }
+            return params.execution_id;
+        }
         if (batch && batch->num_rows() > 0) {
             auto schema = derive_output_schema(*batch->schema());
             params.storage->append(params.execution_id, kNamespace, "",
@@ -197,20 +230,22 @@ public:
                 batches.push_back(vgi::project_batch(batch, schema));
             }
         }
-        if (!schema) return std::make_unique<Once>(nullptr);
+        if (!schema) return std::make_unique<Once>(nullptr, cache_metadata());
 
         if (batches.empty()) {
-            // No rows sunk at all: one row of nulls, matching SUM over an
-            // empty relation.
+            // No rows sunk at all: one row of zeros. NULL would be the SQL
+            // answer for SUM over nothing, but the canonical fixture emits
+            // zeros and the tests read the shape as well as the value.
             std::vector<std::shared_ptr<arrow::Array>> columns;
             for (int i = 0; i < schema->num_fields(); ++i) {
-                arrow::NullBuilder nulls;
-                (void)nulls.AppendNull();
+                arrow::Int64Builder zero;
+                (void)zero.Append(0);
                 std::shared_ptr<arrow::Array> array;
-                (void)nulls.Finish(&array);
+                (void)zero.Finish(&array);
                 columns.push_back(cast_to(array, schema->field(i)->type()));
             }
-            return std::make_unique<Once>(arrow::RecordBatch::Make(schema, 1, columns));
+            return std::make_unique<Once>(arrow::RecordBatch::Make(schema, 1, columns),
+                                          cache_metadata());
         }
 
         auto table = arrow::Table::FromRecordBatches(schema, batches).ValueOrDie();
@@ -218,10 +253,21 @@ public:
         arrow::TableBatchReader reader(*combined);
         std::shared_ptr<arrow::RecordBatch> all;
         (void)reader.ReadNext(&all);
-        return std::make_unique<Once>(all ? sum_batch(all, schema) : nullptr);
+        return std::make_unique<Once>(all ? sum_batch(all, schema) : nullptr,
+                                      cache_metadata());
     }
 
 private:
+    // The cacheable variant advertises a TTL on its finalize output, which is
+    // what opts a buffered function into the exchange-mode result cache — the
+    // hit then skips the combine RPC and the finalize drain entirely.
+    std::map<std::string, std::string> cache_metadata() const {
+        if (name_ != "cached_sum_all") return {};
+        vgi::CacheControl control;
+        control.ttl_seconds = 300;
+        return control.to_metadata();
+    }
+
     std::string name_;
     Failure failure_;
 };
@@ -235,6 +281,8 @@ void register_sum_all_columns(vgi::Worker& worker) {
     worker.register_buffering(std::make_shared<SumAllColumns>("cached_sum_all"));
     worker.register_buffering(
         std::make_shared<SumAllColumns>("exception_finalize", SumAllColumns::Failure::Finalize));
+    worker.register_buffering(
+        std::make_shared<SumAllColumns>("exception_process", SumAllColumns::Failure::Process));
 }
 
 }  // namespace example

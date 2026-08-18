@@ -10,6 +10,7 @@
 // arguments are real value types rather than a TABLE, DuckDB also permits
 // several arities under one name.
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <sstream>
@@ -69,6 +70,11 @@ double round_to(double value, int64_t places) {
 
 // `geo_encode(latitude, longitude[, altitude])` — a per-row encoder, in two
 // arities under one name.
+//
+// Two registrations advertise the two signatures, but the worker resolves a
+// call by name alone, so whichever of them answers has to serve either shape.
+// The arity therefore comes from the batch the call site actually shipped, not
+// from the registration that was asked.
 class GeoEncode : public vgi::TableInOutFunction {
 public:
     explicit GeoEncode(bool with_altitude) : with_altitude_(with_altitude) {}
@@ -105,7 +111,8 @@ public:
 
         std::vector<std::shared_ptr<arrow::DoubleArray>> inputs;
         static const char* kNames[] = {"latitude", "longitude", "altitude"};
-        const int wanted = with_altitude_ ? 3 : 2;
+        const int wanted = std::min(3, batch->num_columns());
+        if (wanted < 2) throw std::runtime_error("geo_encode: needs latitude and longitude");
         for (int i = 0; i < wanted; ++i) {
             // By name where the engine supplies it, by position otherwise: a
             // correlated call names the columns, a literal scan does not.
@@ -179,12 +186,165 @@ public:
     }
 };
 
+// `row_sum(v1, v2, …[, absolute := false])` — a varargs per-row sum.
+//
+// A varargs parameter names no columns, so the inputs are read positionally —
+// the one blended shape where a name lookup has nothing to find. A row with any
+// NULL among its columns sums to NULL.
+class RowSum : public vgi::TableInOutFunction {
+public:
+    std::string name() const override { return "row_sum"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return blended_metadata("Blended per-row varargs sum", {"numeric", "blended"});
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        auto values = vgi::ArgSpec::column("values", 0, "double", "Numeric input columns");
+        values.with_varargs();
+        auto absolute = vgi::ArgSpec::named("absolute", "boolean", "Sum absolute values");
+        absolute.default_value = "false";
+        return {std::move(values), std::move(absolute)};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("row_sum", arrow::float64(), /*nullable=*/true)});
+    }
+
+    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        bool absolute = false;
+        if (auto flag = params.arguments.named("absolute")) {
+            const auto& flags =
+                static_cast<const arrow::BooleanArray&>(*cast_to(flag, arrow::boolean()));
+            absolute = flags.length() > 0 && !flags.IsNull(0) && flags.Value(0);
+        }
+
+        std::vector<double> totals(static_cast<size_t>(batch->num_rows()), 0.0);
+        std::vector<bool> valid(static_cast<size_t>(batch->num_rows()), true);
+        for (int column = 0; column < batch->num_columns(); ++column) {
+            const auto& values = static_cast<const arrow::DoubleArray&>(
+                *cast_to(batch->column(column), arrow::float64()));
+            for (int64_t row = 0; row < batch->num_rows(); ++row) {
+                const auto index = static_cast<size_t>(row);
+                if (values.IsNull(row)) {
+                    valid[index] = false;
+                    continue;
+                }
+                const double value = values.Value(row);
+                totals[index] += absolute ? std::fabs(value) : value;
+            }
+        }
+
+        arrow::DoubleBuilder out;
+        (void)out.Reserve(batch->num_rows());
+        for (size_t row = 0; row < totals.size(); ++row) {
+            if (valid[row]) {
+                (void)out.Append(totals[row]);
+            } else {
+                (void)out.AppendNull();
+            }
+        }
+        std::shared_ptr<arrow::Array> array;
+        (void)out.Finish(&array);
+        return {arrow::RecordBatch::Make(params.output_schema, array->length(), {array})};
+    }
+};
+
+// `blended_drop(x)` — emits a 0-row batch for its input row.
+//
+// The 1->0 end of the blended range: the literal call shape has to reach true
+// end-of-stream on an empty-but-not-final batch rather than re-feeding its
+// synthesized input row forever.
+class BlendedDrop : public vgi::TableInOutFunction {
+public:
+    std::string name() const override { return "blended_drop"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return blended_metadata(
+            "Blended 1->0 map emitting a single 0-row batch (literal scan-mode)",
+            {"blended", "test"});
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::column("x", 0, "double", "Input column (ignored)")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("v", arrow::int64(), /*nullable=*/true)});
+    }
+
+    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>&) const override {
+        return {arrow::RecordBatch::MakeEmpty(params.output_schema).ValueOrDie()};
+    }
+};
+
+// `projectable_blended(x)` — a 1->1 map with two output columns that opts into
+// projection pushdown.
+//
+// The pair matters: with one output column a narrowing bug is invisible, and
+// without pushdown there is nothing to narrow. Building against the bound
+// schema rather than emitting both columns is what proves the worker read the
+// projection instead of relying on the engine to slice column 0.
+class ProjectableBlended : public vgi::TableInOutFunction {
+public:
+    std::string name() const override { return "projectable_blended"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        auto md = blended_metadata("Blended 1->1 map with projection_pushdown + two output columns",
+                                   {"blended", "test"});
+        md.projection_pushdown = true;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::column("x", 0, "int64", "Input column")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("a", arrow::int64(), /*nullable=*/true),
+                              arrow::field("b", arrow::int64(), /*nullable=*/true)});
+    }
+
+    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        const auto& values = static_cast<const arrow::Int64Array&>(
+            *cast_to(batch->column(0), arrow::int64()));
+
+        std::vector<std::shared_ptr<arrow::Array>> columns;
+        for (int i = 0; i < params.output_schema->num_fields(); ++i) {
+            const auto& name = params.output_schema->field(i)->name();
+            const int64_t factor = name == "b" ? 100 : 10;
+            arrow::Int64Builder out;
+            (void)out.Reserve(values.length());
+            for (int64_t row = 0; row < values.length(); ++row) {
+                if (values.IsNull(row)) {
+                    (void)out.AppendNull();
+                } else {
+                    (void)out.Append(values.Value(row) * factor);
+                }
+            }
+            std::shared_ptr<arrow::Array> array;
+            (void)out.Finish(&array);
+            columns.push_back(std::move(array));
+        }
+        return {arrow::RecordBatch::Make(params.output_schema, values.length(), columns)};
+    }
+};
+
 }  // namespace
 
 void register_blended(vgi::Worker& worker) {
     worker.register_table_in_out(std::make_shared<GeoEncode>(/*with_altitude=*/false));
     worker.register_table_in_out(std::make_shared<GeoEncode>(/*with_altitude=*/true));
     worker.register_table_in_out(std::make_shared<BlendedExplode>());
+    worker.register_table_in_out(std::make_shared<RowSum>());
+    worker.register_table_in_out(std::make_shared<BlendedDrop>());
+    worker.register_table_in_out(std::make_shared<ProjectableBlended>());
 }
 
 }  // namespace example

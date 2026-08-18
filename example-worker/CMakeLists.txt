@@ -28,7 +28,9 @@ add_executable(vgi-example-worker
     table/rff.cpp
     table/filters.cpp
     table/cache_more.cpp
+    table/cache_partitions.cpp
     table/partitioned.cpp
+    table/partition_broken.cpp
     copy_to/lines.cpp
     copy_from/lines.cpp
     catalog_def.cpp
@@ -37,6 +39,9 @@ add_executable(vgi-example-worker
     table_in_out/blended.cpp
     table_in_out/accumulate.cpp
     table_in_out/secrets.cpp
+    table_in_out/cancellable.cpp
+    table_in_out/tensor.cpp
+    table_in_out/same_name.cpp
     aggregate/basic.cpp
     aggregate/more.cpp
     aggregate/window.cpp
@@ -45,6 +50,8 @@ add_executable(vgi-example-worker
     aggregate/percentile.cpp
     buffering/buffer_input.cpp
     buffering/sum_all_columns.cpp
+    buffering/source_shapes.cpp
+    buffering/large_state.cpp
 )
 target_include_directories(vgi-example-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(vgi-example-worker PRIVATE vgi::vgi)

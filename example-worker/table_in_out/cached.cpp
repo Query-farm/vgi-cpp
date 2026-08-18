@@ -23,6 +23,25 @@ namespace {
 
 constexpr int64_t kCacheTtlSeconds = 300;
 
+// `x * 2` over the blended input column, onto the bound output schema.
+std::shared_ptr<arrow::RecordBatch> doubled(const vgi::ProcessParams& params,
+                                            const std::shared_ptr<arrow::RecordBatch>& batch) {
+    auto values = std::static_pointer_cast<arrow::Int64Array>(
+        cast_to(batch->column(0), arrow::int64()));
+    arrow::Int64Builder out;
+    (void)out.Reserve(values->length());
+    for (int64_t i = 0; i < values->length(); ++i) {
+        if (values->IsNull(i)) {
+            (void)out.AppendNull();
+        } else {
+            (void)out.Append(values->Value(i) * 2);
+        }
+    }
+    std::shared_ptr<arrow::Array> array;
+    (void)out.Finish(&array);
+    return arrow::RecordBatch::Make(params.output_schema, array->length(), {array});
+}
+
 vgi::CacheControl per_value_cache() {
     vgi::CacheControl control;
     control.ttl_seconds = kCacheTtlSeconds;
@@ -63,20 +82,51 @@ public:
     std::vector<std::shared_ptr<arrow::RecordBatch>> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        auto values = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(0), arrow::int64()));
-        arrow::Int64Builder out;
-        (void)out.Reserve(values->length());
-        for (int64_t i = 0; i < values->length(); ++i) {
-            if (values->IsNull(i)) {
-                (void)out.AppendNull();
-            } else {
-                (void)out.Append(values->Value(i) * 2);
-            }
-        }
-        std::shared_ptr<arrow::Array> array;
-        (void)out.Finish(&array);
-        return {arrow::RecordBatch::Make(params.output_schema, array->length(), {array})};
+        return {doubled(params, batch)};
+    }
+};
+
+// `cached_reval_double(x)` — the same map under the always-revalidate contract,
+// so the LATERAL exchange cache has to send a conditional request per input
+// chunk rather than trusting a TTL.
+class CachedRevalDouble : public vgi::TableInOutFunction {
+public:
+    std::string name() const override { return "cached_reval_double"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description =
+            "Blended map x->x*2 with always-revalidate (304 not_modified) contract";
+        md.categories = {"blended", "cache", "test"};
+        md.input_from_args = true;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::column("x", 0, "int64", "Input column")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("doubled", arrow::int64(), /*nullable=*/true)});
+    }
+
+    std::optional<vgi::CacheControl> cache_control() const override {
+        vgi::CacheControl control;
+        // ttl 0 beside a validator is the "no-cache" semantic: keep the bytes,
+        // but confirm before reusing them.
+        control.ttl_seconds = 0;
+        control.revalidatable = true;
+        // A constant validator rather than a digest of the input: the SDK does
+        // not hand a table-in-out its per-batch cache control, so there is
+        // nowhere to compute one per input unit.
+        control.etag = "\"vgi-cpp-reval-double\"";
+        return control;
+    }
+
+    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        return {doubled(params, batch)};
     }
 };
 
@@ -216,6 +266,7 @@ public:
 
 void register_cached(vgi::Worker& worker) {
     worker.register_table_in_out(std::make_shared<CachedDouble>());
+    worker.register_table_in_out(std::make_shared<CachedRevalDouble>());
     worker.register_table_in_out(std::make_shared<CachedExplode>());
     worker.register_scalar(std::make_shared<CachedDoubleScalar>());
     worker.register_scalar(std::make_shared<CachedAddConst>());

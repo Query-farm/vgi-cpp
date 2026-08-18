@@ -176,6 +176,8 @@ public:
     // The `examples` column: a list of {sql, description, expected_output}.
     ResultBuilder& set_examples(const std::string& field,
                                 const std::vector<FunctionExample>& examples);
+    ResultBuilder& set_int64_map(const std::string& field,
+                                 const std::vector<std::pair<std::string, int64_t>>& entries);
     ResultBuilder& set_string_map(
         const std::string& field,
         const std::vector<std::pair<std::string, std::string>>& entries);

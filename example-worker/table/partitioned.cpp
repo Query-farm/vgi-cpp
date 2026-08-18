@@ -48,14 +48,23 @@ constexpr int64_t kMaxChunks = 24;
 // SDK's constants cover schema metadata only.
 constexpr const char* kBatchIndexKey = "vgi_batch_index";
 
-// Wire spellings of the partition kinds. `src/enums.h` is private to the
-// library, and case is load-bearing — the engine rejects a catalog carrying an
-// enum value it does not recognize rather than defaulting.
-
 // A short fixed list, so the partition count and the SQL tests' expected sums
 // are both stable.
 const char* const kCountries[] = {"AU", "BR", "CA", "FR", "US"};
 constexpr int64_t kCountryCount = static_cast<int64_t>(std::size(kCountries));
+
+const char* const kCategories[] = {"books", "music", "video"};
+constexpr int64_t kCategoryCount = static_cast<int64_t>(std::size(kCategories));
+
+// One partition per (region, year) pair. Listed year-major within a region so
+// the partition index a test reasons about matches reading order.
+struct RegionYear {
+    const char* region;
+    int64_t year;
+};
+constexpr RegionYear kRegionYears[] = {{"AMER", 2023}, {"AMER", 2024}, {"EMEA", 2023},
+                                       {"EMEA", 2024}, {"APAC", 2023}, {"APAC", 2024}};
+constexpr int64_t kRegionYearCount = static_cast<int64_t>(std::size(kRegionYears));
 
 vgi::FunctionMetadata fixture_metadata(std::string description,
                                        std::vector<std::string> categories) {
@@ -68,6 +77,16 @@ vgi::FunctionMetadata fixture_metadata(std::string description,
 template <typename Fn>
 std::shared_ptr<arrow::Array> int64_column(int64_t rows, Fn value) {
     arrow::Int64Builder builder;
+    (void)builder.Reserve(rows);
+    for (int64_t i = 0; i < rows; ++i) (void)builder.Append(value(i));
+    std::shared_ptr<arrow::Array> array;
+    (void)builder.Finish(&array);
+    return array;
+}
+
+template <typename Fn>
+std::shared_ptr<arrow::Array> double_column(int64_t rows, Fn value) {
+    arrow::DoubleBuilder builder;
     (void)builder.Reserve(rows);
     for (int64_t i = 0; i < rows; ++i) (void)builder.Append(value(i));
     std::shared_ptr<arrow::Array> array;
@@ -322,21 +341,64 @@ protected:
     }
 };
 
-// Each chunk's `key` covers a range no other chunk touches — DISJOINT rather
-// than SINGLE_VALUE, so the batch describes an interval instead of a value.
-class DisjointChunks : public PartitionedChunks {
+// One (region, year) pair per chunk — two partition columns rather than one,
+// so a batch advertises a tuple and the engine has to read every part of it.
+class RegionYearChunks : public PartitionedChunks {
 public:
     using PartitionedChunks::PartitionedChunks;
 
 protected:
     std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk,
                                          int64_t from, int64_t rows) const override {
-        // Stride 1000 against a default of 10 rows per partition: the ranges
-        // stay far apart even when a caller asks for many more rows.
+        const auto& partition = kRegionYears[chunk.id];
+        if (name == "region") return repeated_string(rows, partition.region);
+        if (name == "year") return int64_column(rows, [&](int64_t) { return partition.year; });
+        const auto base = static_cast<double>(chunk.id * 1000 + (from - chunk.start));
+        return double_column(rows, [&](int64_t i) { return base + static_cast<double>(i); });
+    }
+};
+
+// One category per chunk, `revenue` offset by the category — a batch credited
+// to the wrong partition then shows up as a wrong sum rather than a plausible
+// one.
+class CategoryChunks : public PartitionedChunks {
+public:
+    using PartitionedChunks::PartitionedChunks;
+
+protected:
+    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk,
+                                         int64_t from, int64_t rows) const override {
+        if (name == "category") return repeated_string(rows, kCategories[chunk.id]);
+        const int64_t base = (chunk.id + 1) * 100 + (from - chunk.start);
+        return int64_column(rows, [&](int64_t i) { return base + i; });
+    }
+};
+
+// Each chunk's `key` covers an interval, so the batch describes a range rather
+// than a value — DISJOINT or OVERLAPPING rather than SINGLE_VALUE.
+//
+// `stride` is the whole difference between the two: 1000 keeps consecutive
+// intervals apart whatever a caller asks for, 500 lets them meet once a
+// partition holds more than 500 rows.
+class RangeChunks : public PartitionedChunks {
+public:
+    RangeChunks(std::shared_ptr<arrow::Schema> schema,
+                std::shared_ptr<vgi::FunctionStorage> storage, std::string execution_id,
+                std::shared_ptr<arrow::Schema> declared, int64_t stride)
+        : PartitionedChunks(std::move(schema), std::move(storage), std::move(execution_id),
+                            std::move(declared)),
+          stride_(stride) {}
+
+protected:
+    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk,
+                                         int64_t from, int64_t rows) const override {
         const int64_t offset = from - chunk.start;
-        const int64_t base = name == "key" ? chunk.id * 1000 : chunk.id * 10;
+        const int64_t base = name == "key" ? chunk.id * stride_ : chunk.id * 10;
         return int64_column(rows, [&](int64_t i) { return base + offset + i; });
     }
+
+private:
+    int64_t stride_;
 };
 
 // Emits one batch and stops.
@@ -366,25 +428,24 @@ private:
     bool done_ = false;
 };
 
-// `partitioned_sequence(count, increment := 1)` and
-// `partitioned_preserves_order(count)` — one generator behind two names, so the
+// `partitioned_sequence(count, increment := 1)` and the three
+// `partitioned_*_order` variants — one generator behind four names, so the
 // order-mode tests can compare identical rows under different planner
-// expectations.
+// expectations. The rows are the control; the declared mode is the variable.
 class PartitionedSequence : public vgi::TableFunction {
 public:
-    PartitionedSequence(std::string name, std::string description, bool takes_increment)
+    PartitionedSequence(std::string name, std::string description, bool takes_increment,
+                        std::string order)
         : name_(std::move(name)),
           description_(std::move(description)),
-          takes_increment_(takes_increment) {}
+          takes_increment_(takes_increment),
+          order_(std::move(order)) {}
 
     std::string name() const override { return name_; }
 
     vgi::FunctionMetadata metadata() const override {
         auto md = fixture_metadata(description_, {"generator", "utility"});
-        // Only the plain form promises order. The `increment` variant exists
-        // to be scanned in parallel, and a promise it cannot keep would let
-        // the engine skip a sort the answer needs.
-        if (!takes_increment_) md.order_preservation = vgi::order_preservations::kPreservesOrder;
+        md.order_preservation = order_;
         return md;
     }
 
@@ -442,6 +503,7 @@ private:
     std::string name_;
     std::string description_;
     bool takes_increment_;
+    std::string order_;
 };
 
 // `partitioned_batch_index(count)` — 0..count across four workers, every batch
@@ -649,29 +711,172 @@ private:
     }
 };
 
+std::shared_ptr<arrow::Schema> region_year_schema() {
+    return arrow::schema({vgi::partition_field("region", arrow::utf8()),
+                          vgi::partition_field("year", arrow::int64()),
+                          arrow::field("value", arrow::float64(), /*nullable=*/true)});
+}
+
+// `region_year_partitioned(rows)` — the multi-column partitioning case, where
+// a GROUP BY over a strict subset of the declared columns is a question the
+// planner is free to answer either way.
+class RegionYearPartitioned : public vgi::TableFunction {
+public:
+    std::string name() const override { return "region_year_partitioned"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        auto md = fixture_metadata(
+            "Rows partitioned by (region, year), one Arrow batch per pair. Declares both as "
+            "SINGLE_VALUE partition columns.",
+            {"generator", "partitioning"});
+        md.partition_kind = vgi::partition_kinds::kSingleValuePartitions;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::constant_arg("rows", 0, "int64",
+                                           "Rows to emit per (region, year) partition")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return region_year_schema();
+    }
+
+    int64_t max_workers(const vgi::ProcessParams&) const override { return 4; }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        vgi::TableCardinality estimate;
+        if (auto rows = params.arguments.const_int64(0)) {
+            estimate.estimate = *rows * kRegionYearCount;
+            estimate.max = *rows * kRegionYearCount;
+        }
+        return estimate;
+    }
+
+    void on_init(const vgi::ProcessParams& params) const override {
+        push_partitions(params, kRegionYearCount, rows(params));
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        return std::make_unique<RegionYearChunks>(params.output_schema, params.storage,
+                                                  params.execution_id, region_year_schema());
+    }
+
+private:
+    static int64_t rows(const vgi::ProcessParams& params) {
+        return std::max<int64_t>(1, params.arguments.const_int64(0).value_or(1));
+    }
+};
+
+std::shared_ptr<arrow::Schema> category_schema() {
+    return arrow::schema({vgi::partition_field("category", arrow::utf8()),
+                          arrow::field("revenue", arrow::int64(), /*nullable=*/true)});
+}
+
+// `partitioned_with_explicit_override(rows)` — the same shape as the country
+// fixture, but the batch's partition advertisement is stated outright instead
+// of being read back off the emitted column.
+//
+// A worker that knows the partition it is serving does not have to scan the
+// batch to say so, and the engine has to accept either answer.
+class PartitionedWithExplicitOverride : public vgi::TableFunction {
+public:
+    std::string name() const override { return "partitioned_with_explicit_override"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        auto md = fixture_metadata(
+            "Per-category revenue rows whose partition values are supplied explicitly rather "
+            "than extracted from the batch",
+            {"generator", "partitioning"});
+        md.partition_kind = vgi::partition_kinds::kSingleValuePartitions;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::constant_arg("rows", 0, "int64",
+                                           "Rows to emit per category partition")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return category_schema();
+    }
+
+    int64_t max_workers(const vgi::ProcessParams&) const override { return 4; }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        vgi::TableCardinality estimate;
+        if (auto rows = params.arguments.const_int64(0)) {
+            estimate.estimate = *rows * kCategoryCount;
+            estimate.max = *rows * kCategoryCount;
+        }
+        return estimate;
+    }
+
+    void on_init(const vgi::ProcessParams& params) const override {
+        push_partitions(params, kCategoryCount, rows(params));
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        return std::make_unique<Override>(params.output_schema, params.storage,
+                                          params.execution_id, category_schema());
+    }
+
+private:
+    // Describes the batch from the chunk it came from rather than from the
+    // rows: the category is known before a single row is built, so reading it
+    // back out of the batch would only be a slower way to reach the same
+    // answer — and the engine must accept an advertisement built that way.
+    class Override : public CategoryChunks {
+    public:
+        using CategoryChunks::CategoryChunks;
+
+    protected:
+        std::map<std::string, std::string> describe(
+            const Chunk& chunk, const std::shared_ptr<arrow::RecordBatch>&) const override {
+            // One row carrying the value this chunk was assigned. Its min and
+            // max are that value, which is the whole advertisement.
+            auto stated = arrow::RecordBatch::Make(
+                category_schema(), 1,
+                {repeated_string(1, kCategories[chunk.id]),
+                 int64_column(1, [](int64_t) { return int64_t{0}; })});
+            return vgi::partition_metadata(category_schema(), stated);
+        }
+    };
+
+    static int64_t rows(const vgi::ProcessParams& params) {
+        return std::max<int64_t>(1, params.arguments.const_int64(0).value_or(1));
+    }
+};
+
 std::shared_ptr<arrow::Schema> range_schema() {
     return arrow::schema({vgi::partition_field("key", arrow::int64()),
                           arrow::field("value", arrow::int64(), /*nullable=*/true)});
 }
 
-// `disjoint_range_partitioned(partitions, rows_per_partition := 10)` — the
-// wire path for a kind DuckDB declares but has no consumer for yet, so a
-// GROUP BY over it still plans as a hash aggregate.
-class DisjointRangePartitioned : public vgi::TableFunction {
+// `disjoint_range_partitioned(partitions, rows_per_partition := 10)` and
+// `overlapping_range_partitioned(…)` — the wire paths for two kinds DuckDB
+// declares but has no consumer for yet, so a GROUP BY over either still plans
+// as a hash aggregate. Running them at all is what proves the enum values
+// round-trip, since the engine rejects a kind it does not recognize.
+class RangePartitioned : public vgi::TableFunction {
 public:
-    std::string name() const override { return "disjoint_range_partitioned"; }
+    RangePartitioned(std::string name, std::string description, std::string kind,
+                     int64_t stride)
+        : name_(std::move(name)),
+          description_(std::move(description)),
+          kind_(std::move(kind)),
+          stride_(stride) {}
+
+    std::string name() const override { return name_; }
 
     vgi::FunctionMetadata metadata() const override {
-        auto md = fixture_metadata(
-            "Integer ranges that never overlap between chunks; declares DISJOINT_PARTITIONS",
-            {"generator", "partitioning"});
-        md.partition_kind = vgi::partition_kinds::kDisjointPartitions;
+        auto md = fixture_metadata(description_, {"generator", "partitioning"});
+        md.partition_kind = kind_;
         return md;
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("partitions", 0, "int64",
-                                           "Number of disjoint partitions"),
+        return {vgi::ArgSpec::constant_arg("partitions", 0, "int64", "Number of partitions"),
                 vgi::ArgSpec::named("rows_per_partition", "int64", "Rows per partition")};
     }
 
@@ -697,8 +902,8 @@ public:
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        return std::make_unique<DisjointChunks>(params.output_schema, params.storage,
-                                                params.execution_id, range_schema());
+        return std::make_unique<RangeChunks>(params.output_schema, params.storage,
+                                             params.execution_id, range_schema(), stride_);
     }
 
 private:
@@ -706,123 +911,50 @@ private:
         return std::max<int64_t>(1, params.arguments.named_int64("rows_per_partition")
                                         .value_or(10));
     }
-};
 
-// `broken_missing_partition_values(count)` — declares SINGLE_VALUE_PARTITIONS
-// and a partition-annotated column, then emits a batch carrying neither the
-// `vgi_partition_values#b64` metadata that contract requires nor a reason.
-//
-// Deliberately wrong. The test asserts the engine rejects it, so correcting
-// this fixture would delete the thing under test.
-class BrokenMissingPartitionValues : public vgi::TableFunction {
-public:
-    std::string name() const override { return "broken_missing_partition_values"; }
-
-    vgi::FunctionMetadata metadata() const override {
-        auto md = fixture_metadata("Deliberately-broken partition fixture",
-                                   {"testing", "broken"});
-        md.partition_kind = vgi::partition_kinds::kSingleValuePartitions;
-        return md;
-    }
-
-    std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("count", 0, "int64", "Rows to attempt to emit")};
-    }
-
-    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
-        return country_schema();
-    }
-
-    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        return std::make_unique<Producer>(
-            params.output_schema,
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)));
-    }
-
-private:
-    class Producer : public SingleBatch {
-    public:
-        using SingleBatch::SingleBatch;
-
-    protected:
-        std::shared_ptr<arrow::Array> column(const std::string& name,
-                                             int64_t rows) const override {
-            if (name == "country") return repeated_string(rows, "US");
-            return int64_column(rows, [](int64_t i) { return i; });
-        }
-    };
-};
-
-// `broken_missing_batch_index_tag(count)` — a batch-index source that emits a
-// data batch carrying no tag at all. Deliberately wrong for the same reason:
-// the contract check is what is under test.
-class BrokenMissingBatchIndexTag : public vgi::TableFunction {
-public:
-    std::string name() const override { return "broken_missing_batch_index_tag"; }
-
-    vgi::FunctionMetadata metadata() const override {
-        // Declaring the tag is what installs the engine's contract check; the
-        // whole point of this fixture is to then omit the tag and be rejected.
-        auto md = fixture_metadata("Deliberately-broken batch_index fixture",
-                                   {"testing", "broken"});
-        md.supports_batch_index = true;
-        md.order_preservation = vgi::order_preservations::kFixedOrder;
-        return md;
-    }
-
-    std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::constant_arg("count", 0, "int64", "Rows to generate")};
-    }
-
-    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
-        return arrow::schema({arrow::field("n", arrow::int64(), /*nullable=*/true)});
-    }
-
-    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
-        vgi::TableCardinality estimate;
-        if (auto count = params.arguments.const_int64(0)) {
-            estimate.estimate = *count;
-            estimate.max = *count;
-        }
-        return estimate;
-    }
-
-    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        return std::make_unique<Producer>(
-            params.output_schema,
-            std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)));
-    }
-
-private:
-    class Producer : public SingleBatch {
-    public:
-        using SingleBatch::SingleBatch;
-
-    protected:
-        std::shared_ptr<arrow::Array> column(const std::string&,
-                                             int64_t rows) const override {
-            return int64_column(rows, [](int64_t i) { return i; });
-        }
-    };
+    std::string name_;
+    std::string description_;
+    std::string kind_;
+    int64_t stride_;
 };
 
 }  // namespace
 
 void register_partitioned(vgi::Worker& worker) {
+    // The `increment` form promises nothing about order — it exists to be
+    // scanned in parallel, and a promise it cannot keep would let the engine
+    // skip a sort the answer needs. The other three differ from it, and from
+    // each other, only in the mode they declare, which is what makes the
+    // planner's differing treatment attributable to the declaration alone.
     worker.register_table(std::make_shared<PartitionedSequence>(
         "partitioned_sequence", "Generates a partitioned sequence for multi-worker execution",
-        /*takes_increment=*/true));
+        /*takes_increment=*/true, /*order=*/""));
     worker.register_table(std::make_shared<PartitionedSequence>(
         "partitioned_preserves_order",
         "Generates a partitioned sequence whose emission order the engine may rely on",
-        /*takes_increment=*/false));
+        /*takes_increment=*/false, vgi::order_preservations::kPreservesOrder));
+    worker.register_table(std::make_shared<PartitionedSequence>(
+        "partitioned_no_order_guarantee",
+        "Generates a partitioned sequence whose emission order means nothing",
+        /*takes_increment=*/false, vgi::order_preservations::kNoOrderGuarantee));
+    worker.register_table(std::make_shared<PartitionedSequence>(
+        "partitioned_fixed_order",
+        "Generates a partitioned sequence the engine must not reorder or parallelise",
+        /*takes_increment=*/false, vgi::order_preservations::kFixedOrder));
     worker.register_table(std::make_shared<PartitionedBatchIndex>());
     worker.register_table(std::make_shared<PartitionedBatchIndexMarked>());
     worker.register_table(std::make_shared<FilterEchoPartitioned>());
     worker.register_table(std::make_shared<CountryPartitionedSales>());
-    worker.register_table(std::make_shared<DisjointRangePartitioned>());
-    worker.register_table(std::make_shared<BrokenMissingPartitionValues>());
-    worker.register_table(std::make_shared<BrokenMissingBatchIndexTag>());
+    worker.register_table(std::make_shared<RegionYearPartitioned>());
+    worker.register_table(std::make_shared<PartitionedWithExplicitOverride>());
+    worker.register_table(std::make_shared<RangePartitioned>(
+        "disjoint_range_partitioned",
+        "Integer ranges that never overlap between chunks; declares DISJOINT_PARTITIONS",
+        vgi::partition_kinds::kDisjointPartitions, /*stride=*/1000));
+    worker.register_table(std::make_shared<RangePartitioned>(
+        "overlapping_range_partitioned",
+        "Integer ranges that may share keys between chunks; declares OVERLAPPING_PARTITIONS",
+        vgi::partition_kinds::kOverlappingPartitions, /*stride=*/500));
 }
 
 }  // namespace example

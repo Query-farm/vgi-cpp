@@ -140,6 +140,12 @@ private:
     static std::string encode_table_info(const CatalogTable& table,
                                          const std::string& schema_name,
                                          const TimeTravelVersion* version = nullptr);
+    // One `SchemaInfo` entry, with the object counts the engine treats as a
+    // hard guarantee: a declared zero lets it skip both the bulk listing and
+    // every per-name lookup for that kind.
+    std::string encode_schema_info(const CatalogSchema& schema) const;
+    static std::string encode_macro_info(const CatalogMacro& macro,
+                                         const std::string& schema_name);
     static std::string encode_view_info(const CatalogView& view,
                                         const std::string& schema_name);
 
