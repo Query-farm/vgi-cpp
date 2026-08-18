@@ -59,6 +59,9 @@ int main(int argc, char** argv) {
     example::register_versioned(worker);
     example::register_window_aggregates(worker);
     example::register_rff(worker);
+    example::register_more_cache(worker);
+    example::register_partitioned(worker);
+    example::register_accumulate(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.

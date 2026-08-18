@@ -12,6 +12,9 @@
 
 #pragma once
 
+// `partition_kind` and `order_preservation` are not here: a fixture sets them,
+// so they live in the public `vgi/types.h` instead.
+
 namespace vgi::enums {
 
 namespace function_type {
@@ -31,19 +34,6 @@ namespace null_handling {
 inline constexpr const char* kDefault = "DEFAULT";
 inline constexpr const char* kSpecial = "SPECIAL";
 }  // namespace null_handling
-
-namespace order_preservation {
-inline constexpr const char* kPreservesOrder = "PRESERVES_ORDER";
-inline constexpr const char* kNoOrderGuarantee = "NO_ORDER_GUARANTEE";
-inline constexpr const char* kFixedOrder = "FIXED_ORDER";
-}  // namespace order_preservation
-
-namespace partition_kind {
-inline constexpr const char* kNotPartitioned = "NOT_PARTITIONED";
-inline constexpr const char* kSingleValuePartitions = "SINGLE_VALUE_PARTITIONS";
-inline constexpr const char* kOverlappingPartitions = "OVERLAPPING_PARTITIONS";
-inline constexpr const char* kDisjointPartitions = "DISJOINT_PARTITIONS";
-}  // namespace partition_kind
 
 namespace order_dependence {
 inline constexpr const char* kOrderDependent = "ORDER_DEPENDENT";

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,30 @@ struct BindParams {
     std::shared_ptr<arrow::DataType> input_type(size_t index) const;
 };
 
+// The ORDER BY and TABLESAMPLE clauses the optimizer folded into this scan.
+//
+// Hints, not obligations: the engine still sorts and still limits, so a scan
+// that ignores the ordering ones is merely slower. Sampling is the exception —
+// declaring `sampling_pushdown` makes DuckDB drop its own sampling operator, so
+// a function that advertises it and then ignores `tablesample_percentage`
+// returns every row.
+//
+// Which of these arrive is decided by DuckDB's optimizers, not by the query
+// text: the ordering hints need a LIMIT above an ORDER BY over a plain column
+// reference, and only TABLESAMPLE SYSTEM is ever pushed.
+struct ScanHints {
+    std::optional<std::string> order_by_column;
+    // Wire spellings, echoed as they arrive: "ASC" / "DESC", and
+    // "NULLS_FIRST" / "NULLS_LAST".
+    std::optional<std::string> order_by_direction;
+    std::optional<std::string> order_by_null_order;
+    // Rows the scan may stop after — LIMIT plus OFFSET, since the offset rows
+    // must still be produced to be skipped.
+    std::optional<int64_t> order_by_limit;
+    std::optional<double> tablesample_percentage;
+    std::optional<int64_t> tablesample_seed;
+};
+
 // What a bind produced, handed back to every process() call for that
 // statement.  Splitting it from BindParams is what lets one bound function
 // serve many batches without re-deciding its output shape.
@@ -66,6 +91,9 @@ struct ProcessParams {
     // The predicates the engine pushed into this scan. Empty when none were,
     // or when the function did not declare `filter_pushdown`.
     PushdownFilters pushdown_filters;
+    // The ORDER BY / TABLESAMPLE clauses the optimizer folded into this scan.
+    // Every field is empty when the optimizer pushed nothing.
+    ScanHints scan_hints;
     // The COPY destination, when this call is part of a `COPY … TO`.
     //
     // The path is not an option: it comes from the COPY statement itself, so a

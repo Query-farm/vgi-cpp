@@ -141,7 +141,30 @@ public:
     std::string name() const override { return "double_sequence"; }
 
     vgi::FunctionMetadata metadata() const override {
-        return series_metadata("Generates a sequence of floating-point numbers from 0 to n-1");
+        auto md = series_metadata("Generates a sequence of floating-point numbers from 0 to n-1");
+        md.projection_pushdown = true;
+        md.filter_pushdown = true;
+        md.auto_apply_filters = true;
+        return md;
+    }
+
+    // The float counterpart of `sequence`'s bounds, and the reason the two
+    // exist side by side: a float bound has to arrive as a float or it will
+    // not prune a float filter.
+    std::optional<std::vector<vgi::ColumnStatistics>> statistics(
+        const vgi::ProcessParams& params) const override {
+        const auto count = params.arguments.const_int64(0);
+        if (!count || *count <= 0) return std::vector<vgi::ColumnStatistics>{};
+        const double increment = params.arguments.named_double("increment").value_or(1.0);
+
+        vgi::ColumnStatistics stat;
+        stat.column_name = "n";
+        stat.min = vgi::StatValue::floating(0.0);
+        stat.max = vgi::StatValue::floating(static_cast<double>(*count - 1) * increment);
+        stat.has_null = false;
+        stat.has_not_null = true;
+        stat.distinct_count = *count;
+        return std::vector<vgi::ColumnStatistics>{std::move(stat)};
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {

@@ -121,6 +121,24 @@ struct SecretLookup {
     std::optional<std::string> secret_name;
 };
 
+// The wire spellings of the two enum-valued strings in FunctionMetadata.
+//
+// Public because a function sets them: they are the only place a fixture would
+// otherwise have to spell a protocol constant by hand, and the engine matches
+// them exactly — a lowercase value is silently ignored.
+namespace partition_kinds {
+inline constexpr const char* kNotPartitioned = "NOT_PARTITIONED";
+inline constexpr const char* kSingleValuePartitions = "SINGLE_VALUE_PARTITIONS";
+inline constexpr const char* kOverlappingPartitions = "OVERLAPPING_PARTITIONS";
+inline constexpr const char* kDisjointPartitions = "DISJOINT_PARTITIONS";
+}  // namespace partition_kinds
+
+namespace order_preservations {
+inline constexpr const char* kPreservesOrder = "PRESERVES_ORDER";
+inline constexpr const char* kNoOrderGuarantee = "NO_ORDER_GUARANTEE";
+inline constexpr const char* kFixedOrder = "FIXED_ORDER";
+}  // namespace order_preservations
+
 // Everything the engine shows a user about a function, plus the return type
 // when it is fixed.  A function whose return type depends on its arguments
 // leaves `return_type` empty and answers during bind instead.
@@ -167,6 +185,21 @@ struct FunctionMetadata {
     // On, the framework filters each emitted batch, which is what a fixture
     // that merely advertises the capability wants.
     bool auto_apply_filters = false;
+    // Whether this function tags its batches with `vgi_batch_index`.
+    //
+    // Declaring it is what lets the engine hand the scan to several workers
+    // and still restore the original order, by sorting on the tag rather than
+    // on arrival. A function that declares it and omits the tag is rejected.
+    bool supports_batch_index = false;
+    // What order the engine may assume of this function's rows. Empty leaves
+    // the engine's own default in place; the values are in `src/enums.h`.
+    std::string order_preservation;
+    // Whether the engine may push a TABLESAMPLE SYSTEM clause into this scan.
+    //
+    // Declaring it hands the function the sampling rate and lets it discard
+    // rows at the source; DuckDB then drops its own sampling operator, so a
+    // function that declares this and ignores the hint returns every row.
+    bool sampling_pushdown = false;
     // DuckDB settings this function reads. Declaring them is what makes the
     // engine forward their values; a setting not declared here never arrives,
     // however it was set.

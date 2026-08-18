@@ -46,6 +46,9 @@ void register_blended(vgi::Worker& worker);
 void register_versioned(vgi::Worker& worker);
 void register_window_aggregates(vgi::Worker& worker);
 void register_rff(vgi::Worker& worker);
+void register_more_cache(vgi::Worker& worker);
+void register_partitioned(vgi::Worker& worker);
+void register_accumulate(vgi::Worker& worker);
 std::vector<vgi::CatalogTable> rff_tables();
 std::vector<vgi::TimeTravelVersion> versioned_data_versions();
 // Declares the catalog's tables and views. Runs after the function

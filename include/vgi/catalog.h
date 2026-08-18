@@ -4,7 +4,7 @@
 #pragma once
 
 #include <cstdint>
-#include <optional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -12,6 +12,8 @@
 #include <vector>
 
 #include <arrow/type.h>
+
+#include "vgi/statistics.h"
 
 namespace vgi {
 
@@ -88,6 +90,11 @@ struct CatalogTable {
     std::vector<CatalogBranch> branches;
     // DuckDB extensions the branches need (`iceberg`, `parquet`).
     std::vector<std::string> required_extensions;
+
+    // Per-column bounds for the optimizer. Empty means the table declines to
+    // answer, which is different from answering with no columns: the engine
+    // then falls back to asking the scan function for its own.
+    std::vector<ColumnStatistics> column_statistics;
 
     // Whether the scan function travels inside the table record.
     //
@@ -170,6 +177,22 @@ struct CatalogModel {
     std::vector<SettingSpec> settings;
     // Secret types this catalog introduces.
     std::vector<SecretTypeSpec> secret_types;
+
+    // Whether a version request is an npm-style range rather than an exact
+    // version.
+    //
+    // Off, `data_version_spec '1.0.0'` must name a supported version exactly.
+    // On, `^1.0.0` / `~1.0.0` / `1` / `1.0` resolve to the highest supported
+    // version they cover, and an unsatisfiable range fails the ATTACH.
+    bool npm_version_resolution = false;
+
+    // The schemas each data version exposes, keyed by resolved version.
+    //
+    // Non-empty, these *replace* `schemas` for the life of an attachment: a
+    // catalog whose table set changes across versions is the whole reason the
+    // resolved version is sealed into `attach_opaque_data` and echoed on every
+    // later call.
+    std::map<std::string, std::vector<CatalogSchema>> version_schemas;
 
     // Schemas declared up front. Registering a function in a schema adds it
     // here too, so a worker with only functions never has to list them.

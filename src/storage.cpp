@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <system_error>
 
@@ -123,21 +124,7 @@ public:
         // distinguish from end-of-log, and so silently truncates the replay.
         // The payload therefore goes to a temporary and is renamed into the
         // `.entry` name only once complete.
-        int64_t id = highest_id(dir) + 1;
-        const int64_t limit = id + kMaxClaimAttempts;
-        for (; id < limit; ++id) {
-            const auto reservation = dir / (pad(id) + ".claim");
-            const int fd = ::open(reservation.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-            if (fd < 0) {
-                if (errno == EEXIST) continue;  // another worker took this id
-                throw std::runtime_error("vgi storage: cannot claim " + reservation.string() +
-                                         ": " + std::strerror(errno));
-            }
-            ::close(fd);
-            write_file_atomically(dir / (pad(id) + ".entry"), value);
-            return id;
-        }
-        throw std::runtime_error("vgi storage: could not claim a log id under " + dir.string());
+        return claim_from(dir, highest_id(dir) + 1, value);
     }
 
     std::vector<std::pair<int64_t, std::string>> scan(const std::string& scope,
@@ -170,44 +157,64 @@ public:
 
     void queue_push(const std::string& scope,
                     const std::vector<std::string>& items) override {
-        for (const auto& item : items) append(scope, "__queue", "", item);
+        if (items.empty()) return;
+        const auto dir = log_dir(scope, kQueueNamespace, "");
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+
+        // One directory walk for the whole push. Calling `append` per item
+        // rescanned the directory each time, which made pushing N items
+        // quadratic — a 5,000-chunk scan spent minutes here before emitting a
+        // row.
+        int64_t next = highest_id(dir) + 1;
+        for (const auto& item : items) next = claim_from(dir, next, item) + 1;
     }
 
     std::optional<std::string> queue_pop(const std::string& scope) override {
-        const auto dir = log_dir(scope, "__queue", "");
+        const auto dir = log_dir(scope, kQueueNamespace, "");
         std::error_code ec;
         if (!fs::exists(dir, ec)) return std::nullopt;
 
-        std::vector<fs::path> candidates;
-        for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            // Only unclaimed entries. Without the filter a `.claimed.<pid>`
-            // left by a crashed popper is picked up, re-claimed, and delivered
-            // a second time.
-            const auto name = entry.path().filename().string();
-            if (name.size() < 6 || name.compare(name.size() - 6, 6, ".entry") != 0) continue;
-            candidates.push_back(entry.path());
-        }
-        std::sort(candidates.begin(), candidates.end());
-        for (const auto& path : candidates) {
-            // Claim by renaming: exactly one racing popper's rename succeeds,
-            // which is what makes this safe across processes without a lock.
-            const auto claimed =
-                fs::path(path.string() + ".claimed." + std::to_string(::getpid()));
-            fs::rename(path, claimed, ec);
-            if (ec) {
-                ec.clear();
-                continue;
+        // Probed forward from where this process last succeeded rather than by
+        // listing and sorting the directory, which cost O(n log n) per pop and
+        // so O(n² log n) to drain a queue.
+        //
+        // Skipping everything below the cursor is safe: ids are handed out in
+        // ascending order, and an id this process passed over was one another
+        // popper had already claimed.
+        auto& cursor = queue_cursors_[scope];
+        for (;;) {
+            for (int64_t id = cursor + 1; id <= queue_high(scope, dir); ++id) {
+                const auto path = dir / (pad(id) + ".entry");
+                // Claim by renaming: exactly one racing popper's rename
+                // succeeds, which is what makes this safe across processes
+                // without a lock. A rename that fails means the entry is not
+                // there — claimed already, or still being written.
+                const auto claimed =
+                    fs::path(path.string() + ".claimed." + std::to_string(::getpid()));
+                fs::rename(path, claimed, ec);
+                if (ec) {
+                    ec.clear();
+                    continue;
+                }
+                cursor = id;
+                auto value = read_file(claimed);
+                fs::remove(claimed, ec);
+                return value;
             }
-            auto value = read_file(claimed);
-            fs::remove(claimed, ec);
-            return value;
+            // Nothing left below the known high-water mark; re-read it once in
+            // case another process pushed while we were draining.
+            const int64_t known = queue_highs_[scope];
+            queue_highs_[scope] = highest_id(dir);
+            if (queue_highs_[scope] <= known) return std::nullopt;
         }
-        return std::nullopt;
     }
 
     void clear(const std::string& scope) override {
         std::error_code ec;
         fs::remove_all(base_ / hex(scope), ec);
+        queue_cursors_.erase(scope);
+        queue_highs_.erase(scope);
     }
 
 private:
@@ -219,6 +226,53 @@ private:
                      const std::string& key) const {
         return base_ / hex(scope) / ("log_" + hex(ns) + "__" + hex(key));
     }
+
+    // The highest id this process knows to have been pushed, refreshed only
+    // when the forward probe runs out.
+    int64_t queue_high(const std::string& scope, const fs::path& dir) {
+        auto it = queue_highs_.find(scope);
+        if (it == queue_highs_.end()) it = queue_highs_.emplace(scope, highest_id(dir)).first;
+        return it->second;
+    }
+
+    // Claim the first free id at or above `from`, then publish `value` under
+    // it. Two separate races, and they need different answers.
+    //
+    // *Claiming* the id: checking existence and then writing is a race, and
+    // not a theoretical one — the engine runs several sink processes at once,
+    // so two of them pick the same "highest + 1" and the second overwrites the
+    // first's rows. An exclusive create is the only thing here atomic across
+    // processes, so a claim is an `O_CREAT|O_EXCL` on a *reservation* name.
+    //
+    // *Publishing* the entry: a claim marker is visible from the instant of
+    // open, so writing the payload into the claimed file would let a
+    // concurrent scan read an empty entry — which a reader cannot distinguish
+    // from end-of-log, and so silently truncates the replay. The payload
+    // therefore goes to a temporary and is renamed into the `.entry` name only
+    // once complete.
+    static int64_t claim_from(const fs::path& dir, int64_t from, const std::string& value) {
+        const int64_t limit = from + kMaxClaimAttempts;
+        for (int64_t id = from; id < limit; ++id) {
+            const auto reservation = dir / (pad(id) + ".claim");
+            const int fd = ::open(reservation.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+            if (fd < 0) {
+                if (errno == EEXIST) continue;  // another worker took this id
+                throw std::runtime_error("vgi storage: cannot claim " + reservation.string() +
+                                         ": " + std::strerror(errno));
+            }
+            ::close(fd);
+            write_file_atomically(dir / (pad(id) + ".entry"), value);
+            return id;
+        }
+        throw std::runtime_error("vgi storage: could not claim a log id under " + dir.string());
+    }
+
+    // Named rather than spelled inline so the queue's log directory cannot
+    // drift from the one `queue_push` and `queue_pop` each compute.
+    static constexpr const char* kQueueNamespace = "__queue";
+
+    std::map<std::string, int64_t> queue_cursors_;
+    std::map<std::string, int64_t> queue_highs_;
 
     // How many ids to try before giving up. Fixed at the start of the loop
     // rather than recomputed: a moving bound derived from `highest_id` climbs

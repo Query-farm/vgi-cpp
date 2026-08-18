@@ -8,11 +8,12 @@
 #include <vgi_rpc/result.h>
 
 #include <algorithm>
-#include <tuple>
+#include <array>
 #include <cctype>
 #include <cstdlib>
 #include <optional>
 #include <string_view>
+#include <tuple>
 
 #include "arg_schema.h"
 #include "dispatcher.h"
@@ -56,6 +57,106 @@ const char* stability_wire_value(Stability stability) {
         case Stability::Consistent: break;
     }
     return enums::stability::kConsistent;
+}
+
+// The partition kind is carried as a raw wire string rather than an enum so a
+// fixture can name a kind this SDK does not model; empty means unpartitioned.
+// `major.minor.patch`, or nothing when the string is not exactly that.
+std::optional<std::array<uint32_t, 3>> parse_semver(const std::string& text) {
+    std::array<uint32_t, 3> parts{};
+    size_t offset = 0;
+    for (int i = 0; i < 3; ++i) {
+        if (offset >= text.size() || !std::isdigit(static_cast<unsigned char>(text[offset]))) {
+            return std::nullopt;
+        }
+        size_t consumed = 0;
+        parts[static_cast<size_t>(i)] =
+            static_cast<uint32_t>(std::stoul(text.substr(offset), &consumed));
+        offset += consumed;
+        if (i < 2) {
+            if (offset >= text.size() || text[offset] != '.') return std::nullopt;
+            ++offset;
+        }
+    }
+    return offset == text.size() ? std::optional{parts} : std::nullopt;
+}
+
+// The highest supported version an npm-style range covers.
+//
+// Five forms, which is what the wire actually carries: an exact `X.Y.Z`, a
+// caret `^X.Y.Z` (same major), a tilde `~X.Y.Z` (same major.minor), a bare
+// major `X`, and a bare `X.Y` pinned to `X.Y.0`. An empty request takes the
+// catalog's default; anything else is an ATTACH-time error, because a caller
+// asking for something this worker cannot serve should learn so now rather
+// than mid-query.
+std::string resolve_version_npm(const std::optional<std::string>& spec,
+                                const std::vector<std::string>& supported,
+                                const std::string& fallback, const char* label) {
+    if (!spec || spec->empty()) return fallback;
+
+    std::vector<std::pair<std::array<uint32_t, 3>, const std::string*>> sorted;
+    for (const auto& version : supported) {
+        if (auto parsed = parse_semver(version)) sorted.emplace_back(*parsed, &version);
+    }
+    std::sort(sorted.begin(), sorted.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    const auto unsupported = [&] {
+        return std::invalid_argument("Unsupported " + std::string(label) + " \"" + *spec +
+                                     "\"; this worker serves one of " + join_quoted(supported));
+    };
+    // Highest first, so the first match is the answer.
+    const auto best = [&](auto&& covers) -> std::string {
+        for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
+            if (covers(it->first)) return *it->second;
+        }
+        throw unsupported();
+    };
+
+    if (parse_semver(*spec)) {
+        if (std::find(supported.begin(), supported.end(), *spec) == supported.end()) {
+            throw unsupported();
+        }
+        return *spec;
+    }
+
+    const char prefix = spec->front();
+    const bool ranged = prefix == '^' || prefix == '~';
+    const std::string bare = ranged ? spec->substr(1) : *spec;
+
+    if (ranged) {
+        const auto base = parse_semver(bare);
+        if (!base) throw unsupported();
+        return best([&](const std::array<uint32_t, 3>& v) {
+            return v[0] == (*base)[0] && v >= *base && (prefix == '^' || v[1] == (*base)[1]);
+        });
+    }
+
+    const auto dot = bare.find('.');
+    if (dot == std::string::npos) {
+        uint32_t major = 0;
+        try {
+            major = static_cast<uint32_t>(std::stoul(bare));
+        } catch (const std::exception&) {
+            throw unsupported();
+        }
+        return best([&](const std::array<uint32_t, 3>& v) { return v[0] == major; });
+    }
+    // `X.Y` pins to `X.Y.0` rather than taking the highest patch, matching the
+    // reference implementations.
+    if (bare.find('.', dot + 1) == std::string::npos) {
+        const auto pinned = bare + ".0";
+        if (std::find(supported.begin(), supported.end(), pinned) == supported.end()) {
+            throw unsupported();
+        }
+        return pinned;
+    }
+    throw unsupported();
+}
+
+const char* partition_kind_wire_value(const FunctionMetadata& metadata) {
+    return metadata.partition_kind.empty() ? partition_kinds::kNotPartitioned
+                                           : metadata.partition_kind.c_str();
 }
 
 // Wrap a payload batch in the `{result: binary}` envelope every non-void
@@ -161,6 +262,26 @@ std::vector<std::string> Dispatcher::encode_secret_types() const {
     return entries;
 }
 
+const CatalogSchema* Dispatcher::schema_for(const vgi_rpc::Request& request,
+                                            const std::string& name) const {
+    if (catalog_.version_schemas.empty()) return catalog_.find_schema(name);
+
+    // `<version>\0<alias>`, as sealed at ATTACH. An absent or unparseable
+    // value falls back to the declared schemas rather than failing: the engine
+    // asks some of these questions before any attachment exists.
+    const auto sealed = wire::get_optional_binary(request.batch(), "attach_opaque_data");
+    if (!sealed) return catalog_.find_schema(name);
+    const auto separator = sealed->find('\0');
+    if (separator == std::string::npos || separator == 0) return catalog_.find_schema(name);
+
+    const auto version = catalog_.version_schemas.find(sealed->substr(0, separator));
+    if (version == catalog_.version_schemas.end()) return catalog_.find_schema(name);
+    for (const auto& schema : version->second) {
+        if (schema.name == name) return &schema;
+    }
+    return nullptr;
+}
+
 vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     // The request dataclass rides in one binary column as a self-describing
     // IPC stream; the params schema is only ever {request: binary}.
@@ -181,7 +302,12 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
 
     std::optional<std::string> resolved_data;
     if (!catalog_.supported_data_versions.empty()) {
-        if (requested_data) {
+        if (catalog_.npm_version_resolution) {
+            resolved_data =
+                resolve_version_npm(requested_data, catalog_.supported_data_versions,
+                                    catalog_.default_data_version.value_or(""),
+                                    "data_version_spec");
+        } else if (requested_data) {
             const auto& supported = catalog_.supported_data_versions;
             if (std::find(supported.begin(), supported.end(), *requested_data) ==
                 supported.end()) {
@@ -200,7 +326,12 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
         const auto& supported = catalog_.supported_implementation_versions.empty()
                                     ? std::vector<std::string>{catalog_.implementation_version}
                                     : catalog_.supported_implementation_versions;
-        if (requested_impl) {
+        if (catalog_.npm_version_resolution &&
+            !catalog_.supported_implementation_versions.empty()) {
+            resolved_impl = resolve_version_npm(requested_impl, supported,
+                                                catalog_.implementation_version,
+                                                "implementation_version");
+        } else if (requested_impl) {
             if (std::find(supported.begin(), supported.end(), *requested_impl) ==
                 supported.end()) {
                 throw std::invalid_argument("Unsupported implementation_version \"" +
@@ -215,10 +346,13 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
 
     auto batch = wire::ResultBuilder(payload_schema_of("catalog_attach"))
                      // Opaque to the engine, which only stores and echoes it.
-                     // The canonical worker seals a UUID plus catalog bytes; a
-                     // worker with no cross-process state to protect needs
-                     // only enough to identify the attachment.
-                     .set_binary("attach_opaque_data", name)
+                     // `<resolved data version>\0<attach alias>`: the version
+                     // has to travel because a catalog whose table set varies
+                     // by version is asked about its tables long after ATTACH,
+                     // on calls that carry nothing else identifying which
+                     // attachment they belong to.
+                     .set_binary("attach_opaque_data",
+                                 resolved_data.value_or("") + '\0' + name)
                      .set_bool("supports_transactions", false)
                      .set_bool("supports_time_travel", supports_time_travel())
                      .set_bool("catalog_version_frozen", true)
@@ -355,7 +489,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table,
         .set_bool("supports_update", false)
         .set_bool("supports_delete", false)
         .set_bool("supports_returning", false)
-        .set_bool("supports_column_statistics", false)
+        .set_bool("supports_column_statistics", !table.column_statistics.empty())
         .set_int64("cardinality_estimate", table.cardinality.value_or(-1))
         .set_int64("cardinality_max", table.cardinality.value_or(-1))
         .set_string_map("tags", table.tags)
@@ -368,6 +502,28 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table,
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
+vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(
+    const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto name = wire::get_string(request.batch(), "name");
+
+    // A Binary method: the bytes are the statistics batch, and a null is "this
+    // table declares none" — which sends the engine on to the scan function.
+    wire::ResultBuilder result(envelope_schema());
+    const CatalogTable* found = nullptr;
+    if (const auto* schema = schema_for(request, schema_name)) {
+        for (const auto& table : schema->tables) {
+            if (table.name == name) found = &table;
+        }
+    }
+    if (found && !found->column_statistics.empty()) {
+        result.set_binary("result", serialize_column_statistics(found->column_statistics));
+    } else {
+        result.set_null("result");
+    }
+    return vgi_rpc::Result::value(result.finish());
+}
+
 vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "schema_name");
     const auto name = wire::get_string(request.batch(), "name");
@@ -376,7 +532,7 @@ vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
     const auto at_value = wire::get_optional_string(request.batch(), "at_value");
 
     std::vector<std::string> items;
-    if (const auto* schema = catalog_.find_schema(schema_name)) {
+    if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& table : schema->tables) {
             if (table.name != name) continue;
             items.push_back(encode_table_info(table, schema_name,
@@ -411,7 +567,7 @@ vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "schema_name");
     const auto name = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    if (const auto* schema = catalog_.find_schema(schema_name)) {
+    if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& view : schema->views) {
             if (view.name == name) items.push_back(encode_view_info(view, schema_name));
         }
@@ -466,7 +622,7 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
     const auto metadata = fn.metadata();
     // A table function's output schema is settled at bind, so nothing useful
     // can be advertised here; an empty schema is how that is spelled.
-    return wire::encode_ipc(
+    auto builder =
         wire::ResultBuilder(gen::FunctionInfoSchema())
             .set_string("name", fn.name())
             .set_string("schema_name", schema_name)
@@ -485,12 +641,19 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
             .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
+            .set_bool("supports_batch_index", metadata.supports_batch_index)
             .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
+            .set_enum("partition_kind", partition_kind_wire_value(metadata))
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
-            .fill_defaults()
-            .finish());
+            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent);
+    // Only when the function says so: the field is nullable, and writing a
+    // value unconditionally would replace the engine's default for every
+    // table function that never thought about ordering.
+    if (!metadata.order_preservation.empty()) {
+        builder.set_enum("order_preservation", metadata.order_preservation.c_str());
+    }
+    return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
 std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
@@ -517,8 +680,9 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
             .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
             .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
+            .set_enum("partition_kind", partition_kind_wire_value(metadata))
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
@@ -547,8 +711,9 @@ std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
             .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
             .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
+            .set_enum("partition_kind", partition_kind_wire_value(metadata))
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
@@ -583,9 +748,7 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
             .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", metadata.partition_kind.empty()
-                                            ? enums::partition_kind::kNotPartitioned
-                                            : metadata.partition_kind.c_str())
+            .set_enum("partition_kind", partition_kind_wire_value(metadata))
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
             // Declared, or the engine never sends a window request at all and
@@ -625,8 +788,9 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
             .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
             .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
+            .set_enum("partition_kind", partition_kind_wire_value(metadata))
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
@@ -697,7 +861,7 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
 vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    if (const auto* schema = catalog_.find_schema(schema_name)) {
+    if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& table : schema->tables) {
             items.push_back(encode_table_info(table, schema_name));
         }
@@ -710,7 +874,7 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Reques
 vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    if (const auto* schema = catalog_.find_schema(schema_name)) {
+    if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& view : schema->views) {
             items.push_back(encode_view_info(view, schema_name));
         }
@@ -725,7 +889,7 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Reque
     const auto name = wire::get_string(request.batch(), "name");
 
     const CatalogTable* found = nullptr;
-    if (const auto* schema = catalog_.find_schema(schema_name)) {
+    if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& table : schema->tables) {
             if (table.name == name) found = &table;
         }
@@ -755,7 +919,7 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
     const auto name = wire::get_string(request.batch(), "name");
 
     const CatalogTable* found = nullptr;
-    if (const auto* schema = catalog_.find_schema(schema_name)) {
+    if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& table : schema->tables) {
             if (table.name == name) found = &table;
         }

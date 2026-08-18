@@ -624,8 +624,7 @@ void register_cache(vgi::Worker& worker) {
     worker.register_table(std::make_shared<CacheProjection>());
     // Variants that differ from `cacheable_numbers` only in name; the tests
     // use distinct names so one query's cache entry cannot serve another's.
-    for (const char* name : {"cache_filtered", "cache_ordered", "cache_external_fail",
-                             "cache_partitioned", "cache_partition_scope",
+    for (const char* name : {"cache_partitioned", "cache_partition_scope",
                              "cache_partition_parallel"}) {
         worker.register_table(std::make_shared<CachedNumbers>(
             name, "Cacheable sequence fixture", "n", /*takes_ttl=*/true,
@@ -641,8 +640,11 @@ void register_cache(vgi::Worker& worker) {
     worker.register_table(std::make_shared<CacheNonce>());
     worker.register_table(std::make_shared<CacheNoStore>());
     worker.register_table(std::make_shared<CacheScopedTxn>());
+    // Positional and untagged, unlike its neighbours: the scaling tests call
+    // `cache_bench(200000)` directly and need the row count they asked for.
     worker.register_table(std::make_shared<CachedNumbers>(
-        "cache_bench", "Emits n rows for cache benchmarking", "n", /*takes_ttl=*/true));
+        "cache_bench", "Emits `rows` int64 rows (positional arg); cacheable", "v",
+        /*takes_ttl=*/false, /*positional_rows=*/true));
 }
 
 }  // namespace example

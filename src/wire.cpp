@@ -141,6 +141,14 @@ std::optional<int64_t> get_optional_int64(const std::shared_ptr<arrow::RecordBat
     return arr->Value(0);
 }
 
+std::optional<double> get_optional_double(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                          const std::string& field) {
+    if (!has_column(batch, field)) return std::nullopt;
+    auto arr = typed_column<arrow::DoubleArray>(batch, field, "float64");
+    if (arr->IsNull(0)) return std::nullopt;
+    return arr->Value(0);
+}
+
 std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
                      const std::string& field) {
     auto arr = typed_column<arrow::DictionaryArray>(batch, field, "dictionary");

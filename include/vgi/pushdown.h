@@ -61,9 +61,27 @@ public:
     const std::vector<Filter>& filters() const noexcept { return filters_; }
     // Those naming `column`.
     std::vector<Filter> column_filters(const std::string& column) const;
+    // Whether any predicate constrains `column`.
+    bool has_filter_for_column(const std::string& column) const;
+    // Every column any predicate names, deduplicated and sorted.
+    std::vector<std::string> filtered_columns() const;
 
     // Integer bounds implied for `column`, if any comparison constrains it.
     ColumnBounds column_bounds(const std::string& column) const;
+
+    // The discrete set of values `column` can take, or null when the
+    // predicates do not enumerate one.
+    //
+    // This is the partition-pruning accessor: a scan that owns one file per
+    // value answers the whole query by opening only these. Null means "cannot
+    // enumerate", never "no rows" — a caller that treated it as an empty set
+    // would drop every row.
+    //
+    // `=` and `IN` enumerate. A disjunction does too, but only when *every*
+    // branch pins this same column to discrete values: one branch's values
+    // would be an unsafe subset, since a pruning caller would then skip the
+    // other branches' rows.
+    std::shared_ptr<arrow::Array> column_values(const std::string& column) const;
 
     // Apply every filter to `batch`, returning the surviving rows.
     //
@@ -89,6 +107,12 @@ public:
 
 private:
     std::shared_ptr<arrow::Array> values_for(const Spec& spec) const;
+    // Top-level specs naming `column`, plus the children of a top-level `and`
+    // over it — the shape DuckDB pushes an `IN (…)` in when it also derives
+    // range bounds. One level only, matching the reference implementation.
+    std::vector<std::shared_ptr<Spec>> column_specs(const std::string& column) const;
+    std::shared_ptr<arrow::Array> or_column_values(const Spec& spec,
+                                                   const std::string& column) const;
 
     std::vector<Filter> filters_;
     std::vector<std::shared_ptr<Spec>> specs_;

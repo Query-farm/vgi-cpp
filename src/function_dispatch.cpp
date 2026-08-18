@@ -26,8 +26,6 @@
 #include "dispatcher.h"
 #include "arg_schema.h"
 #include "enums.h"
-#include "arg_schema.h"
-#include "enums.h"
 #include "methods.h"
 #include "vgi/storage.h"
 
@@ -596,6 +594,114 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
                                       .finish());
 }
 
+vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& request) {
+    auto cardinality_request = wire::get_ipc(request.batch(), "request");
+    if (!cardinality_request) throw std::runtime_error("cardinality: empty request");
+
+    auto bind_call = wire::get_ipc(cardinality_request, "bind_call");
+    if (!bind_call) throw std::runtime_error("cardinality: request carries no bind_call");
+
+    const auto function_name = wire::get_string(bind_call, "function_name");
+    const auto bind_params = read_bind_request(bind_call);
+
+    // Asked before init, so there is no execution and no output schema yet —
+    // only the arguments the estimate can be derived from. `estimate` and
+    // `max` stay null when the function does not answer, which the planner
+    // reads as "unknown" rather than as zero.
+    TableCardinality cardinality;
+    if (auto table = find_table(function_name, bind_params.schema_name, &bind_params)) {
+        ProcessParams params;
+        params.arguments = bind_params.arguments;
+        params.settings = bind_params.settings;
+        params.secrets = bind_params.secrets;
+        params.catalog_name = catalog_.name;
+        params.schema_name = bind_params.schema_name;
+        params.storage = default_storage();
+        cardinality = table->cardinality(params);
+    }
+
+    wire::ResultBuilder payload(payload_schema_of("table_function_cardinality"));
+    if (cardinality.estimate) {
+        payload.set_int64("estimate", *cardinality.estimate);
+    } else {
+        payload.set_null("estimate");
+    }
+    if (cardinality.max) {
+        payload.set_int64("max", *cardinality.max);
+    } else {
+        payload.set_null("max");
+    }
+    return vgi_rpc::Result::value(
+        wire::ResultBuilder(envelope_schema())
+            .set_binary("result", wire::encode_ipc(payload.finish()))
+            .finish());
+}
+
+vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& request) {
+    auto statistics_request = wire::get_ipc(request.batch(), "request");
+    if (!statistics_request) throw std::runtime_error("statistics: empty request");
+
+    auto bind_call = wire::get_ipc(statistics_request, "bind_call");
+    if (!bind_call) throw std::runtime_error("statistics: request carries no bind_call");
+
+    const auto function_name = wire::get_string(bind_call, "function_name");
+    const auto bind_params = read_bind_request(bind_call);
+
+    std::optional<std::vector<ColumnStatistics>> statistics;
+    if (auto table = find_table(function_name, bind_params.schema_name, &bind_params)) {
+        ProcessParams params;
+        params.arguments = bind_params.arguments;
+        params.settings = bind_params.settings;
+        params.secrets = bind_params.secrets;
+        params.catalog_name = catalog_.name;
+        params.schema_name = bind_params.schema_name;
+        params.storage = default_storage();
+        statistics = table->statistics(params);
+    }
+
+    // A Binary method: the bytes travel in the envelope verbatim, and a null
+    // there is "no statistics" — distinct from an empty set of them.
+    wire::ResultBuilder result(envelope_schema());
+    if (statistics) {
+        result.set_binary("result", serialize_column_statistics(*statistics));
+    } else {
+        result.set_null("result");
+    }
+    return vgi_rpc::Result::value(result.finish());
+}
+
+vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Request& request) {
+    auto profile_request = wire::get_ipc(request.batch(), "request");
+    if (!profile_request) throw std::runtime_error("dynamic_to_string: empty request");
+
+    auto bind_call = wire::get_ipc(profile_request, "bind_call");
+    if (!bind_call) throw std::runtime_error("dynamic_to_string: request carries no bind_call");
+
+    const auto function_name = wire::get_string(bind_call, "function_name");
+    const auto bind_params = read_bind_request(bind_call);
+    const auto execution_id =
+        wire::get_optional_binary(profile_request, "global_execution_id").value_or(std::string{});
+
+    std::vector<std::string> keys;
+    std::vector<std::string> values;
+    if (auto table = find_table(function_name, bind_params.schema_name, &bind_params)) {
+        for (const auto& [key, value] : table->dynamic_to_string(execution_id, *default_storage())) {
+            keys.push_back(key);
+            values.push_back(value);
+        }
+    }
+
+    auto payload = wire::ResultBuilder(payload_schema_of("table_function_dynamic_to_string"))
+                       .set_string_list("keys", keys)
+                       .set_string_list("values", values)
+                       .fill_defaults()
+                       .finish();
+    return vgi_rpc::Result::value(
+        wire::ResultBuilder(envelope_schema())
+            .set_binary("result", wire::encode_ipc(payload))
+            .finish());
+}
+
 vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     auto init_request = wire::get_ipc(request.batch(), "request");
     if (!init_request) throw std::runtime_error("init: empty request");
@@ -610,6 +716,24 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // worker re-derive it, so a function whose bind is expensive pays once.
     auto output_schema = wire::get_schema(init_request, "output_schema");
     if (!output_schema) throw std::runtime_error("init: request carries no output_schema");
+
+    // Projection pushdown arrives as indices into the bound schema rather than
+    // as a narrowed schema, so the narrowing has to happen here: a function
+    // that declared `projection_pushdown` and then emitted every column would
+    // have its columns read positionally against the engine's shorter list.
+    if (const auto projection_ids = wire::get_int64_list(init_request, "projection_ids");
+        !projection_ids.empty()) {
+        arrow::FieldVector fields;
+        fields.reserve(projection_ids.size());
+        for (const auto id : projection_ids) {
+            if (id < 0 || id >= output_schema->num_fields()) {
+                throw std::runtime_error("init: projection id " + std::to_string(id) +
+                                         " is outside the bound output schema");
+            }
+            fields.push_back(output_schema->field(static_cast<int>(id)));
+        }
+        output_schema = arrow::schema(std::move(fields));
+    }
 
     ProcessParams params;
     params.output_schema = output_schema;
@@ -632,6 +756,21 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     const bool primary = execution_id.empty();
     if (primary) execution_id = next_execution_id();
     params.execution_id = execution_id;
+
+    // Optimizer hints, all absent unless the plan shape let DuckDB fold the
+    // clause into the scan. The two enum fields are dictionary-encoded, so
+    // reading them as plain strings would fail the whole init.
+    params.scan_hints.order_by_column =
+        wire::get_optional_string(init_request, "order_by_column_name");
+    params.scan_hints.order_by_direction =
+        wire::get_optional_enum(init_request, "order_by_direction");
+    params.scan_hints.order_by_null_order =
+        wire::get_optional_enum(init_request, "order_by_null_order");
+    params.scan_hints.order_by_limit = wire::get_optional_int64(init_request, "order_by_limit");
+    params.scan_hints.tablesample_percentage =
+        wire::get_optional_double(init_request, "tablesample_percentage");
+    params.scan_hints.tablesample_seed =
+        wire::get_optional_int64(init_request, "tablesample_seed");
 
     // Parsed once for the whole scan; the engine sends it on init.
     params.pushdown_filters = PushdownFilters::parse(

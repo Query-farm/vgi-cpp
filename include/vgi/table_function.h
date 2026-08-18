@@ -16,6 +16,7 @@
 
 #include "vgi/cache_control.h"
 #include "vgi/function.h"
+#include "vgi/statistics.h"
 #include "vgi/types.h"
 
 namespace vgi {
@@ -85,6 +86,30 @@ public:
     // The planner's estimate. The default declines to guess, which is what
     // most generators should do.
     virtual TableCardinality cardinality(const ProcessParams&) const { return {}; }
+
+    // Per-column bounds for the optimizer, or nothing when the function cannot
+    // promise any.
+    //
+    // Answering is what lets DuckDB fold `WHERE n > 100000` over a scan bounded
+    // at 9,999 into an empty result without ever calling the function — and,
+    // by the same token, what makes a wrong bound a wrong answer rather than a
+    // slow one.
+    virtual std::optional<std::vector<ColumnStatistics>> statistics(
+        const ProcessParams&) const {
+        return std::nullopt;
+    }
+
+    // Post-execution diagnostics, shown as Extra Info under EXPLAIN ANALYZE.
+    //
+    // Fired once per scan thread after the stream ends, so it cannot read the
+    // producer — that object is long gone, and in the parallel case it lived in
+    // another process. Whatever it reports the producer must have persisted to
+    // `storage` under `global_execution_id`, which is the id the primary init
+    // minted for the whole query.
+    virtual std::vector<std::pair<std::string, std::string>> dynamic_to_string(
+        const std::string& /*global_execution_id*/, FunctionStorage&) const {
+        return {};
+    }
 
     // How many workers the engine may run this scan across.
     //

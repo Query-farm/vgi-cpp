@@ -9,6 +9,7 @@
 #include <functional>
 
 #include <arrow/array/builder_primitive.h>
+#include <arrow/array/concatenate.h>
 #include <arrow/compute/api.h>
 #include <nlohmann/json.hpp>
 
@@ -81,6 +82,10 @@ const char* comparison_kernel(const std::string& op) {
     if (op == "gt" || op == ">") return "greater";
     if (op == "ge" || op == "gteq" || op == ">=") return "greater_equal";
     return nullptr;
+}
+
+bool is_equality(const std::string& op) {
+    return op.empty() || op == "eq" || op == "=" || op == "==";
 }
 
 std::optional<int64_t> as_int64(const std::shared_ptr<arrow::Array>& array) {
@@ -157,6 +162,24 @@ std::vector<Filter> PushdownFilters::column_filters(const std::string& column) c
     return found;
 }
 
+bool PushdownFilters::has_filter_for_column(const std::string& column) const {
+    return std::any_of(filters_.begin(), filters_.end(),
+                       [&](const Filter& filter) { return filter.column_name == column; });
+}
+
+std::vector<std::string> PushdownFilters::filtered_columns() const {
+    std::vector<std::string> columns;
+    for (const auto& filter : filters_) {
+        // An `and`/`or` node is flattened away, but a leaf with no column —
+        // there is no such thing on the wire today — would name the empty
+        // string and read as a column.
+        if (!filter.column_name.empty()) columns.push_back(filter.column_name);
+    }
+    std::sort(columns.begin(), columns.end());
+    columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
+    return columns;
+}
+
 ColumnBounds PushdownFilters::column_bounds(const std::string& column) const {
     ColumnBounds bounds;
     std::vector<std::shared_ptr<Spec>> stack = specs_;
@@ -182,6 +205,63 @@ ColumnBounds PushdownFilters::column_bounds(const std::string& column) const {
         }
     }
     return bounds;
+}
+
+std::vector<std::shared_ptr<Spec>> PushdownFilters::column_specs(
+    const std::string& column) const {
+    std::vector<std::shared_ptr<Spec>> found;
+    for (const auto& spec : specs_) {
+        if (spec->column_name != column) continue;
+        if (spec->kind == "and") {
+            for (const auto& child : spec->children) {
+                if (child->column_name == column) found.push_back(child);
+            }
+        } else {
+            found.push_back(spec);
+        }
+    }
+    return found;
+}
+
+std::shared_ptr<arrow::Array> PushdownFilters::or_column_values(
+    const Spec& spec, const std::string& column) const {
+    arrow::ArrayVector branches;
+    for (const auto& child : spec.children) {
+        // A branch constraining a different column — or none — leaves this
+        // column free to take any value within that branch.
+        if (child->column_name != column) return nullptr;
+        const bool discrete = child->kind == "in" || child->kind == "join_keys" ||
+                              (child->kind == "constant" && is_equality(child->op));
+        if (!discrete) return nullptr;
+        auto values = values_for(*child);
+        if (!values || values->length() == 0) return nullptr;
+        branches.push_back(child->kind == "constant" ? values->Slice(0, 1) : values);
+    }
+    if (branches.empty()) return nullptr;
+
+    auto combined = arrow::Concatenate(branches);
+    if (!combined.ok()) return nullptr;
+    // Arrow's `unique` keeps first-appearance order, which is what makes the
+    // rendered set stable enough for a test to compare.
+    auto deduped = arrow::compute::Unique(combined.MoveValueUnsafe());
+    if (!deduped.ok()) return nullptr;
+    return deduped.MoveValueUnsafe();
+}
+
+std::shared_ptr<arrow::Array> PushdownFilters::column_values(const std::string& column) const {
+    for (const auto& spec : column_specs(column)) {
+        if (spec->kind == "constant" && is_equality(spec->op)) {
+            auto values = values_for(*spec);
+            // Sliced rather than returned whole: the values column holds one
+            // entry per referenced constant, not one per filter.
+            if (values && values->length() > 0) return values->Slice(0, 1);
+        } else if (spec->kind == "in" || spec->kind == "join_keys") {
+            if (auto values = values_for(*spec)) return values;
+        } else if (spec->kind == "or") {
+            if (auto values = or_column_values(*spec, column)) return values;
+        }
+    }
+    return nullptr;
 }
 
 namespace {
@@ -292,6 +372,19 @@ std::shared_ptr<arrow::RecordBatch> PushdownFilters::apply(
 
         auto column = surviving->GetColumnByName(spec->column_name);
         if (!column) continue;
+
+        // A dictionary column is decoded before comparing. DuckDB types a
+        // dictionary<*, utf8> column without ENUM metadata as plain VARCHAR
+        // and pushes a string literal, and every comparison kernel rejects the
+        // (dictionary, string) pair; casting the literal *up* to the
+        // dictionary type is what throws.
+        if (column->type_id() == arrow::Type::DICTIONARY) {
+            const auto& value_type =
+                static_cast<const arrow::DictionaryType&>(*column->type()).value_type();
+            auto decoded = arrow::compute::Cast(*column, value_type);
+            if (!decoded.ok()) continue;
+            column = *decoded;
+        }
 
         arrow::Result<arrow::Datum> mask;
         if (spec->kind == "is_null") {

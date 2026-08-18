@@ -61,6 +61,7 @@ add_library(vgi
     src/catalog_model.cpp
     src/settings.cpp
     src/pushdown.cpp
+    src/statistics.cpp
     src/copy_to.cpp
     src/partition.cpp
 )

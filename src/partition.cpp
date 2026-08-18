@@ -3,6 +3,7 @@
 
 #include "vgi/partition.h"
 
+#include <stdexcept>
 #include <vector>
 
 #include <arrow/array.h>
@@ -45,11 +46,20 @@ std::map<std::string, std::string> partition_metadata(
         if (!column || column->length() == 0) continue;
 
         auto extremes = arrow::compute::MinMax(column);
-        if (!extremes.ok()) continue;
+        // `min_max` is only registered once `arrow::compute::Initialize()` has
+        // run, so a failure here is a real one — every partitioned batch would
+        // otherwise ship without its metadata and the engine would reject it.
+        if (!extremes.ok()) {
+            throw std::runtime_error("partition metadata for '" + field->name() +
+                                     "': " + extremes.status().ToString());
+        }
+        // Held by value: `Datum::scalar()` hands back a reference into the
+        // datum, and binding it to the temporary from MoveValueUnsafe() would
+        // leave `pair` dangling at the end of the statement.
+        const auto extent = extremes.MoveValueUnsafe();
         // MinMax gives a struct scalar {min, max}; the wire wants them as two
         // rows of one column, so they are unpacked rather than passed through.
-        const auto& pair =
-            static_cast<const arrow::StructScalar&>(*extremes.MoveValueUnsafe().scalar());
+        const auto& pair = static_cast<const arrow::StructScalar&>(*extent.scalar());
         if (pair.value.size() < 2) continue;
 
         // Built as one two-element array rather than concatenating two

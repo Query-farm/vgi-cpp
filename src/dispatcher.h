@@ -79,6 +79,9 @@ public:
     // than in a 5,000-line switch.
 
     vgi_rpc::Result bind(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_function_cardinality(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_function_statistics(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_function_dynamic_to_string(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_bind(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_update(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_combine(const vgi_rpc::Request& request);
@@ -108,6 +111,7 @@ public:
     vgi_rpc::Result catalog_version(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_catalogs(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_table_get(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_table_column_statistics_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_table_scan_function_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_table_scan_branches_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_view_get(const vgi_rpc::Request& request);
@@ -183,6 +187,15 @@ private:
     std::vector<SecretLookup> required_secrets_of(const std::string& name,
                                                   const BindParams& params) const;
     BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
+
+    // The schema `name`, as this attachment sees it.
+    //
+    // A catalog whose table set varies by data version answers from the
+    // version sealed into the request's `attach_opaque_data`; every other
+    // catalog answers from its declared schemas. Null when there is no such
+    // schema, which is how "no such name" is spelled to the engine.
+    const CatalogSchema* schema_for(const vgi_rpc::Request& request,
+                                    const std::string& name) const;
 
     CatalogModel catalog_;
     std::vector<std::shared_ptr<ScalarFunction>> scalars_;

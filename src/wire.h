@@ -61,6 +61,8 @@ std::optional<bool> get_optional_bool(const std::shared_ptr<arrow::RecordBatch>&
 int64_t get_int64(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
 std::optional<int64_t> get_optional_int64(const std::shared_ptr<arrow::RecordBatch>& batch,
                                           const std::string& field);
+std::optional<double> get_optional_double(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                          const std::string& field);
 
 // A dictionary<int16, utf8> parameter, read back as its string value.
 std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,

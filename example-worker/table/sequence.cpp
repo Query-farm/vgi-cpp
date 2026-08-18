@@ -77,6 +77,14 @@ public:
         vgi::FunctionMetadata md;
         md.description = "Generates a sequence of integers from 0 to n-1";
         md.categories = {"generator", "utility"};
+        md.tags = {{"category", "generator"}, {"type", "utility"}};
+        md.projection_pushdown = true;
+        // Applied by the framework rather than honoured here: the values are
+        // an arange, so there is nothing to skip at the source, and the engine
+        // trusts a function that declares filter_pushdown to have applied the
+        // predicate.
+        md.filter_pushdown = true;
+        md.auto_apply_filters = true;
         return md;
     }
 
@@ -105,6 +113,25 @@ public:
         values.reserve(static_cast<size_t>(count));
         for (int64_t i = 0; i < count; ++i) values.push_back(i * increment);
         return std::make_unique<Chunks>(std::move(values), batch_size);
+    }
+
+    // Exact, not approximate: the span follows from the arguments, so a
+    // filter outside it can be folded away entirely — which is the whole
+    // reason to answer this at all.
+    std::optional<std::vector<vgi::ColumnStatistics>> statistics(
+        const vgi::ProcessParams& params) const override {
+        const auto count = params.arguments.const_int64(0);
+        if (!count || *count <= 0) return std::vector<vgi::ColumnStatistics>{};
+        const int64_t increment = params.arguments.named_int64("increment").value_or(1);
+
+        vgi::ColumnStatistics stat;
+        stat.column_name = "n";
+        stat.min = vgi::StatValue::integer(0);
+        stat.max = vgi::StatValue::integer((*count - 1) * increment);
+        stat.has_null = false;
+        stat.has_not_null = true;
+        stat.distinct_count = *count;
+        return std::vector<vgi::ColumnStatistics>{std::move(stat)};
     }
 
     vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {

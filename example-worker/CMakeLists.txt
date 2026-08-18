@@ -25,11 +25,14 @@ add_executable(vgi-example-worker
     table/versioned.cpp
     table/rff.cpp
     table/filters.cpp
+    table/cache_more.cpp
+    table/partitioned.cpp
     copy_to/lines.cpp
     catalog_def.cpp
     table_in_out/echo.cpp
     table_in_out/cached.cpp
     table_in_out/blended.cpp
+    table_in_out/accumulate.cpp
     aggregate/basic.cpp
     aggregate/more.cpp
     aggregate/window.cpp

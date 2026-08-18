@@ -19,7 +19,9 @@ VGI_EXT="${VGI_EXT:-$HOME/Development/vgi}"
 UNITTEST="$VGI_EXT/build/release/test/unittest"
 BUILD_DIR="${VGI_CPP_BUILD:-$VGI_CPP/build-release}"
 BIN="$BUILD_DIR/example-worker/vgi-example-worker"
-CACHE="/tmp/vgi-cpp-test-cache"
+# Overridable so two runs (e.g. parallel agents) do not clobber each other's
+# run.log, worker.log and wrapper scripts.
+CACHE="${VGI_CPP_TEST_CACHE:-/tmp/vgi-cpp-test-cache}"
 mkdir -p "$CACHE"
 
 BRANCH_DIR="${VGI_TEST_BRANCH_DIR:-$CACHE/branches}"

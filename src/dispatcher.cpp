@@ -125,6 +125,9 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
     // still registered — see the note above — but refuses when called.
     const std::unordered_map<std::string, UnaryHandler> unary = {
         {"bind", &Dispatcher::bind},
+        {"table_function_cardinality", &Dispatcher::table_function_cardinality},
+        {"table_function_statistics", &Dispatcher::table_function_statistics},
+        {"table_function_dynamic_to_string", &Dispatcher::table_function_dynamic_to_string},
         {"aggregate_bind", &Dispatcher::aggregate_bind},
         {"aggregate_update", &Dispatcher::aggregate_update},
         {"aggregate_combine", &Dispatcher::aggregate_combine},
@@ -144,6 +147,7 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         {"catalog_version", &Dispatcher::catalog_version},
         {"catalog_catalogs", &Dispatcher::catalog_catalogs},
         {"catalog_table_get", &Dispatcher::catalog_table_get},
+        {"catalog_table_column_statistics_get", &Dispatcher::catalog_table_column_statistics_get},
         {"catalog_table_scan_function_get", &Dispatcher::catalog_table_scan_function_get},
         {"catalog_table_scan_branches_get", &Dispatcher::catalog_table_scan_branches_get},
         {"catalog_view_get", &Dispatcher::catalog_view_get},
