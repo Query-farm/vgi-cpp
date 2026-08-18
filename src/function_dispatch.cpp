@@ -545,16 +545,26 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.schema_name = bind_params.schema_name;
     params.storage = default_storage();
 
-    // The engine may supply the execution id (it does for the buffering
-    // finalize phase, to name the sink it is draining); otherwise we mint one.
+    // The engine may supply the execution id (it does for a follow-on worker,
+    // and for the buffering finalize phase); otherwise this is the primary
+    // init and we mint one.
     auto execution_id =
         wire::get_optional_binary(init_request, "execution_id").value_or(std::string{});
-    if (execution_id.empty()) execution_id = next_execution_id();
+    const bool primary = execution_id.empty();
+    if (primary) execution_id = next_execution_id();
     params.execution_id = execution_id;
+
+    int64_t max_workers = 1;
+    if (auto table = find_table(function_name, params.schema_name, &bind_params)) {
+        max_workers = std::max<int64_t>(1, table->max_workers(params));
+        // Only the primary init divides the work, and only once. A follow-on
+        // worker calling this too would push the same chunks again.
+        if (primary) table->on_init(params);
+    }
 
     auto header = wire::ResultBuilder(global_init_response_schema())
                       .set_binary("execution_id", execution_id)
-                      .set_int64("max_workers", 1)
+                      .set_int64("max_workers", max_workers)
                       .set_null("opaque_data")
                       .finish();
 

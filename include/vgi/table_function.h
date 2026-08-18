@@ -70,6 +70,22 @@ public:
     // The planner's estimate. The default declines to guess, which is what
     // most generators should do.
     virtual TableCardinality cardinality(const ProcessParams&) const { return {}; }
+
+    // How many workers the engine may run this scan across.
+    //
+    // 1 serializes it, which is the safe default: a producer that has not been
+    // written to divide its work would otherwise emit the whole result once
+    // per worker. Raise it only alongside `on_init`, which is where the work
+    // gets divided.
+    virtual int64_t max_workers(const ProcessParams&) const { return 1; }
+
+    // Runs once per execution, before any producer is built.
+    //
+    // Only the *primary* init calls it — the one the engine sends without an
+    // execution id — so it is the one place a parallel scan can divide its
+    // work exactly once, typically by pushing chunks onto the shared queue
+    // that every worker then pops from.
+    virtual void on_init(const ProcessParams&) const {}
 };
 
 }  // namespace vgi

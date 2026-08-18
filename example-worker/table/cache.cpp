@@ -9,6 +9,7 @@
 // let a later batch contradict an earlier one.
 
 #include <atomic>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <string>
@@ -363,9 +364,127 @@ public:
     }
 };
 
+// `cache_parallel(rows, batch_size := 24000)` — the one cache fixture that
+// runs across several workers.
+//
+// The primary init divides `[0, rows)` into chunks and pushes them onto the
+// execution's shared queue; every worker then pops chunks until the queue is
+// empty. Values are the plain sequence, so COUNT and SUM hold whatever order
+// the chunks were claimed in — which is what makes the test independent of
+// how the engine actually distributed them.
+class CacheParallel : public vgi::TableFunction {
+public:
+    std::string name() const override { return "cache_parallel"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return cache_metadata(
+            "Multi-worker cacheable sequence (one substream per worker); parallel-capture "
+            "fixture");
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::constant_arg("rows", 0, "int64",
+                                           "Total number of rows to generate"),
+                vgi::ArgSpec::named("batch_size", "int64", "Rows per output batch")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return single_i64_schema("v");
+    }
+
+    int64_t max_workers(const vgi::ProcessParams&) const override { return 8; }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        vgi::TableCardinality estimate;
+        if (auto rows = params.arguments.const_int64(0)) {
+            estimate.estimate = *rows;
+            estimate.max = *rows;
+        }
+        return estimate;
+    }
+
+    void on_init(const vgi::ProcessParams& params) const override {
+        const int64_t rows = std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0));
+        // A bounded chunk count rather than a fixed chunk size: the cost of
+        // fanning out should scale with the number of workers, not the number
+        // of rows.
+        const int64_t chunk = std::max<int64_t>(1, (rows + kMaxChunks - 1) / kMaxChunks);
+
+        std::vector<std::string> items;
+        for (int64_t start = 0; start < rows; start += chunk) {
+            const int64_t end = std::min(start + chunk, rows);
+            items.push_back(std::to_string(start) + ":" + std::to_string(end));
+        }
+        params.storage->queue_push(params.execution_id, items);
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        return std::make_unique<QueueProducer>(
+            params.output_schema, params.storage, params.execution_id,
+            std::max<int64_t>(1, params.arguments.named_int64("batch_size").value_or(24000)));
+    }
+
+private:
+    // ~24 chunks whatever the row count.
+    static constexpr int64_t kMaxChunks = 24;
+
+    class QueueProducer : public vgi::TableProducer {
+    public:
+        QueueProducer(std::shared_ptr<arrow::Schema> schema,
+                      std::shared_ptr<vgi::FunctionStorage> storage, std::string execution_id,
+                      int64_t batch_size)
+            : schema_(std::move(schema)),
+              storage_(std::move(storage)),
+              execution_id_(std::move(execution_id)),
+              batch_size_(batch_size) {}
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            if (position_ >= end_) {
+                auto item = storage_->queue_pop(execution_id_);
+                if (!item) return nullptr;  // queue drained: this worker is done
+                const auto colon = item->find(':');
+                if (colon == std::string::npos) return nullptr;
+                position_ = std::strtoll(item->c_str(), nullptr, 10);
+                end_ = std::strtoll(item->c_str() + colon + 1, nullptr, 10);
+                if (position_ >= end_) return next_batch();
+            }
+
+            const int64_t n = std::min(batch_size_, end_ - position_);
+            auto batch = i64_batch(schema_, position_, position_ + n);
+            // The advertisement rides the first batch this worker emits, not
+            // the first of each chunk.
+            if (!advertised_) {
+                advertised_ = true;
+                vgi::CacheControl control;
+                control.ttl_seconds = kDefaultTtlSeconds;
+                metadata_ = control.to_metadata();
+            } else {
+                metadata_.clear();
+            }
+            position_ += n;
+            return batch;
+        }
+
+        std::map<std::string, std::string> last_metadata() const override {
+            return metadata_;
+        }
+
+    private:
+        std::shared_ptr<arrow::Schema> schema_;
+        std::shared_ptr<vgi::FunctionStorage> storage_;
+        std::string execution_id_;
+        int64_t batch_size_;
+        int64_t position_ = 0;
+        int64_t end_ = 0;
+        bool advertised_ = false;
+        std::map<std::string, std::string> metadata_;
+    };
+};
+
 }  // namespace
 
 void register_cache(vgi::Worker& worker) {
+    worker.register_table(std::make_shared<CacheParallel>());
     worker.register_table(std::make_shared<MultiCol>());
     worker.register_table(std::make_shared<CacheBig>());
     worker.register_table(std::make_shared<CacheRevalidatable>());
