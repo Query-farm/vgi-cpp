@@ -149,4 +149,25 @@ std::optional<std::string> Arguments::named_string(const std::string& name) cons
     return std::static_pointer_cast<arrow::StringArray>(array)->GetString(0);
 }
 
+std::string serialize_scan_arguments(
+    const std::vector<std::shared_ptr<arrow::Array>>& positional,
+    const std::vector<std::pair<std::string, std::shared_ptr<arrow::Array>>>& named) {
+    if (positional.empty() && named.empty()) {
+        return wire::encode_schema(arrow::schema({}));
+    }
+    std::vector<std::shared_ptr<arrow::Field>> fields;
+    std::vector<std::shared_ptr<arrow::Array>> columns;
+    for (size_t i = 0; i < positional.size(); ++i) {
+        fields.push_back(arrow::field("arg_" + std::to_string(i), positional[i]->type(),
+                                      /*nullable=*/false));
+        columns.push_back(positional[i]);
+    }
+    for (const auto& [name, value] : named) {
+        fields.push_back(arrow::field(name, value->type(), /*nullable=*/false));
+        columns.push_back(value);
+    }
+    const int64_t rows = columns.empty() ? 0 : columns.front()->length();
+    return wire::encode_ipc(arrow::RecordBatch::Make(arrow::schema(fields), rows, columns));
+}
+
 }  // namespace vgi

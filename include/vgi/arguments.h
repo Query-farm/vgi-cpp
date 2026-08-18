@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <arrow/array.h>
@@ -63,5 +64,15 @@ private:
     std::vector<std::shared_ptr<arrow::Field>> positional_fields_;
     std::map<std::string, std::shared_ptr<arrow::Array>> named_;
 };
+
+// Serialize scan arguments for a catalog table's scan function.
+//
+// The flat form the `arguments` field carries: positional values become
+// columns named `arg_0`, `arg_1`, …, and named ones keep their own name. A
+// scan that takes none serializes an empty *schema*, not an empty batch — the
+// consumer distinguishes them.
+std::string serialize_scan_arguments(
+    const std::vector<std::shared_ptr<arrow::Array>>& positional,
+    const std::vector<std::pair<std::string, std::shared_ptr<arrow::Array>>>& named = {});
 
 }  // namespace vgi

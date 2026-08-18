@@ -14,6 +14,25 @@
 
 namespace vgi {
 
+// One source a multi-branch table reads from.
+//
+// A multi-branch table is one logical relation stitched from several scans —
+// a hot tier and a cold tier, say, or a native Parquet reader beside a
+// worker-served fallback. Each branch names its own function; `branch_filter`
+// is the SQL predicate identifying which rows it owns, and the engine uses it
+// to skip branches a query cannot match.
+struct CatalogBranch {
+    std::string function_name;
+    std::string scan_arguments;
+    std::optional<std::string> branch_filter;
+    bool writable = false;
+    // Where the branch's data actually lives, when it is another catalog's
+    // table rather than a function's output.
+    std::optional<std::string> source_catalog;
+    std::optional<std::string> source_schema;
+    std::optional<std::string> source_table;
+};
+
 // A table the catalog advertises.
 //
 // A VGI table is not storage: it is a *name* bound to a table function that
@@ -33,6 +52,15 @@ struct CatalogTable {
     std::optional<std::string> comment;
     std::optional<int64_t> cardinality;
     std::vector<std::pair<std::string, std::string>> tags;
+
+    // Sources this table is stitched from.
+    //
+    // Empty means the single `scan_function` above is the whole table. A
+    // non-empty list *overrides* it: the engine asks for the branches and
+    // reads each in turn.
+    std::vector<CatalogBranch> branches;
+    // DuckDB extensions the branches need (`iceberg`, `parquet`).
+    std::vector<std::string> required_extensions;
 
     // Whether the scan function travels inside the table record.
     //

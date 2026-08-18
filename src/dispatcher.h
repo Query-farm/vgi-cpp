@@ -100,6 +100,7 @@ public:
     vgi_rpc::Result catalog_catalogs(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_table_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_table_scan_function_get(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_table_scan_branches_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_view_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_macro_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_index_get(const vgi_rpc::Request& request);

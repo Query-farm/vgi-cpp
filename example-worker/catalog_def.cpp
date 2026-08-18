@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include <arrow/array/builder_primitive.h>
 #include <arrow/type.h>
 #include <arrow/util/key_value_metadata.h>
 
@@ -34,6 +35,36 @@ vgi::CatalogTable backed_by(std::string name, std::string scan_function,
     table.name = std::move(name);
     table.scan_function = std::move(scan_function);
     table.columns = std::move(schema);
+    return table;
+}
+
+// A one-element array holding `value`, for a scan argument.
+std::shared_ptr<arrow::Array> int64_arg(int64_t value) {
+    arrow::Int64Builder builder;
+    (void)builder.Append(value);
+    std::shared_ptr<arrow::Array> array;
+    (void)builder.Finish(&array);
+    return array;
+}
+
+// A branch that scans `sequence(count)`.
+vgi::CatalogBranch sequence_branch(int64_t count,
+                                   std::optional<std::string> branch_filter = std::nullopt) {
+    vgi::CatalogBranch branch;
+    branch.function_name = "sequence";
+    branch.scan_arguments = vgi::serialize_scan_arguments({int64_arg(count)});
+    branch.branch_filter = std::move(branch_filter);
+    return branch;
+}
+
+vgi::CatalogTable multi_branch(std::string name, std::vector<vgi::CatalogBranch> branches) {
+    vgi::CatalogTable table;
+    table.name = std::move(name);
+    table.columns = columns({{"n", arrow::int64()}});
+    // No single scan function: the branches are the sources, and declaring one
+    // here as well would be a second, contradictory answer.
+    table.branches = std::move(branches);
+    table.inline_scan = false;
     return table;
 }
 
@@ -91,6 +122,14 @@ void declare_catalog(vgi::Worker& worker) {
                                     columns({{"n", arrow::int64()}})));
     data.tables.push_back(
         backed_by("cache_parallel", "cache_parallel", columns({{"v", arrow::int64()}})));
+
+    // Multi-branch tables: one logical relation stitched from several scans.
+    data.tables.push_back(
+        multi_branch("multi_branch_numbers", {sequence_branch(50), sequence_branch(50)}));
+    data.tables.push_back(multi_branch("multi_branch_filtered_numbers",
+                                       {sequence_branch(100, "n < 50"),
+                                        sequence_branch(100, "n >= 50")}));
+    data.tables.push_back(multi_branch("multi_branch_empty", {}));
 }
 
 }  // namespace example

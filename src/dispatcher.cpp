@@ -138,6 +138,7 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         {"catalog_catalogs", &Dispatcher::catalog_catalogs},
         {"catalog_table_get", &Dispatcher::catalog_table_get},
         {"catalog_table_scan_function_get", &Dispatcher::catalog_table_scan_function_get},
+        {"catalog_table_scan_branches_get", &Dispatcher::catalog_table_scan_branches_get},
         {"catalog_view_get", &Dispatcher::catalog_view_get},
         {"catalog_macro_get", &Dispatcher::catalog_macro_get},
         {"catalog_index_get", &Dispatcher::catalog_index_get},

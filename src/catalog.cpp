@@ -566,6 +566,61 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Reque
                                       .finish());
 }
 
+vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto name = wire::get_string(request.batch(), "name");
+
+    const CatalogTable* found = nullptr;
+    if (const auto* schema = catalog_.find_schema(schema_name)) {
+        for (const auto& table : schema->tables) {
+            if (table.name == name) found = &table;
+        }
+    }
+    if (!found) throw std::invalid_argument("no table '" + schema_name + "." + name + "'");
+
+    std::vector<std::string> branches;
+    if (found->branches.empty()) {
+        // The single-branch default: a table with no declared branches is one
+        // branch, its own scan function. Answering with an empty list instead
+        // would read as "this table has no sources".
+        auto branch = wire::ResultBuilder(gen::ScanBranchSchema())
+                          .set_string("function_name", found->scan_function)
+                          .set_binary("arguments", found->scan_arguments)
+                          .set_bool("writable", false)
+                          .fill_defaults()
+                          .finish();
+        branches.push_back(wire::encode_ipc(branch));
+    } else {
+        for (const auto& source : found->branches) {
+            auto builder = wire::ResultBuilder(gen::ScanBranchSchema());
+            builder.set_string("function_name", source.function_name)
+                .set_binary("arguments", source.scan_arguments)
+                .set_bool("writable", source.writable);
+            const auto optional = [&](const char* field,
+                                      const std::optional<std::string>& value) {
+                if (value) {
+                    builder.set_string(field, *value);
+                } else {
+                    builder.set_null(field);
+                }
+            };
+            optional("branch_filter", source.branch_filter);
+            optional("source_catalog", source.source_catalog);
+            optional("source_schema", source.source_schema);
+            optional("source_table", source.source_table);
+            branches.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
+        }
+    }
+
+    auto result = wire::ResultBuilder(gen::ScanBranchesResultSchema())
+                      .set_binary_list("branches", branches)
+                      .set_string_list("required_extensions", found->required_extensions)
+                      .finish();
+    return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
+                                      .set_binary("result", wire::encode_ipc(result))
+                                      .finish());
+}
+
 vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Request&) {
     return empty_items("catalog_schema_contents_macros");
 }
