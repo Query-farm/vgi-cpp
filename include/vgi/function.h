@@ -11,6 +11,7 @@
 #include <arrow/type.h>
 
 #include "vgi/arguments.h"
+#include "vgi/storage.h"
 #include "vgi/types.h"
 
 namespace vgi {
@@ -44,6 +45,16 @@ struct ProcessParams {
     Arguments arguments;
     std::string catalog_name;
     std::string schema_name;
+    // The engine's id for this function execution, echoed on every call that
+    // belongs to it. A function holding state across calls — a buffering sink,
+    // an aggregate — keys on this; a stateless one can ignore it.
+    std::string execution_id;
+    // Cross-process state, scoped by `execution_id`. Set for every call.
+    //
+    // Needed rather than optional: the engine parallelizes a buffering sink
+    // across worker *processes*, so in-memory accumulation is silently empty
+    // by the time finalize runs in a different one.
+    std::shared_ptr<FunctionStorage> storage;
 };
 
 // A scalar function: one output row per input row.

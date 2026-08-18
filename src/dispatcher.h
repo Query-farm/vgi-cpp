@@ -16,6 +16,7 @@
 #include "vgi/function.h"
 #include "vgi/table_function.h"
 #include "vgi/aggregate.h"
+#include "vgi/buffering.h"
 #include "vgi/table_in_out.h"
 
 namespace vgi {
@@ -50,6 +51,9 @@ public:
     void register_aggregate(std::shared_ptr<AggregateFunction> fn);
     void register_aggregate_in(std::string catalog, std::string schema,
                                std::shared_ptr<AggregateFunction> fn);
+    void register_buffering(std::shared_ptr<TableBufferingFunction> fn);
+    void register_buffering_in(std::string catalog, std::string schema,
+                               std::shared_ptr<TableBufferingFunction> fn);
 
     // Where a registered function is declared. Every registration has exactly
     // one; the default is the catalog's own name and `main`.
@@ -77,6 +81,9 @@ public:
     vgi_rpc::Result aggregate_combine(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_finalize(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_destructor(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_buffering_process(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_buffering_combine(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_buffering_destructor(const vgi_rpc::Request& request);
     vgi_rpc::Stream init(const vgi_rpc::Request& request);
 
     vgi_rpc::Result catalog_attach(const vgi_rpc::Request& request);
@@ -107,6 +114,8 @@ private:
                                                 const std::string& schema_name);
     static std::string encode_aggregate_info(const AggregateFunction& fn,
                                              const std::string& schema_name);
+    static std::string encode_buffering_info(const TableBufferingFunction& fn,
+                                             const std::string& schema_name);
 
     // Every registration under `name`, in registration order.
     //
@@ -130,6 +139,13 @@ private:
         const std::string& schema) const;
     std::shared_ptr<AggregateFunction> require_aggregate(const std::string& name,
                                                          const std::string& schema) const;
+    std::vector<std::shared_ptr<TableBufferingFunction>> bufferings_in_schema(
+        const std::string& schema) const;
+    std::shared_ptr<TableBufferingFunction> find_buffering(const std::string& name,
+                                                           const std::string& schema) const;
+    std::shared_ptr<TableBufferingFunction> require_buffering(const std::string& name,
+                                                              const std::string& schema) const;
+    ProcessParams buffering_params(const std::shared_ptr<arrow::RecordBatch>& dto) const;
 
     // The overload of `name` that matches `params`, or a clear error.
     //
@@ -159,6 +175,10 @@ private:
     std::vector<std::shared_ptr<AggregateFunction>> aggregates_;
     std::vector<Scope> aggregate_scopes_;
     std::unordered_map<std::string, std::vector<size_t>> aggregate_by_name_;
+
+    std::vector<std::shared_ptr<TableBufferingFunction>> bufferings_;
+    std::vector<Scope> buffering_scopes_;
+    std::unordered_map<std::string, std::vector<size_t>> buffering_by_name_;
 
     // execution id -> group id -> serialized state.
     //

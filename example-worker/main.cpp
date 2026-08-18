@@ -31,6 +31,7 @@ int main(int argc, char** argv) {
     example::register_table_functions(worker);
     example::register_table_in_out(worker);
     example::register_aggregates(worker);
+    example::register_buffering(worker);
 
     // Serves until the engine disconnects; does not return.
     worker.run(argc, argv);

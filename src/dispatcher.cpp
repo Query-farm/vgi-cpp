@@ -48,6 +48,22 @@ void Dispatcher::register_table_in_out_in(std::string catalog, std::string schem
     table_in_outs_.push_back(std::move(fn));
 }
 
+void Dispatcher::register_buffering(std::shared_ptr<TableBufferingFunction> fn) {
+    register_buffering_in(catalog_.name, "main", std::move(fn));
+}
+
+void Dispatcher::register_buffering_in(std::string catalog, std::string schema,
+                                       std::shared_ptr<TableBufferingFunction> fn) {
+    if (!fn) throw std::invalid_argument("register_buffering: null function");
+    if (std::find(catalog_.schemas.begin(), catalog_.schemas.end(), schema) ==
+        catalog_.schemas.end()) {
+        catalog_.schemas.push_back(schema);
+    }
+    buffering_by_name_[fn->name()].push_back(bufferings_.size());
+    buffering_scopes_.push_back({std::move(catalog), std::move(schema)});
+    bufferings_.push_back(std::move(fn));
+}
+
 void Dispatcher::register_aggregate(std::shared_ptr<AggregateFunction> fn) {
     register_aggregate_in(catalog_.name, "main", std::move(fn));
 }
@@ -124,6 +140,9 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         {"aggregate_combine", &Dispatcher::aggregate_combine},
         {"aggregate_finalize", &Dispatcher::aggregate_finalize},
         {"aggregate_destructor", &Dispatcher::aggregate_destructor},
+        {"table_buffering_process", &Dispatcher::table_buffering_process},
+        {"table_buffering_combine", &Dispatcher::table_buffering_combine},
+        {"table_buffering_destructor", &Dispatcher::table_buffering_destructor},
         {"catalog_attach", &Dispatcher::catalog_attach},
         {"catalog_version", &Dispatcher::catalog_version},
         {"catalog_catalogs", &Dispatcher::catalog_catalogs},

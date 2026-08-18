@@ -123,6 +123,18 @@ std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
     return values->GetString(indices->Value(0));
 }
 
+std::optional<std::string> get_optional_enum(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    if (!batch || !batch->GetColumnByName(field)) return std::nullopt;
+    auto arr = typed_column<arrow::DictionaryArray>(batch, field, "dictionary");
+    if (arr->IsNull(0)) return std::nullopt;
+    auto values = std::dynamic_pointer_cast<arrow::StringArray>(arr->dictionary());
+    if (!values) return std::nullopt;
+    const auto* indices = dynamic_cast<const arrow::Int16Array*>(arr->indices().get());
+    if (!indices) return std::nullopt;
+    return values->GetString(indices->Value(0));
+}
+
 std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes) {
     if (bytes.empty()) return nullptr;
     auto buffer = arrow::Buffer::FromString(bytes);

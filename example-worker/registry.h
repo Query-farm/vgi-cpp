@@ -24,5 +24,6 @@ void register_same_name(vgi::Worker& worker);
 void register_table_functions(vgi::Worker& worker);
 void register_table_in_out(vgi::Worker& worker);
 void register_aggregates(vgi::Worker& worker);
+void register_buffering(vgi::Worker& worker);
 
 }  // namespace example

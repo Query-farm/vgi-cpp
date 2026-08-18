@@ -11,6 +11,7 @@
 #include "vgi/function.h"
 #include "vgi/table_function.h"
 #include "vgi/aggregate.h"
+#include "vgi/buffering.h"
 #include "vgi/table_in_out.h"
 
 namespace vgi {
@@ -56,6 +57,10 @@ public:
     void register_aggregate(std::shared_ptr<AggregateFunction> fn);
     void register_aggregate_in(std::string catalog, std::string schema,
                                std::shared_ptr<AggregateFunction> fn);
+
+    void register_buffering(std::shared_ptr<TableBufferingFunction> fn);
+    void register_buffering_in(std::string catalog, std::string schema,
+                               std::shared_ptr<TableBufferingFunction> fn);
 
     // Serve, selecting the transport from argv.  Never returns.
     [[noreturn]] void run(int argc, char** argv);

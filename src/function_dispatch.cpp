@@ -19,7 +19,10 @@
 
 #include "dispatcher.h"
 #include "enums.h"
+#include "enums.h"
 #include "methods.h"
+#include "vgi/storage.h"
+
 #include "wire.h"
 
 namespace vgi {
@@ -95,6 +98,12 @@ public:
         : producer_(std::move(producer)) {}
 
     void produce(vgi_rpc::OutputCollector& out, vgi_rpc::CallContext&) override {
+        // A null producer is the buffering sink phase, which emits nothing:
+        // its batches arrive through table_buffering_process instead.
+        if (!producer_) {
+            out.finish();
+            return;
+        }
         auto batch = producer_->next_batch();
         if (!batch) {
             out.finish();
@@ -129,6 +138,33 @@ private:
 };
 
 }  // namespace
+
+std::vector<std::shared_ptr<TableBufferingFunction>> Dispatcher::bufferings_in_schema(
+    const std::string& schema) const {
+    std::vector<std::shared_ptr<TableBufferingFunction>> found;
+    for (size_t i = 0; i < bufferings_.size(); ++i) {
+        if (buffering_scopes_[i].schema == schema) found.push_back(bufferings_[i]);
+    }
+    return found;
+}
+
+std::shared_ptr<TableBufferingFunction> Dispatcher::find_buffering(
+    const std::string& name, const std::string& schema) const {
+    auto it = buffering_by_name_.find(name);
+    if (it == buffering_by_name_.end()) return nullptr;
+    for (size_t index : it->second) {
+        if (schema.empty() || buffering_scopes_[index].schema == schema) {
+            return bufferings_[index];
+        }
+    }
+    return bufferings_[it->second.front()];
+}
+
+std::shared_ptr<TableBufferingFunction> Dispatcher::require_buffering(
+    const std::string& name, const std::string& schema) const {
+    if (auto fn = find_buffering(name, schema)) return fn;
+    throw std::invalid_argument("no buffering function named '" + name + "'");
+}
 
 std::vector<std::shared_ptr<AggregateFunction>> Dispatcher::aggregates_in_schema(
     const std::string& schema) const {
@@ -320,7 +356,9 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
     // deliberate pairing (a COPY format's reader and writer share a name), and
     // the scalar path cannot serve a scan.
     std::shared_ptr<arrow::Schema> output_schema;
-    if (auto transform = find_table_in_out(function_name, params.schema_name)) {
+    if (auto sink = find_buffering(function_name, params.schema_name)) {
+        output_schema = sink->bind(params);
+    } else if (auto transform = find_table_in_out(function_name, params.schema_name)) {
         output_schema = transform->bind(params);
     } else if (auto table = find_table(function_name, params.schema_name)) {
         output_schema = table->bind(params);
@@ -368,9 +406,17 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.arguments = bind_params.arguments;
     params.catalog_name = catalog_.name;
     params.schema_name = bind_params.schema_name;
+    params.storage = default_storage();
+
+    // The engine may supply the execution id (it does for the buffering
+    // finalize phase, to name the sink it is draining); otherwise we mint one.
+    auto execution_id =
+        wire::get_optional_binary(init_request, "execution_id").value_or(std::string{});
+    if (execution_id.empty()) execution_id = next_execution_id();
+    params.execution_id = execution_id;
 
     auto header = wire::ResultBuilder(global_init_response_schema())
-                      .set_binary("execution_id", next_execution_id())
+                      .set_binary("execution_id", execution_id)
                       .set_int64("max_workers", 1)
                       .set_null("opaque_data")
                       .finish();
@@ -382,6 +428,28 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // A table function is a *producer* — it generates rows and reads none — so
     // its stream has no input schema. A scalar function is an *exchange*: one
     // output batch per input batch.
+    if (auto sink = find_buffering(function_name, params.schema_name)) {
+        // Two shapes behind one name. The sink phase is header-only — the
+        // engine ships batches through table_buffering_process, not through
+        // this stream — while the finalize phase drains one state id as an
+        // ordinary producer. The phase says which, and defaults to the sink.
+        // `phase` is a dictionary-encoded enum, not a plain string — reading
+        // it as one fails the whole call rather than defaulting.
+        const auto phase = wire::get_optional_enum(init_request, "phase").value_or("");
+        if (phase == enums::phase::kTableBufferingFinalize) {
+            const auto state_id =
+                wire::get_optional_binary(init_request, "finalize_state_id").value_or("");
+            stream.input_schema = arrow::schema({});
+            stream.state = std::make_shared<TableProduce>(
+                sink->finalize_producer(params, state_id));
+            return stream;
+        }
+        // Header-only: an empty producer that finishes on its first tick.
+        stream.input_schema = arrow::schema({});
+        stream.state = std::make_shared<TableProduce>(nullptr);
+        return stream;
+    }
+
     if (auto table = find_table(function_name, params.schema_name)) {
         stream.input_schema = arrow::schema({});
         stream.state = std::make_shared<TableProduce>(table->init(params));

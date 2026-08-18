@@ -62,6 +62,10 @@ std::optional<int64_t> get_optional_int64(const std::shared_ptr<arrow::RecordBat
 std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
                      const std::string& field);
 
+// The same, for an optional enum: nullopt when the column is absent or null.
+std::optional<std::string> get_optional_enum(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+
 // ── IPC-embedded values ───────────────────────────────────────────────────
 
 // Decode a self-describing IPC stream into its single batch.  Returns null for
