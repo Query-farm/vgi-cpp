@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -82,6 +83,64 @@ public:
 // A function that generates rows without consuming any.
 //
 // Unlike a scalar function, its output schema is almost always decided at
+// One named, independently redeemable unit of scan work.
+//
+// A split *names* work rather than describing it. "These three files at version
+// 47" survives a retry; "rows 0-999 of whatever this returns now" does not — and
+// a distributed engine will retry, so the difference is correctness, not
+// tidiness. The same split may also be redeemed more than once, so redemption
+// has to be replayable.
+//
+// Set `payload` and nothing else. The framework stamps the token envelope
+// around it — the consistency anchor and the bind fingerprint — so a function
+// author cannot forget either, and never writes the envelope by hand.
+struct ScanSplit {
+    std::string payload;
+    std::optional<int64_t> estimated_rows;
+    // True when `estimated_rows` is exact rather than an estimate, which is what
+    // lets the engine answer COUNT(*) from the plan.
+    bool rows_exact = false;
+    std::optional<int64_t> estimated_bytes;
+};
+
+// What the engine asks for when it plans a scan.
+struct PlanParams {
+    // The primary sizing lever. A function should emit splits of comparable
+    // cost: the engine cannot see per-split cost and claims them greedily as
+    // interchangeable units, so one oversized split bounds the whole scan.
+    std::optional<int64_t> target_split_bytes;
+    // A parallelism floor. A small but expensive table still needs enough
+    // splits to occupy the engine's readers.
+    std::optional<int64_t> min_splits;
+    // A pagination cap, not a sizing hint.
+    std::optional<int64_t> max_splits_per_response;
+    // Resume point in the *enumeration of splits*, not a position in the data.
+    std::optional<std::string> cursor;
+    std::optional<int64_t> row_limit;
+    // False means more filter refinement may still arrive, so a function may
+    // hold splits back; true says stop waiting.
+    bool filters_complete = true;
+    // The predicates known at plan time.
+    PushdownFilters pushdown_filters;
+};
+
+// A plan: the splits, plus what the engine needs to schedule them.
+struct PlanResult {
+    std::vector<ScanSplit> splits;
+    // How many workers the engine may run. Absent leaves it to the engine.
+    std::optional<int64_t> max_workers;
+    std::optional<int64_t> estimated_total_splits;
+    std::optional<int64_t> estimated_total_rows;
+    std::optional<int64_t> estimated_total_bytes;
+    // The snapshot these splits were planned against. It is sealed into every
+    // token, and a redemption whose anchor no longer matches is refused as
+    // stale rather than served from a different version.
+    std::optional<int64_t> catalog_version;
+    // Where enumeration should resume, when this response is a page rather than
+    // the whole plan.
+    std::optional<std::string> next_cursor;
+};
+
 // bind — from its arguments, or from a resource it inspects — so `bind` is
 // required rather than defaulted.
 class TableFunction {
@@ -99,6 +158,25 @@ public:
     // The planner's estimate. The default declines to guess, which is what
     // most generators should do.
     virtual TableCardinality cardinality(const ProcessParams&) const { return {}; }
+
+    // Whether this function divides its scan into splits.
+    //
+    // Off by default, and that default is what keeps every existing function
+    // working: the framework answers a plan request for a non-split function
+    // with one empty-payload split standing for the whole scan, so the engine's
+    // planning path costs a round trip and changes nothing else.
+    virtual bool supports_splits() const { return false; }
+
+    // Divide this scan into named splits. Required when `supports_splits`.
+    //
+    // Return only the `payload` bytes on each split; the framework stamps the
+    // envelope. Whatever state has to travel from planning to reading belongs
+    // in the payload or in `FunctionStorage` — the process that plans is not
+    // the process that reads, and on a cluster it is not even the same host.
+    virtual PlanResult plan(const BindParams&, const PlanParams&) const {
+        throw std::runtime_error("table function '" + name() +
+                                 "' declares supports_splits but does not override plan()");
+    }
 
     // Per-column bounds for the optimizer, or nothing when the function cannot
     // promise any.

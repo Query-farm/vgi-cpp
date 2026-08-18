@@ -169,6 +169,15 @@ struct ProcessParams {
     // across worker *processes*, so in-memory accumulation is silently empty
     // by the time finalize runs in a different one.
     std::shared_ptr<FunctionStorage> storage;
+
+    // The split payloads this init redeems, or nothing when the scan is not
+    // split. Exactly the bytes `plan()` produced: the framework has already
+    // verified the token envelope and stripped it, so an unverified token
+    // never reaches a function.
+    //
+    // Usually one. An engine that bin-packs sends a group and expects them
+    // read in order.
+    std::optional<std::vector<std::string>> split_payloads;
 };
 
 // A scalar function: one output row per input row.

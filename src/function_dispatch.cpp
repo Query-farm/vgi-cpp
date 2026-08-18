@@ -16,6 +16,8 @@
 #include <unistd.h>
 #include <stdexcept>
 
+#include <arrow/array/builder_binary.h>
+#include <arrow/array/builder_primitive.h>
 #include <arrow/record_batch.h>
 #include <nlohmann/json.hpp>
 #include <arrow/array/util.h>
@@ -32,6 +34,7 @@
 #include "methods.h"
 #include "vgi/storage.h"
 
+#include "split_token.h"
 #include "wire.h"
 
 namespace vgi {
@@ -1003,6 +1006,132 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
                                       .finish());
 }
 
+// One serialized `ScanSplit` per unit of work.
+//
+// The engine reads `token` and nothing else — the payload rides *inside* the
+// envelope, where it is verifiable, and a split record without a token is
+// rejected as a worker that bypassed the framework. The rest of the shape is
+// emitted anyway so a reader of these bytes sees the documented record rather
+// than a private subset.
+namespace {
+
+const std::shared_ptr<arrow::Schema>& scan_split_schema() {
+    static const auto schema = arrow::schema({
+        arrow::field("payload", arrow::large_binary(), /*nullable=*/false),
+        arrow::field("token", arrow::large_binary(), /*nullable=*/false),
+        arrow::field("estimated_rows", arrow::int64(), /*nullable=*/true),
+        arrow::field("rows_exact", arrow::boolean(), /*nullable=*/false),
+        arrow::field("estimated_bytes", arrow::int64(), /*nullable=*/true),
+    });
+    return schema;
+}
+
+std::string encode_scan_split(const ScanSplit& split, const std::string& token) {
+    arrow::LargeBinaryBuilder payload;
+    arrow::LargeBinaryBuilder stamped;
+    arrow::Int64Builder rows;
+    arrow::BooleanBuilder exact;
+    arrow::Int64Builder bytes;
+    // The payload is carried as well as sealed into the token so the record is
+    // self-describing to a human reading it; only the token is redeemable.
+    (void)payload.Append(split.payload);
+    (void)stamped.Append(token);
+    if (split.estimated_rows) {
+        (void)rows.Append(*split.estimated_rows);
+    } else {
+        (void)rows.AppendNull();
+    }
+    (void)exact.Append(split.rows_exact);
+    if (split.estimated_bytes) {
+        (void)bytes.Append(*split.estimated_bytes);
+    } else {
+        (void)bytes.AppendNull();
+    }
+    std::vector<std::shared_ptr<arrow::Array>> columns(5);
+    if (!payload.Finish(&columns[0]).ok() || !stamped.Finish(&columns[1]).ok() ||
+        !rows.Finish(&columns[2]).ok() || !exact.Finish(&columns[3]).ok() ||
+        !bytes.Finish(&columns[4]).ok()) {
+        throw std::runtime_error("plan: could not build a ScanSplit record");
+    }
+    return wire::encode_ipc(arrow::RecordBatch::Make(scan_split_schema(), 1, columns));
+}
+
+}  // namespace
+
+vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request) {
+    auto plan_request = wire::get_ipc(request.batch(), "request");
+    if (!plan_request) throw std::runtime_error("plan: empty request");
+
+    auto bind_call = wire::get_ipc(plan_request, "bind_call");
+    if (!bind_call) throw std::runtime_error("plan: request carries no bind_call");
+
+    const auto function_name = wire::get_string(bind_call, "function_name");
+    const auto bind_params = read_bind_request(bind_call);
+
+    PlanResult result;
+    auto table = find_table(function_name, scope_of(bind_params), &bind_params);
+    if (table && table->supports_splits()) {
+        PlanParams plan;
+        plan.target_split_bytes = wire::get_optional_int64(plan_request, "target_split_bytes");
+        plan.min_splits = wire::get_optional_int64(plan_request, "min_splits");
+        plan.max_splits_per_response =
+            wire::get_optional_int64(plan_request, "max_splits_per_response");
+        plan.row_limit = wire::get_optional_int64(plan_request, "row_limit");
+        plan.cursor = wire::get_optional_binary(plan_request, "cursor");
+        plan.filters_complete =
+            wire::get_optional_bool(plan_request, "filters_complete").value_or(true);
+        plan.pushdown_filters = PushdownFilters::parse(
+            wire::get_optional_binary(plan_request, "pushdown_filters").value_or(std::string{}),
+            wire::get_binary_list(plan_request, "join_keys"));
+        result = table->plan(bind_params, plan);
+    } else {
+        // The whole scan as one unit. This is what a function that has not
+        // opted into splits means, and answering it here rather than refusing
+        // is what lets every existing function keep working under a protocol
+        // that now plans before it scans.
+        result.splits.push_back(ScanSplit{});
+    }
+
+    // The envelope is stamped here, never by the function: an author cannot
+    // then forget the anchor or mis-bind the fingerprint, and the format stays
+    // a framework detail that can change without touching a worker.
+    const auto fingerprint = split_token::bind_fingerprint(
+        bind_params.schema_name, function_name,
+        wire::get_optional_binary(bind_call, "arguments").value_or(std::string{}),
+        wire::get_optional_binary(bind_call, "settings").value_or(std::string{}));
+    const auto anchor = split_token::anchor_for(result.catalog_version);
+
+    std::vector<std::string> splits;
+    splits.reserve(result.splits.size());
+    for (const auto& split : result.splits) {
+        splits.push_back(
+            encode_scan_split(split, split_token::build(split.payload, fingerprint, anchor)));
+    }
+
+    auto payload = wire::ResultBuilder(payload_schema_of("table_function_plan"));
+    payload.set_binary_list("splits", splits)
+        .set_binary_list("next_cursors", result.next_cursor
+                                             ? std::vector<std::string>{*result.next_cursor}
+                                             : std::vector<std::string>{})
+        .set_string("scope", "");
+    const auto optional_int = [&](const char* field, std::optional<int64_t> value) {
+        if (value) {
+            payload.set_int64(field, *value);
+        } else {
+            payload.set_null(field);
+        }
+    };
+    optional_int("max_workers", result.max_workers);
+    optional_int("estimated_total_splits", result.estimated_total_splits);
+    optional_int("estimated_total_rows", result.estimated_total_rows);
+    optional_int("estimated_total_bytes", result.estimated_total_bytes);
+    optional_int("catalog_version", result.catalog_version);
+    return vgi_rpc::Result::value(
+        wire::ResultBuilder(envelope_schema())
+            .set_binary("result", wire::encode_ipc(payload.fill_defaults().finish()))
+            .finish());
+}
+
 vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& request) {
     auto cardinality_request = wire::get_ipc(request.batch(), "request");
     if (!cardinality_request) throw std::runtime_error("cardinality: empty request");
@@ -1180,6 +1309,34 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // which is what a per-substream finalize keys its accumulated rows on.
     params.substream_id =
         wire::get_optional_binary(init_request, "substream_id").value_or(std::string{});
+
+    // Split redemption. Verified and stripped here rather than in the function,
+    // so an unverified token can never be acted on and the envelope stays a
+    // framework detail. An empty list is not a split init — that is the
+    // ordinary scan path, and it must stay untouched.
+    if (auto tokens = wire::get_binary_list(init_request, "split_tokens"); !tokens.empty()) {
+        const auto fingerprint = split_token::bind_fingerprint(
+            bind_params.schema_name, function_name,
+            wire::get_optional_binary(bind_call, "arguments").value_or(std::string{}),
+            wire::get_optional_binary(bind_call, "settings").value_or(std::string{}));
+        // The anchor a plan sealed in. Nothing here time-travels, so the
+        // current anchor is the one a plan would mint now.
+        const auto anchor = split_token::anchor_for(std::nullopt);
+
+        std::vector<std::string> payloads;
+        payloads.reserve(tokens.size());
+        for (const auto& token : tokens) {
+            auto opened = split_token::open(token, fingerprint, anchor);
+            if (!opened) {
+                throw std::runtime_error(
+                    "init: split token for '" + function_name +
+                    "' is not redeemable here — it was minted for a different bind, or "
+                    "against a snapshot this worker no longer serves");
+            }
+            payloads.push_back(std::move(*opened));
+        }
+        params.split_payloads = std::move(payloads);
+    }
 
     // Optimizer hints, all absent unless the plan shape let DuckDB fold the
     // clause into the scan. The two enum fields are dictionary-encoded, so

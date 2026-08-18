@@ -158,6 +158,7 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
     // still registered — see the note above — but refuses when called.
     const std::unordered_map<std::string, UnaryHandler> unary = {
         {"bind", &Dispatcher::bind},
+        {"table_function_plan", &Dispatcher::table_function_plan},
         {"table_function_cardinality", &Dispatcher::table_function_cardinality},
         {"table_function_statistics", &Dispatcher::table_function_statistics},
         {"table_function_dynamic_to_string", &Dispatcher::table_function_dynamic_to_string},

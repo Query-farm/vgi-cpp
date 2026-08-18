@@ -1110,7 +1110,11 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
     auto builder = common_function_info(fn.name(), schema_name, enums::function_type::kTable,
                                         fn.argument_specs(), arrow::schema({}), metadata);
     builder.set_bool("late_materialization", metadata.late_materialization)
-        .set_bool("supports_batch_index", metadata.supports_batch_index);
+        .set_bool("supports_batch_index", metadata.supports_batch_index)
+        // Taken from the function rather than from its metadata: a function
+        // that overrides `plan()` has said so in the only place that cannot
+        // drift from the implementation.
+        .set_bool("supports_splits", fn.supports_splits());
     // Only when the function says so: the field is nullable, and writing a
     // value unconditionally would replace the engine's default for every
     // table function that never thought about ordering.

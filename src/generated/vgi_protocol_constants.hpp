@@ -5,8 +5,7 @@
 // Content hash: 614a178f40bb
 //
 // To regenerate:
-//   uv run --project ~/Development/vgi-python vgi-gen-cpp-constants \
-//     > ~/Development/vgi/src/generated/vgi_protocol_constants.hpp
+//   scripts/regenerate_protocol.sh
 // ============================================================================
 
 #pragma once

@@ -22,6 +22,7 @@ add_executable(vgi-example-worker
     table/settings_fixtures.cpp
     table/secrets.cpp
     table/series.cpp
+    table/splits.cpp
     table/versioned.cpp
     table/static_scan.cpp
     table/rff.cpp

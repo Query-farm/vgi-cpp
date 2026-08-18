@@ -25,5 +25,26 @@ run vgi.codegen.cpp_schemas          > "$ROOT/src/generated/vgi_protocol_schemas
 run vgi.codegen.cpp_constants        > "$ROOT/src/generated/vgi_protocol_constants.hpp"
 run vgi.codegen.cpp_protocol_version > "$ROOT/src/generated/vgi_protocol_version.hpp"
 
+# Rewrite the provenance banner. Two reasons, both real:
+#
+#   * The generator names ~/Development/vgi as the destination, which is the
+#     extension's copy, not this one, and omits the --namespace flag these
+#     headers depend on. A reader who follows it puts the wrong file in the
+#     wrong namespace.
+#   * Its command spans two lines with a trailing backslash, and a backslash at
+#     the end of a `//` comment is a line continuation — GCC warns
+#     (-Wcomment) and swallows the next line. Clang does not, so it only shows
+#     up on the Linux CI legs.
+for f in vgi_protocol_schemas.hpp vgi_protocol_constants.hpp vgi_protocol_version.hpp; do
+    python3 - "$ROOT/src/generated/$f" <<'PY'
+import re, sys
+p = sys.argv[1]
+src = open(p).read()
+src = re.sub(r"// To regenerate:\n(//   [^\n]*\n)+",
+             "// To regenerate:\n//   scripts/regenerate_protocol.sh\n", src, count=1)
+open(p, "w").write(src)
+PY
+done
+
 echo "regenerated into namespace $NS"
 grep -h "VGI_PROTOCOL_VERSION = " "$ROOT/src/generated/vgi_protocol_version.hpp"

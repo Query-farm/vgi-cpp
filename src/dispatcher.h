@@ -107,6 +107,7 @@ public:
     // than in a 5,000-line switch.
 
     vgi_rpc::Result bind(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_function_plan(const vgi_rpc::Request& request);
     vgi_rpc::Result table_function_cardinality(const vgi_rpc::Request& request);
     vgi_rpc::Result table_function_statistics(const vgi_rpc::Request& request);
     vgi_rpc::Result table_function_dynamic_to_string(const vgi_rpc::Request& request);

@@ -34,6 +34,8 @@ const std::vector<MethodSpec>& protocol_methods() {
          gen::BindResultSchema()},  // -> BindResponse
         {"init", MethodKind::Stream, gen::InitParamsSchema(),
          kNoSchema},  // -> Stream[ProcessState, GlobalInitResponse]
+        {"table_function_plan", MethodKind::Result, gen::TableFunctionPlanParamsSchema(),
+         gen::TableFunctionPlanResultSchema()},  // -> PlanResponse
         {"table_function_cardinality", MethodKind::Result,
          gen::TableFunctionCardinalityParamsSchema(),
          gen::TableFunctionCardinalityResultSchema()},  // -> TableCardinality

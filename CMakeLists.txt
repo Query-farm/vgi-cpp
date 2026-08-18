@@ -55,6 +55,7 @@ add_library(vgi
     src/function.cpp
     src/methods.cpp
     src/wire.cpp
+    src/split_token.cpp
     src/catalog.cpp
     src/arg_schema.cpp
     src/function_dispatch.cpp
