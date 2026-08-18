@@ -34,6 +34,7 @@ int main(int argc, char** argv) {
     example::register_buffering(worker);
     example::register_cache(worker);
     example::register_more_tables(worker);
+    example::register_sum_all_columns(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.

@@ -27,6 +27,7 @@ void register_aggregates(vgi::Worker& worker);
 void register_buffering(vgi::Worker& worker);
 void register_cache(vgi::Worker& worker);
 void register_more_tables(vgi::Worker& worker);
+void register_sum_all_columns(vgi::Worker& worker);
 // Declares the catalog's tables and views. Runs after the function
 // registrations, since a table names the function that scans it.
 void declare_catalog(vgi::Worker& worker);
