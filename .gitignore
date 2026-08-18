@@ -1,0 +1,7 @@
+build/
+build-*/
+vcpkg/
+vcpkg_installed/
+.cache/
+.claude/
+compile_commands.json

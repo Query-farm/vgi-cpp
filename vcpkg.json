@@ -1,0 +1,17 @@
+{
+  "name": "vgi-cpp",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "dependencies": [
+    {
+      "name": "arrow",
+      "default-features": false
+    },
+    "nlohmann-json",
+    {
+      "name": "cpp-httplib",
+      "features": ["zstd", "zlib", "brotli"]
+    },
+    "catch2"
+  ]
+}
