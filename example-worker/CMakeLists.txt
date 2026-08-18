@@ -24,6 +24,7 @@ add_executable(vgi-example-worker
     copy_to/lines.cpp
     catalog_def.cpp
     table_in_out/echo.cpp
+    table_in_out/cached.cpp
     aggregate/basic.cpp
     buffering/buffer_input.cpp
     buffering/sum_all_columns.cpp

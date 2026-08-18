@@ -11,6 +11,7 @@
 #include <arrow/type.h>
 
 #include "vgi/arguments.h"
+#include "vgi/cache_control.h"
 #include "vgi/pushdown.h"
 #include "vgi/settings.h"
 #include "vgi/storage.h"
@@ -100,6 +101,13 @@ public:
     virtual std::shared_ptr<arrow::RecordBatch> process(
         const ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const = 0;
+
+    // A result-cache advertisement for this function's output.
+    //
+    // Only sound for a deterministic map: the engine may serve a later call
+    // the earlier answer, so a function whose result depends on anything
+    // outside its arguments must not advertise. Nothing by default.
+    virtual std::optional<CacheControl> cache_control() const { return std::nullopt; }
 };
 
 }  // namespace vgi

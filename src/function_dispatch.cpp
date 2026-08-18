@@ -86,10 +86,28 @@ namespace {
 
 // Feeds each input batch through a scalar function and emits exactly one
 // output batch, which is what an exchange stream promises its consumer.
+// Renders a cache advertisement onto a batch, if the function makes one.
+std::shared_ptr<arrow::KeyValueMetadata> cache_metadata(
+    const std::optional<CacheControl>& control) {
+    if (!control) return nullptr;
+    const auto rendered = control->to_metadata();
+    std::vector<std::string> keys;
+    std::vector<std::string> values;
+    keys.reserve(rendered.size());
+    values.reserve(rendered.size());
+    for (const auto& [key, value] : rendered) {
+        keys.push_back(key);
+        values.push_back(value);
+    }
+    return arrow::key_value_metadata(keys, values);
+}
+
 class ScalarExchange : public vgi_rpc::ExchangeState {
 public:
     ScalarExchange(std::shared_ptr<ScalarFunction> fn, ProcessParams params)
-        : fn_(std::move(fn)), params_(std::move(params)) {}
+        : fn_(std::move(fn)),
+          params_(std::move(params)),
+          cache_(cache_metadata(fn_->cache_control())) {}
 
     void exchange(const vgi_rpc::AnnotatedBatch& input, vgi_rpc::OutputCollector& out,
                   vgi_rpc::CallContext&) override {
@@ -106,12 +124,17 @@ public:
                 std::to_string(result->num_rows()) + " rows for " +
                 std::to_string(input.batch->num_rows()) + " input rows");
         }
-        out.emit_batch(result);
+        if (cache_) {
+            out.emit_batch(result, cache_);
+        } else {
+            out.emit_batch(result);
+        }
     }
 
 private:
     std::shared_ptr<ScalarFunction> fn_;
     ProcessParams params_;
+    std::shared_ptr<arrow::KeyValueMetadata> cache_;
 };
 
 // Drives a TableProducer: one output batch per tick until the scan is
@@ -198,18 +221,26 @@ private:
 class TableInOutExchange : public vgi_rpc::ExchangeState {
 public:
     TableInOutExchange(std::shared_ptr<TableInOutFunction> fn, ProcessParams params)
-        : fn_(std::move(fn)), params_(std::move(params)) {}
+        : fn_(std::move(fn)),
+          params_(std::move(params)),
+          cache_(cache_metadata(fn_->cache_control())) {}
 
     void exchange(const vgi_rpc::AnnotatedBatch& input, vgi_rpc::OutputCollector& out,
                   vgi_rpc::CallContext&) override {
         for (const auto& batch : fn_->process(params_, input.batch)) {
-            if (batch) out.emit_batch(batch);
+            if (!batch) continue;
+            if (cache_) {
+                out.emit_batch(batch, cache_);
+            } else {
+                out.emit_batch(batch);
+            }
         }
     }
 
 private:
     std::shared_ptr<TableInOutFunction> fn_;
     ProcessParams params_;
+    std::shared_ptr<arrow::KeyValueMetadata> cache_;
 };
 
 }  // namespace

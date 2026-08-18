@@ -51,6 +51,7 @@ int main(int argc, char** argv) {
     example::register_series(worker);
     example::register_filter_fixtures(worker);
     example::register_copy_to(worker);
+    example::register_cached(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.

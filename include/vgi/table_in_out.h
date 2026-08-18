@@ -10,6 +10,7 @@
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
+#include "vgi/cache_control.h"
 #include "vgi/function.h"
 #include "vgi/types.h"
 
@@ -46,6 +47,10 @@ public:
         const ProcessParams&) const {
         return {};
     }
+
+    // A result-cache advertisement for this function's output. See
+    // `ScalarFunction::cache_control` for when advertising is sound.
+    virtual std::optional<CacheControl> cache_control() const { return std::nullopt; }
 };
 
 // Project `batch` onto `schema` by column *name*, filling absent columns with
