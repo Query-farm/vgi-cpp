@@ -16,6 +16,22 @@ void Dispatcher::register_scalar(std::shared_ptr<ScalarFunction> fn) {
     register_scalar_in(catalog_.name, "main", std::move(fn));
 }
 
+void Dispatcher::register_table(std::shared_ptr<TableFunction> fn) {
+    register_table_in(catalog_.name, "main", std::move(fn));
+}
+
+void Dispatcher::register_table_in(std::string catalog, std::string schema,
+                                   std::shared_ptr<TableFunction> fn) {
+    if (!fn) throw std::invalid_argument("register_table: null function");
+    if (std::find(catalog_.schemas.begin(), catalog_.schemas.end(), schema) ==
+        catalog_.schemas.end()) {
+        catalog_.schemas.push_back(schema);
+    }
+    table_by_name_[fn->name()].push_back(tables_.size());
+    table_scopes_.push_back({std::move(catalog), std::move(schema)});
+    tables_.push_back(std::move(fn));
+}
+
 void Dispatcher::register_scalar_in(std::string catalog, std::string schema,
                                     std::shared_ptr<ScalarFunction> fn) {
     if (!fn) throw std::invalid_argument("register_scalar: null function");

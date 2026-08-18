@@ -13,6 +13,7 @@
 
 #include "vgi/catalog.h"
 #include "vgi/function.h"
+#include "vgi/table_function.h"
 
 namespace vgi {
 
@@ -34,6 +35,9 @@ public:
     void register_scalar(std::shared_ptr<ScalarFunction> fn);
     void register_scalar_in(std::string catalog, std::string schema,
                             std::shared_ptr<ScalarFunction> fn);
+    void register_table(std::shared_ptr<TableFunction> fn);
+    void register_table_in(std::string catalog, std::string schema,
+                           std::shared_ptr<TableFunction> fn);
 
     // Where a registered function is declared. Every registration has exactly
     // one; the default is the catalog's own name and `main`.
@@ -75,6 +79,8 @@ private:
     // carries.
     static std::string encode_function_info(const ScalarFunction& fn,
                                             const std::string& schema_name);
+    static std::string encode_table_function_info(const TableFunction& fn,
+                                                  const std::string& schema_name);
 
     // Every registration under `name`, in registration order.
     //
@@ -86,6 +92,10 @@ private:
     // The registrations declared in `schema`, in registration order.
     std::vector<std::shared_ptr<ScalarFunction>> scalars_in_schema(
         const std::string& schema) const;
+    std::vector<std::shared_ptr<TableFunction>> tables_in_schema(
+        const std::string& schema) const;
+    std::shared_ptr<TableFunction> find_table(const std::string& name,
+                                              const std::string& schema) const;
 
     // The overload of `name` that matches `params`, or a clear error.
     //
@@ -103,6 +113,10 @@ private:
     std::vector<Scope> scalar_scopes_;
     // name -> indices into scalars_, in registration order.
     std::unordered_map<std::string, std::vector<size_t>> scalar_by_name_;
+
+    std::vector<std::shared_ptr<TableFunction>> tables_;
+    std::vector<Scope> table_scopes_;
+    std::unordered_map<std::string, std::vector<size_t>> table_by_name_;
 };
 
 }  // namespace vgi

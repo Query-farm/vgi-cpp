@@ -79,7 +79,52 @@ private:
     ProcessParams params_;
 };
 
+// Drives a TableProducer: one output batch per tick until the scan is
+// exhausted, then finish().
+//
+// The engine ticks a producer stream with an empty batch and reads whatever
+// comes back, so "no more rows" has to be signalled explicitly — a producer
+// that simply stops emitting would hang the scan.
+class TableProduce : public vgi_rpc::ProducerState {
+public:
+    explicit TableProduce(std::unique_ptr<TableProducer> producer)
+        : producer_(std::move(producer)) {}
+
+    void produce(vgi_rpc::OutputCollector& out, vgi_rpc::CallContext&) override {
+        auto batch = producer_->next_batch();
+        if (!batch) {
+            out.finish();
+            return;
+        }
+        out.emit_batch(batch);
+    }
+
+private:
+    std::unique_ptr<TableProducer> producer_;
+};
+
 }  // namespace
+
+std::vector<std::shared_ptr<TableFunction>> Dispatcher::tables_in_schema(
+    const std::string& schema) const {
+    std::vector<std::shared_ptr<TableFunction>> found;
+    for (size_t i = 0; i < tables_.size(); ++i) {
+        if (table_scopes_[i].schema == schema) found.push_back(tables_[i]);
+    }
+    return found;
+}
+
+std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
+                                                      const std::string& schema) const {
+    auto it = table_by_name_.find(name);
+    if (it == table_by_name_.end()) return nullptr;
+    // Prefer the schema the call named; fall back to the first registration,
+    // since an unqualified call carries no schema to match on.
+    for (size_t index : it->second) {
+        if (schema.empty() || table_scopes_[index].schema == schema) return tables_[index];
+    }
+    return tables_[it->second.front()];
+}
 
 std::vector<std::shared_ptr<ScalarFunction>> Dispatcher::scalars_in_schema(
     const std::string& schema) const {
@@ -200,9 +245,19 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
 
     const auto function_name = wire::get_string(bind_call, "function_name");
     const auto params = read_bind_request(bind_call);
-    auto fn = resolve_scalar(function_name, params);
-    check_type_bounds(*fn, params);
-    auto output_schema = fn->bind(params);
+
+    // The engine does not say which registry a name lives in, so the worker
+    // decides. Tables are checked first: a name registered in both is a
+    // deliberate pairing (a COPY format's reader and writer share a name), and
+    // the scalar path cannot serve a scan.
+    std::shared_ptr<arrow::Schema> output_schema;
+    if (auto table = find_table(function_name, params.schema_name)) {
+        output_schema = table->bind(params);
+    } else {
+        auto fn = resolve_scalar(function_name, params);
+        check_type_bounds(*fn, params);
+        output_schema = fn->bind(params);
+    }
     if (!output_schema) {
         throw std::runtime_error("function '" + function_name + "' bound to no schema");
     }
@@ -228,7 +283,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     if (!bind_call) throw std::runtime_error("init: request carries no bind_call");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    auto fn = resolve_scalar(function_name, read_bind_request(bind_call));
+    const auto bind_params = read_bind_request(bind_call);
 
     // The engine sends back the schema bind settled on rather than making the
     // worker re-derive it, so a function whose bind is expensive pays once.
@@ -239,10 +294,9 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.output_schema = output_schema;
     // Constant arguments were evaluated at bind and ride along on every call,
     // which is why a const parameter never appears in the input batch.
-    params.arguments =
-        Arguments::parse(wire::get_optional_binary(bind_call, "arguments").value_or(""));
+    params.arguments = bind_params.arguments;
     params.catalog_name = catalog_.name;
-    params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
+    params.schema_name = bind_params.schema_name;
 
     auto header = wire::ResultBuilder(global_init_response_schema())
                       .set_binary("execution_id", next_execution_id())
@@ -250,14 +304,24 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
                       .set_null("opaque_data")
                       .finish();
 
+    vgi_rpc::Stream stream;
+    stream.output_schema = output_schema;
+    stream.header = std::move(header);
+
+    // A table function is a *producer* — it generates rows and reads none — so
+    // its stream has no input schema. A scalar function is an *exchange*: one
+    // output batch per input batch.
+    if (auto table = find_table(function_name, params.schema_name)) {
+        stream.input_schema = arrow::schema({});
+        stream.state = std::make_shared<TableProduce>(table->init(params));
+        return stream;
+    }
+
+    auto fn = resolve_scalar(function_name, bind_params);
     auto input_schema = wire::get_schema(bind_call, "input_schema");
     if (!input_schema) input_schema = arrow::schema({});
-
-    vgi_rpc::Stream stream;
-    stream.output_schema = std::move(output_schema);
     stream.input_schema = std::move(input_schema);
     stream.state = std::make_shared<ScalarExchange>(std::move(fn), std::move(params));
-    stream.header = std::move(header);
     return stream;
 }
 

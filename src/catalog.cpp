@@ -127,6 +127,33 @@ vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) 
                                       .finish());
 }
 
+std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
+                                                   const std::string& schema_name) {
+    const auto metadata = fn.metadata();
+    // A table function's output schema is settled at bind, so nothing useful
+    // can be advertised here; an empty schema is how that is spelled.
+    return wire::encode_ipc(
+        wire::ResultBuilder(gen::FunctionInfoSchema())
+            .set_string("name", fn.name())
+            .set_string("schema_name", schema_name)
+            .set_enum("function_type", enums::function_type::kTable)
+            .set_binary("arguments", wire::encode_schema(build_arg_schema(fn.argument_specs())))
+            .set_binary("output_schema", wire::encode_schema(arrow::schema({})))
+            .set_enum("stability", stability_wire_value(metadata.stability))
+            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
+                                           ? enums::null_handling::kSpecial
+                                           : enums::null_handling::kDefault)
+            .set_string("description", metadata.description)
+            .set_examples("examples", metadata.examples)
+            .set_string_list("categories", metadata.categories)
+            .set_string_map("tags", metadata.tags)
+            .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
+            .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
+            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
+            .fill_defaults()
+            .finish());
+}
+
 std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
                                              const std::string& schema_name) {
     const auto metadata = fn.metadata();
@@ -186,12 +213,17 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
     const auto filter = normalize_function_type(wire::get_enum(request.batch(), "type"));
 
     std::vector<std::string> items;
+    // Only what is declared in this schema. Advertising everything under every
+    // schema would make a two-schema collision look like one flat entry with
+    // two overloads, which is what the engine then reports.
     if (!filter || *filter == enums::function_type::kScalar) {
-        // Only what is declared in this schema. Advertising everything under
-        // every schema would make a two-schema collision look like one flat
-        // entry with two overloads, which is what the engine then reports.
         for (const auto& fn : scalars_in_schema(schema_name)) {
             items.push_back(encode_function_info(*fn, schema_name));
+        }
+    }
+    if (!filter || *filter == enums::function_type::kTable) {
+        for (const auto& fn : tables_in_schema(schema_name)) {
+            items.push_back(encode_table_function_info(*fn, schema_name));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_functions"))

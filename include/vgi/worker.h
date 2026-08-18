@@ -9,6 +9,7 @@
 
 #include "vgi/catalog.h"
 #include "vgi/function.h"
+#include "vgi/table_function.h"
 
 namespace vgi {
 
@@ -41,6 +42,10 @@ public:
     // it if the catalog does not list it.
     void register_scalar_in(std::string catalog, std::string schema,
                             std::shared_ptr<ScalarFunction> fn);
+
+    void register_table(std::shared_ptr<TableFunction> fn);
+    void register_table_in(std::string catalog, std::string schema,
+                           std::shared_ptr<TableFunction> fn);
 
     // Serve, selecting the transport from argv.  Never returns.
     [[noreturn]] void run(int argc, char** argv);

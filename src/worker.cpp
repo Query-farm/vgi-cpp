@@ -43,6 +43,15 @@ void Worker::register_scalar_in(std::string catalog, std::string schema,
     disp_->register_scalar_in(std::move(catalog), std::move(schema), std::move(fn));
 }
 
+void Worker::register_table(std::shared_ptr<TableFunction> fn) {
+    disp_->register_table(std::move(fn));
+}
+
+void Worker::register_table_in(std::string catalog, std::string schema,
+                               std::shared_ptr<TableFunction> fn) {
+    disp_->register_table_in(std::move(catalog), std::move(schema), std::move(fn));
+}
+
 void Worker::run(int argc, char** argv) {
     // Arrow's compute kernels register themselves from a translation unit
     // nothing here references, so linking statically drops it and `add`,
