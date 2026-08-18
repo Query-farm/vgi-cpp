@@ -11,10 +11,11 @@ of the [Rust](https://github.com/Query-farm/vgi-rust) and
 [Python](https://github.com/Query-farm/vgi-python) SDKs, and is built on the
 C++ [vgi-rpc](https://github.com/Query-farm/vgi-rpc-cpp) port.
 
-> **Status: early.** The build, the generated protocol layer, and the SDK's
-> public shape exist, and a worker built with it answers `__describe__` as
-> protocol `vgi` 1.3.0. No VGI method is implemented yet, so it cannot yet be
-> attached from DuckDB. See [`docs/roadmap.md`](docs/roadmap.md).
+The example worker passes the VGI integration suite in
+[`vgi`](https://github.com/Query-farm/vgi) over the subprocess transport. What
+is and is not implemented is written down in
+[`docs/roadmap.md`](docs/roadmap.md), and the suite — not that file — is the
+specification.
 
 ## Build
 
@@ -55,7 +56,22 @@ int main(int argc, char** argv) {
 }
 ```
 
-`example-worker/` is the full fixture set the integration suite runs against.
+`example-worker/` is the full fixture set the integration suite runs against —
+several hundred functions across every shape the protocol has, and the best
+place to look for how any one of them is meant to behave.
+
+## Running the suite
+
+```bash
+scripts/run_tests.sh                 # the whole in-scope suite
+scripts/run_tests.sh scalar          # one category
+scripts/run_tests.sh test/sql/integration/scalar/upper_case.test
+```
+
+It drives `~/Development/vgi`'s `unittest` binary against the release worker.
+`VGI_EXT` points at the extension checkout, `VGI_CPP_BUILD` at the build
+directory, and `VGI_CPP_TEST_CACHE` at a scratch directory — the last matters
+when two runs go at once, since they would otherwise share one log.
 
 ## Licence
 

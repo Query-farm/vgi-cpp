@@ -114,21 +114,11 @@ suite twice to read it.
 
 ## Status
 
-**125 of 309 integration test cases, 4,069 of 4,253 assertions.** Run
-`./scripts/run_tests.sh` for the current figure — it is the only number that
-means anything here.
-
-Implemented in the SDK: scalar / table / table-in-out / aggregate / buffering
-functions, catalogs with tables and views, per-schema registration and
-overload resolution, cross-process storage, result-cache advertisements,
-settings, secrets, and parallel scans.
-
-Not yet: filter and projection pushdown as a *declared* capability, COPY
-from/to, time travel, multi-branch scans, partitioning, batch indexes, late
-materialization, and the HTTP transport's stream-continuation path. Most of
-the remaining failures are unwritten fixtures rather than missing SDK
-capability — `grep 'does not exist' /tmp/vgi-cpp-test-cache/run.log` lists them
-by name.
+**The whole in-scope suite passes**: 273 test cases, 10,763 assertions, with
+36 skipped for want of environment the harness does not set (HTTP transport,
+Iceberg, the companion and writable fixture workers). Run
+`./scripts/run_tests.sh` for the current figure — it is the only number that means anything here.
+`docs/roadmap.md` lists what is and is not implemented.
 
 ## Things worth knowing before changing anything
 
@@ -150,3 +140,21 @@ Each of these cost real debugging time, and none is guessable from the code:
   shared by every worker of the uid.
 - **Buffering functions are advertised under the `table` filter.** The engine
   never asks for `table_buffering`.
+- **A cardinality of -1 is an answer, not an absence.** The engine reads the
+  field as optional, takes the -1, skips `table_function_cardinality`, and
+  clamps the estimate to one row. Send null.
+- **`attach_opaque_data` is the only thing most catalog calls carry that says
+  which attachment they belong to.** This SDK seals the catalog, the resolved
+  data version, a per-ATTACH id and the merged ATTACH options into it. One
+  binary serves several catalogs, and two of them may declare the same
+  function in the same schema.
+- **An exchange tick must answer with exactly one data batch**, even a
+  zero-row one. A tick that emits nothing leaves the caller waiting on a reply
+  that never comes, and the query hangs rather than failing.
+- **Conditional-request validators ride the first *tick*, not the init.** A
+  producer that overrides `produce` never sees them.
+- **The engine scans the two macro kinds in separate calls.** Answering both
+  with every macro registers each of them twice.
+- **A worker pool hands out a different process per RPC**, so aggregate group
+  state, buffering state and per-attachment state all belong in
+  `FunctionStorage`, not in a member.
