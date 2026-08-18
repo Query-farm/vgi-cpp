@@ -41,6 +41,10 @@ add_library(vgi
     src/worker.cpp
     src/dispatcher.cpp
     src/function.cpp
+    src/methods.cpp
+    src/wire.cpp
+    src/catalog.cpp
+    src/arg_schema.cpp
 )
 add_library(vgi::vgi ALIAS vgi)
 

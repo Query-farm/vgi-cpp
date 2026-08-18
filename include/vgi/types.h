@@ -31,6 +31,11 @@ struct ArgSpec {
     // bind(); a column argument arrives per batch in process().
     bool constant = false;
     bool required = true;
+    bool varargs = false;
+    // Set to declare a concrete Arrow type directly, bypassing `type`. Needed
+    // when two overloads differ only by width (int32 vs int64) — the VGI type
+    // names are coarser than Arrow's and would collapse them.
+    std::shared_ptr<arrow::DataType> arrow_type;
 
     static ArgSpec column(std::string name, int index, std::string type,
                           std::string description = "");

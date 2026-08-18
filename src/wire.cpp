@@ -1,0 +1,317 @@
+// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
+// SPDX-License-Identifier: Apache-2.0
+
+#include "wire.h"
+
+#include <sstream>
+#include <stdexcept>
+
+#include <arrow/array.h>
+#include <arrow/array/builder_binary.h>
+#include <arrow/array/builder_nested.h>
+#include <arrow/array/builder_primitive.h>
+#include <arrow/array/builder_dict.h>
+#include <arrow/io/memory.h>
+#include <arrow/ipc/reader.h>
+#include <arrow/ipc/writer.h>
+#include <arrow/result.h>
+#include <arrow/status.h>
+
+namespace vgi::wire {
+namespace {
+
+[[noreturn]] void fail(const std::string& what) { throw std::runtime_error(what); }
+
+template <typename T>
+T unwrap(arrow::Result<T> result, const std::string& context) {
+    if (!result.ok()) fail(context + ": " + result.status().ToString());
+    return std::move(result).ValueUnsafe();
+}
+
+void check_ok(const arrow::Status& status, const std::string& context) {
+    if (!status.ok()) fail(context + ": " + status.ToString());
+}
+
+// Every accessor needs the same three checks, and getting one of them wrong is
+// a segfault rather than an exception, so they live in one place.
+template <typename ArrayType>
+std::shared_ptr<ArrayType> typed_column(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                        const std::string& field,
+                                        const char* expected) {
+    auto arr = column(batch, field);
+    auto typed = std::dynamic_pointer_cast<ArrayType>(arr);
+    if (!typed) {
+        fail("param '" + field + "' is " + arr->type()->ToString() + ", expected " + expected);
+    }
+    if (typed->length() < 1) fail("param '" + field + "' batch has no rows");
+    return typed;
+}
+
+}  // namespace
+
+std::shared_ptr<arrow::Array> column(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                     const std::string& field) {
+    if (!batch) fail("param '" + field + "' requested from a null params batch");
+    auto arr = batch->GetColumnByName(field);
+    if (!arr) {
+        std::ostringstream have;
+        for (int i = 0; i < batch->num_columns(); ++i) {
+            if (i) have << ", ";
+            have << batch->schema()->field(i)->name();
+        }
+        fail("no param '" + field + "'; params carry [" + have.str() + "]");
+    }
+    return arr;
+}
+
+std::string get_string(const std::shared_ptr<arrow::RecordBatch>& batch,
+                       const std::string& field) {
+    auto arr = typed_column<arrow::StringArray>(batch, field, "string");
+    if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
+    return arr->GetString(0);
+}
+
+std::optional<std::string> get_optional_string(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    auto arr = typed_column<arrow::StringArray>(batch, field, "string");
+    if (arr->IsNull(0)) return std::nullopt;
+    return arr->GetString(0);
+}
+
+std::string get_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
+                       const std::string& field) {
+    auto arr = typed_column<arrow::BinaryArray>(batch, field, "binary");
+    if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
+    return arr->GetString(0);
+}
+
+std::optional<std::string> get_optional_binary(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    auto arr = typed_column<arrow::BinaryArray>(batch, field, "binary");
+    if (arr->IsNull(0)) return std::nullopt;
+    return arr->GetString(0);
+}
+
+bool get_bool(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    auto arr = typed_column<arrow::BooleanArray>(batch, field, "boolean");
+    if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
+    return arr->Value(0);
+}
+
+int64_t get_int64(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    auto arr = typed_column<arrow::Int64Array>(batch, field, "int64");
+    if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
+    return arr->Value(0);
+}
+
+std::optional<int64_t> get_optional_int64(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                          const std::string& field) {
+    auto arr = typed_column<arrow::Int64Array>(batch, field, "int64");
+    if (arr->IsNull(0)) return std::nullopt;
+    return arr->Value(0);
+}
+
+std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
+                     const std::string& field) {
+    auto arr = typed_column<arrow::DictionaryArray>(batch, field, "dictionary");
+    if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
+    auto values = std::dynamic_pointer_cast<arrow::StringArray>(arr->dictionary());
+    if (!values) fail("param '" + field + "' is a dictionary of non-strings");
+    const auto* indices = dynamic_cast<const arrow::Int16Array*>(arr->indices().get());
+    if (!indices) fail("param '" + field + "' has non-int16 dictionary indices");
+    return values->GetString(indices->Value(0));
+}
+
+std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes) {
+    if (bytes.empty()) return nullptr;
+    auto buffer = arrow::Buffer::FromString(bytes);
+    auto source = std::make_shared<arrow::io::BufferReader>(buffer);
+    auto reader = unwrap(arrow::ipc::RecordBatchStreamReader::Open(source),
+                         "reading an embedded IPC value");
+    std::shared_ptr<arrow::RecordBatch> batch;
+    check_ok(reader->ReadNext(&batch), "reading an embedded IPC batch");
+    // A schema with no batches is how an absent optional dataclass travels;
+    // that is a legitimate value, not a truncated stream.
+    return batch;
+}
+
+std::shared_ptr<arrow::RecordBatch> get_ipc(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    auto bytes = get_optional_binary(batch, field);
+    if (!bytes) return nullptr;
+    return decode_ipc(*bytes);
+}
+
+std::string encode_ipc(const std::shared_ptr<arrow::RecordBatch>& batch) {
+    auto sink = unwrap(arrow::io::BufferOutputStream::Create(), "allocating an IPC sink");
+    auto writer = unwrap(arrow::ipc::MakeStreamWriter(sink, batch->schema()),
+                         "opening an IPC writer");
+    check_ok(writer->WriteRecordBatch(*batch), "writing an embedded IPC batch");
+    check_ok(writer->Close(), "closing an embedded IPC stream");
+    auto buffer = unwrap(sink->Finish(), "finishing an IPC sink");
+    return buffer->ToString();
+}
+
+std::string encode_schema(const std::shared_ptr<arrow::Schema>& schema) {
+    auto sink = unwrap(arrow::io::BufferOutputStream::Create(), "allocating a schema sink");
+    auto writer = unwrap(arrow::ipc::MakeStreamWriter(sink, schema), "opening a schema writer");
+    check_ok(writer->Close(), "closing a schema-only IPC stream");
+    auto buffer = unwrap(sink->Finish(), "finishing a schema sink");
+    return buffer->ToString();
+}
+
+ResultBuilder::ResultBuilder(std::shared_ptr<arrow::Schema> schema)
+    : schema_(std::move(schema)), arrays_(static_cast<size_t>(schema_->num_fields())) {}
+
+int ResultBuilder::field_index(const std::string& field) const {
+    int index = schema_->GetFieldIndex(field);
+    if (index < 0) fail("result schema has no field '" + field + "'");
+    return index;
+}
+
+ResultBuilder& ResultBuilder::set_string(const std::string& field, const std::string& value) {
+    arrow::StringBuilder b;
+    check_ok(b.Append(value), "building result field '" + field + "'");
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(b.Finish(), "finishing result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_binary(const std::string& field, const std::string& value) {
+    arrow::BinaryBuilder b;
+    check_ok(b.Append(value), "building result field '" + field + "'");
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(b.Finish(), "finishing result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_bool(const std::string& field, bool value) {
+    arrow::BooleanBuilder b;
+    check_ok(b.Append(value), "building result field '" + field + "'");
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(b.Finish(), "finishing result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_int64(const std::string& field, int64_t value) {
+    arrow::Int64Builder b;
+    check_ok(b.Append(value), "building result field '" + field + "'");
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(b.Finish(), "finishing result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_null(const std::string& field) {
+    const int index = field_index(field);
+    const auto& type = schema_->field(index)->type();
+    std::unique_ptr<arrow::ArrayBuilder> builder;
+    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), type, &builder),
+             "building null result field '" + field + "'");
+    check_ok(builder->AppendNull(), "appending null to result field '" + field + "'");
+    arrays_[static_cast<size_t>(index)] =
+        unwrap(builder->Finish(), "finishing result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_binary_list(const std::string& field,
+                                              const std::vector<std::string>& values) {
+    auto values_builder = std::make_shared<arrow::BinaryBuilder>();
+    arrow::ListBuilder b(arrow::default_memory_pool(), values_builder);
+    check_ok(b.Append(), "opening list result field '" + field + "'");
+    for (const auto& v : values) {
+        check_ok(values_builder->Append(v), "appending to list result field '" + field + "'");
+    }
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(b.Finish(), "finishing list result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_string_map(
+    const std::string& field,
+    const std::vector<std::pair<std::string, std::string>>& entries) {
+    auto key_builder = std::make_shared<arrow::StringBuilder>();
+    auto item_builder = std::make_shared<arrow::StringBuilder>();
+    arrow::MapBuilder b(arrow::default_memory_pool(), key_builder, item_builder);
+    check_ok(b.Append(), "opening map result field '" + field + "'");
+    for (const auto& [key, value] : entries) {
+        check_ok(key_builder->Append(key), "appending map key to '" + field + "'");
+        check_ok(item_builder->Append(value), "appending map value to '" + field + "'");
+    }
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(b.Finish(), "finishing map result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_enum(const std::string& field, const std::string& value) {
+    const int index = field_index(field);
+    const auto& type = schema_->field(index)->type();
+    const auto* dict_type = dynamic_cast<const arrow::DictionaryType*>(type.get());
+    if (!dict_type) {
+        fail("result field '" + field + "' is " + type->ToString() + ", not a dictionary");
+    }
+    arrow::StringBuilder values;
+    check_ok(values.Append(value), "building enum field '" + field + "'");
+    auto dictionary = unwrap(values.Finish(), "finishing enum field '" + field + "'");
+
+    // One value, so index 0 always; the dictionary carries exactly the string
+    // this row uses rather than a shared vocabulary.
+    arrow::Int16Builder indices;
+    check_ok(indices.Append(0), "building enum index for '" + field + "'");
+    auto index_array = unwrap(indices.Finish(), "finishing enum index for '" + field + "'");
+
+    arrays_[static_cast<size_t>(index)] = unwrap(
+        arrow::DictionaryArray::FromArrays(type, index_array, dictionary),
+        "assembling enum field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::fill_defaults() {
+    for (int i = 0; i < schema_->num_fields(); ++i) {
+        if (arrays_[static_cast<size_t>(i)]) continue;
+        const auto& field = schema_->field(i);
+        const auto& type = field->type();
+        if (field->nullable()) {
+            set_null(field->name());
+            continue;
+        }
+        // A non-nullable field still needs a value, and the empty one is what
+        // the canonical dataclasses default to.
+        switch (type->id()) {
+            case arrow::Type::STRING:  set_string(field->name(), ""); break;
+            case arrow::Type::BINARY:  set_binary(field->name(), ""); break;
+            case arrow::Type::BOOL:    set_bool(field->name(), false); break;
+            case arrow::Type::INT64:   set_int64(field->name(), 0); break;
+            case arrow::Type::MAP:     set_string_map(field->name(), {}); break;
+            default: {
+                std::unique_ptr<arrow::ArrayBuilder> builder;
+                check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), type, &builder),
+                         "building default for '" + field->name() + "'");
+                // Lists and structs default to one empty element, not to null:
+                // the field is non-nullable, so null is not available.
+                if (auto* list = dynamic_cast<arrow::ListBuilder*>(builder.get())) {
+                    check_ok(list->Append(), "opening default list '" + field->name() + "'");
+                } else {
+                    check_ok(builder->AppendEmptyValue(),
+                             "appending default for '" + field->name() + "'");
+                }
+                arrays_[static_cast<size_t>(i)] =
+                    unwrap(builder->Finish(), "finishing default for '" + field->name() + "'");
+            }
+        }
+    }
+    return *this;
+}
+
+std::shared_ptr<arrow::RecordBatch> ResultBuilder::finish() {
+    for (size_t i = 0; i < arrays_.size(); ++i) {
+        if (!arrays_[i]) {
+            // Defaulting to null here would produce a batch the engine accepts
+            // and then misreads; naming the field is far cheaper.
+            fail("result field '" + schema_->field(static_cast<int>(i))->name() +
+                 "' was never set");
+        }
+    }
+    return arrow::RecordBatch::Make(schema_, 1, arrays_);
+}
+
+}  // namespace vgi::wire
