@@ -4,6 +4,8 @@
 // Table-buffering fixtures: sink the whole relation, then produce.
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <memory>
 #include <string>
 #include <vector>
@@ -82,7 +84,7 @@ class BufferInput : public vgi::TableBufferingFunction {
 public:
     // `failure` names the phase that should raise, for the fixtures that test
     // how the engine recovers from a worker error mid-COPY or mid-aggregation.
-    enum class Failure { None, Combine, Finalize, Process };
+    enum class Failure { None, Combine, Finalize, Process, Hang };
 
     // `by_batch_index` asks the engine to stamp each input chunk with its
     // source index, and reassembles the input's order from it in combine.
@@ -118,6 +120,11 @@ public:
                         const std::shared_ptr<arrow::RecordBatch>& batch) override {
         if (failure_ == Failure::Process) {
             throw std::invalid_argument("Intentional exception during process()");
+        }
+        if (failure_ == Failure::Hang) {
+            // Slept in short spans rather than one long one so the process
+            // still answers a signal promptly.
+            for (;;) std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         if (batch && batch->num_rows() > 0) {
             if (by_batch_index_) {
@@ -218,6 +225,10 @@ void register_buffering(vgi::Worker& worker) {
     worker.register_buffering(std::make_shared<BufferInput>(
         "batch_index_buffer_input", BufferInput::Failure::None, /*by_batch_index=*/true));
     worker.register_buffering(std::make_shared<BufferInput>("slow_cancellable_buffering"));
+    // Never returns from process(), so a client can only get out of it by
+    // cancelling — which is the whole fixture.
+    worker.register_buffering(
+        std::make_shared<BufferInput>("hang_on_process", BufferInput::Failure::Hang));
 
     // Failure fixtures: each raises in one phase, so the tests can check that
     // the pool recovers rather than wedging — a later query must still work.

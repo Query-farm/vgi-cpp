@@ -83,7 +83,9 @@ int main(int argc, char** argv) {
     example::register_accumulate(worker);
     example::register_cached_scalars(worker);
     example::register_projection_repro(worker);
+    example::register_transaction_storage(worker);
     example::declare_catalog(worker);
+    example::register_extra_catalogs(worker);
 
     // Serves until the engine disconnects; does not return.
     worker.run(argc, argv);

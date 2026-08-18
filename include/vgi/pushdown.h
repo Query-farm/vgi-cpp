@@ -93,6 +93,14 @@ public:
     std::shared_ptr<arrow::RecordBatch> apply(
         const std::shared_ptr<arrow::RecordBatch>& batch) const;
 
+    // The filters as the reference implementations' `repr`, `(none)` when
+    // there are none: `PushdownFilters([ConstantFilter(n < 5000)])`.
+    //
+    // Separate from `format`, which renders the predicate as SQL. This one
+    // names the filter *kinds*, which is what a diagnostic fixture asserts on
+    // when what it is checking is which shape the engine pushed.
+    std::string format_repr() const;
+
     // The filters as SQL-ish text, `(none)` when there are none.
     //
     // For diagnostics and for fixtures that report what they were told. The

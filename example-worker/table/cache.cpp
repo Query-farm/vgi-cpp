@@ -710,6 +710,9 @@ void register_cache(vgi::Worker& worker) {
     worker.register_table(std::make_shared<CacheProjection>());
     worker.register_table(std::make_shared<CacheParallel>());
     worker.register_table(std::make_shared<MultiCol>());
+    // Backs `ex.data.cache_multicol` and nothing else, so it is not part of
+    // the function surface the suite counts.
+    worker.hide_function("cache_multicol");
     worker.register_table(std::make_shared<CacheBig>());
     worker.register_table(std::make_shared<CacheRevalidatable>());
     worker.register_table(std::make_shared<CachedNumbers>(

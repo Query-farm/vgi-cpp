@@ -106,14 +106,15 @@ vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request) {
 
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
-    auto fn = require_aggregate(function_name, schema_name);
+    const Scope scope{attachment_of(dto).catalog, schema_name};
+    auto fn = require_aggregate(function_name, scope);
 
     BindParams params;
     params.input_schema = wire::get_schema(dto, "input_schema");
     params.arguments = Arguments::parse(wire::get_optional_binary(dto, "arguments").value_or(""));
     params.settings = Settings::parse(wire::get_optional_binary(dto, "settings").value_or(""));
     params.secrets = Secrets::parse(wire::get_optional_binary(dto, "secrets").value_or(""));
-    params.catalog_name = catalog_.name;
+    params.catalog_name = scope.catalog;
     params.schema_name = schema_name;
 
     auto output_schema = fn->bind(params);
@@ -146,8 +147,9 @@ vgi_rpc::Result Dispatcher::aggregate_update(const vgi_rpc::Request& request) {
 
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
+    const Scope scope{attachment_of(dto).catalog, schema_name};
     const auto execution_id = wire::get_binary(dto, "execution_id");
-    auto fn = require_aggregate(function_name, schema_name);
+    auto fn = require_aggregate(function_name, scope);
 
     auto batch = wire::decode_ipc(wire::get_binary(dto, "input_batch"));
     if (!batch) return empty_envelope();
@@ -178,8 +180,9 @@ vgi_rpc::Result Dispatcher::aggregate_combine(const vgi_rpc::Request& request) {
 
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
+    const Scope scope{attachment_of(dto).catalog, schema_name};
     const auto execution_id = wire::get_binary(dto, "execution_id");
-    auto fn = require_aggregate(function_name, schema_name);
+    auto fn = require_aggregate(function_name, scope);
 
     auto batch = wire::decode_ipc(wire::get_binary(dto, "merge_batch"));
     if (!batch) return empty_envelope();
@@ -209,8 +212,9 @@ vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request) 
 
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
+    const Scope scope{attachment_of(dto).catalog, schema_name};
     const auto execution_id = wire::get_binary(dto, "execution_id");
-    auto fn = require_aggregate(function_name, schema_name);
+    auto fn = require_aggregate(function_name, scope);
 
     auto output_schema = wire::get_schema(dto, "output_schema");
     if (!output_schema) throw std::runtime_error("aggregate_finalize: no output_schema");
@@ -255,7 +259,8 @@ vgi_rpc::Result Dispatcher::aggregate_streaming_open(const vgi_rpc::Request& req
 
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
-    (void)require_aggregate(function_name, schema_name);
+    const Scope scope{attachment_of(dto).catalog, schema_name};
+    (void)require_aggregate(function_name, scope);
 
     // The session's shape is fixed at open and echoed on every chunk, which
     // carries none of it — so it is stashed, like every other cross-call
@@ -284,8 +289,9 @@ vgi_rpc::Result Dispatcher::aggregate_streaming_chunk(const vgi_rpc::Request& re
 
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
+    const Scope scope{attachment_of(dto).catalog, schema_name};
     const auto execution_id = wire::get_binary(dto, "execution_id");
-    auto fn = require_aggregate(function_name, schema_name);
+    auto fn = require_aggregate(function_name, scope);
 
     auto* store = default_storage().get();
     const auto count = [&](const char* key) -> size_t {
@@ -418,9 +424,10 @@ vgi_rpc::Result Dispatcher::window_result(const std::shared_ptr<arrow::RecordBat
                                           bool batched) {
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
+    const Scope scope{attachment_of(dto).catalog, schema_name};
     const auto execution_id = wire::get_binary(dto, "execution_id");
     const auto partition_id = wire::get_int64(dto, "partition_id");
-    auto fn = require_aggregate(function_name, schema_name);
+    auto fn = require_aggregate(function_name, scope);
 
     auto* store = default_storage().get();
     auto stored = store->kv_get(execution_id, partition_key(partition_id));

@@ -98,6 +98,9 @@ constexpr const char* kParentRow = "vgi_rpc.parent_row#b64";
 // answer it would like revalidated instead of recomputed.
 constexpr const char* kIfNoneMatch = "vgi.cache.if_none_match";
 constexpr const char* kIfModifiedSince = "vgi.cache.if_modified_since";
+// Filters the engine only learned after the scan began — a join's build side,
+// a Top-N threshold — base64 of the same IPC blob the init request carries.
+constexpr const char* kDynamicFilters = "vgi_pushdown_filters";
 }  // namespace keys
 
 std::optional<std::string> metadata_value(
@@ -287,6 +290,16 @@ public:
             if (auto since = metadata_value(input.custom_metadata, keys::kIfModifiedSince)) {
                 if_modified_since_ = std::move(since);
             }
+        }
+        // Re-read every tick, not only the first: the engine re-sends them as
+        // the join's build side fills in, and the last one is the tightest.
+        if (auto encoded = metadata_value(input.custom_metadata, keys::kDynamicFilters)) {
+            auto decoded = arrow::util::base64_decode(*encoded);
+            auto dynamic = PushdownFilters::parse(decoded);
+            if (producer_) producer_->on_dynamic_filters(dynamic);
+            // Applied as well, for the same reason the init-time filters are:
+            // a function that only advertises the capability gets it for free.
+            if (!filters_.empty()) filters_ = std::move(dynamic);
         }
         produce(out, context);
     }
@@ -504,97 +517,104 @@ private:
 
 }  // namespace
 
+// A registration belongs to a scope when both halves match. An empty schema
+// means "any", which is how a call that names no schema still resolves; the
+// catalog is never optional, because two catalogs may declare the same name in
+// the same schema and only the attachment distinguishes them.
+namespace {
+
+bool in_scope(const Dispatcher::Scope& declared, const Dispatcher::Scope& wanted) {
+    if (declared.catalog != wanted.catalog) return false;
+    return wanted.schema.empty() || declared.schema == wanted.schema;
+}
+
+}  // namespace
+
 std::vector<std::shared_ptr<TableBufferingFunction>> Dispatcher::bufferings_in_schema(
-    const std::string& schema) const {
+    const Scope& scope) const {
     std::vector<std::shared_ptr<TableBufferingFunction>> found;
     for (size_t i = 0; i < bufferings_.size(); ++i) {
-        if (buffering_scopes_[i].schema == schema) found.push_back(bufferings_[i]);
+        if (in_scope(buffering_scopes_[i], scope)) found.push_back(bufferings_[i]);
     }
     return found;
 }
 
-std::shared_ptr<TableBufferingFunction> Dispatcher::find_buffering(
-    const std::string& name, const std::string& schema) const {
+std::shared_ptr<TableBufferingFunction> Dispatcher::find_buffering(const std::string& name,
+                                                                   const Scope& scope) const {
     auto it = buffering_by_name_.find(name);
     if (it == buffering_by_name_.end()) return nullptr;
     for (size_t index : it->second) {
-        if (schema.empty() || buffering_scopes_[index].schema == schema) {
-            return bufferings_[index];
-        }
+        if (in_scope(buffering_scopes_[index], scope)) return bufferings_[index];
     }
     // No cross-schema fallback — see find_table.
     return nullptr;
 }
 
-std::shared_ptr<TableBufferingFunction> Dispatcher::require_buffering(
-    const std::string& name, const std::string& schema) const {
-    if (auto fn = find_buffering(name, schema)) return fn;
+std::shared_ptr<TableBufferingFunction> Dispatcher::require_buffering(const std::string& name,
+                                                                      const Scope& scope) const {
+    if (auto fn = find_buffering(name, scope)) return fn;
     throw std::invalid_argument("no buffering function named '" + name + "'");
 }
 
 std::vector<std::shared_ptr<AggregateFunction>> Dispatcher::aggregates_in_schema(
-    const std::string& schema) const {
+    const Scope& scope) const {
     std::vector<std::shared_ptr<AggregateFunction>> found;
     for (size_t i = 0; i < aggregates_.size(); ++i) {
-        if (aggregate_scopes_[i].schema == schema) found.push_back(aggregates_[i]);
+        if (in_scope(aggregate_scopes_[i], scope)) found.push_back(aggregates_[i]);
     }
     return found;
 }
 
-std::shared_ptr<AggregateFunction> Dispatcher::require_aggregate(
-    const std::string& name, const std::string& schema) const {
+std::shared_ptr<AggregateFunction> Dispatcher::require_aggregate(const std::string& name,
+                                                                 const Scope& scope) const {
     auto it = aggregate_by_name_.find(name);
     if (it != aggregate_by_name_.end()) {
         for (size_t index : it->second) {
-            if (schema.empty() || aggregate_scopes_[index].schema == schema) {
-                return aggregates_[index];
-            }
+            if (in_scope(aggregate_scopes_[index], scope)) return aggregates_[index];
         }
     }
     // Naming the schema, because "no aggregate named x" when x exists in
     // another schema sends the reader looking in the wrong place.
     throw std::invalid_argument("no aggregate function named '" + name + "' in schema '" +
-                                schema + "'");
+                                scope.schema + "'");
 }
 
 std::vector<std::shared_ptr<TableInOutFunction>> Dispatcher::table_in_outs_in_schema(
-    const std::string& schema) const {
+    const Scope& scope) const {
     std::vector<std::shared_ptr<TableInOutFunction>> found;
     for (size_t i = 0; i < table_in_outs_.size(); ++i) {
-        if (table_in_out_scopes_[i].schema == schema) found.push_back(table_in_outs_[i]);
+        if (in_scope(table_in_out_scopes_[i], scope)) found.push_back(table_in_outs_[i]);
     }
     return found;
 }
 
-std::shared_ptr<TableInOutFunction> Dispatcher::find_table_in_out(
-    const std::string& name, const std::string& schema) const {
+std::shared_ptr<TableInOutFunction> Dispatcher::find_table_in_out(const std::string& name,
+                                                                  const Scope& scope) const {
     auto it = table_in_out_by_name_.find(name);
     if (it == table_in_out_by_name_.end()) return nullptr;
     for (size_t index : it->second) {
-        if (schema.empty() || table_in_out_scopes_[index].schema == schema) {
-            return table_in_outs_[index];
-        }
+        if (in_scope(table_in_out_scopes_[index], scope)) return table_in_outs_[index];
     }
     // No cross-schema fallback — see find_table.
     return nullptr;
 }
 
 std::vector<std::shared_ptr<TableFunction>> Dispatcher::tables_in_schema(
-    const std::string& schema) const {
+    const Scope& scope) const {
     std::vector<std::shared_ptr<TableFunction>> found;
     for (size_t i = 0; i < tables_.size(); ++i) {
-        if (table_scopes_[i].schema == schema) found.push_back(tables_[i]);
+        if (in_scope(table_scopes_[i], scope)) found.push_back(tables_[i]);
     }
     return found;
 }
 
 std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
-                                                      const std::string& schema) const {
-    return find_table(name, schema, nullptr);
+                                                      const Scope& scope) const {
+    return find_table(name, scope, nullptr);
 }
 
 std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
-                                                      const std::string& schema,
+                                                      const Scope& scope,
                                                       const BindParams* params) const {
     auto it = table_by_name_.find(name);
     if (it == table_by_name_.end()) return nullptr;
@@ -609,9 +629,7 @@ std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
     // written for.
     std::vector<std::shared_ptr<TableFunction>> candidates;
     for (size_t index : it->second) {
-        if (schema.empty() || table_scopes_[index].schema == schema) {
-            candidates.push_back(tables_[index]);
-        }
+        if (in_scope(table_scopes_[index], scope)) candidates.push_back(tables_[index]);
     }
     if (candidates.empty()) return nullptr;
     if (candidates.size() == 1 || !params) return candidates.front();
@@ -634,45 +652,31 @@ std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
 }
 
 std::vector<std::shared_ptr<ScalarFunction>> Dispatcher::scalars_in_schema(
-    const std::string& schema) const {
+    const Scope& scope) const {
     std::vector<std::shared_ptr<ScalarFunction>> found;
     for (size_t i = 0; i < scalars_.size(); ++i) {
-        if (scalar_scopes_[i].schema == schema) found.push_back(scalars_[i]);
+        if (in_scope(scalar_scopes_[i], scope)) found.push_back(scalars_[i]);
     }
     return found;
 }
 
-std::vector<std::shared_ptr<ScalarFunction>> Dispatcher::scalars_named(
-    const std::string& name) const {
+std::vector<std::shared_ptr<ScalarFunction>> Dispatcher::scalars_named(const std::string& name,
+                                                                       const Scope& scope) const {
     std::vector<std::shared_ptr<ScalarFunction>> found;
     auto it = scalar_by_name_.find(name);
     if (it == scalar_by_name_.end()) return found;
     found.reserve(it->second.size());
-    for (size_t index : it->second) found.push_back(scalars_[index]);
+    for (size_t index : it->second) {
+        if (in_scope(scalar_scopes_[index], scope)) found.push_back(scalars_[index]);
+    }
     return found;
 }
 
 std::shared_ptr<ScalarFunction> Dispatcher::resolve_scalar(const std::string& name,
                                                            const BindParams& params) const {
-    auto candidates = scalars_named(name);
+    auto candidates = scalars_named(name, scope_of(params));
     if (candidates.empty()) {
         throw std::invalid_argument("no scalar function named '" + name + "'");
-    }
-
-    // Narrow to the schema the call named before considering types. Two
-    // schemas may declare the same name with different implementations, and
-    // routing a schema-qualified call to the wrong one is silently plausible —
-    // the fixtures tag their output with their schema precisely so a
-    // mis-routed call is visible in the result.
-    if (!params.schema_name.empty()) {
-        std::vector<std::shared_ptr<ScalarFunction>> in_schema;
-        auto it = scalar_by_name_.find(name);
-        for (size_t index : it->second) {
-            if (scalar_scopes_[index].schema == params.schema_name) {
-                in_schema.push_back(scalars_[index]);
-            }
-        }
-        if (!in_schema.empty()) candidates = std::move(in_schema);
     }
 
     if (candidates.size() == 1) return candidates.front();
@@ -758,6 +762,17 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
     }
 }
 
+// The (catalog, schema) a bind or a call belongs to. Both halves are needed:
+// two catalogs may declare the same function in the same schema, and only the
+// attachment says which one this call meant.
+Dispatcher::Scope Dispatcher::scope_of(const BindParams& params) {
+    return {params.catalog_name, params.schema_name};
+}
+
+Dispatcher::Scope Dispatcher::scope_of(const ProcessParams& params) {
+    return {params.catalog_name, params.schema_name};
+}
+
 // The secrets `name` declares, whichever registry it lives in.
 //
 // Answered only on the *first* bind: once the engine has resolved them it sets
@@ -765,7 +780,7 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
 std::vector<SecretLookup> Dispatcher::required_secrets_of(const std::string& name,
                                                           const BindParams& params) const {
     if (params.secrets_resolved) return {};
-    if (auto fn = find_buffering(name, params.schema_name)) {
+    if (auto fn = find_buffering(name, scope_of(params))) {
         // A COPY writer scopes its lookup to the destination path, which only
         // the bind params carry — so ask it rather than reading a static list.
         for (const auto& writer : copy_to_) {
@@ -773,13 +788,13 @@ std::vector<SecretLookup> Dispatcher::required_secrets_of(const std::string& nam
         }
         return fn->metadata().required_secrets;
     }
-    if (auto fn = find_table_in_out(name, params.schema_name)) {
+    if (auto fn = find_table_in_out(name, scope_of(params))) {
         return fn->secret_lookups(params);
     }
-    if (auto fn = find_table(name, params.schema_name, &params)) {
+    if (auto fn = find_table(name, scope_of(params), &params)) {
         return fn->secret_lookups(params);
     }
-    auto candidates = scalars_named(name);
+    auto candidates = scalars_named(name, scope_of(params));
     if (!candidates.empty()) return candidates.front()->secret_lookups(params);
     return {};
 }
@@ -787,10 +802,10 @@ std::vector<SecretLookup> Dispatcher::required_secrets_of(const std::string& nam
 // The argument specs `name` declares, whichever registry it lives in.
 std::vector<ArgSpec> Dispatcher::argument_specs_of(const std::string& name,
                                                    const BindParams& params) const {
-    if (auto fn = find_buffering(name, params.schema_name)) return fn->argument_specs();
-    if (auto fn = find_table_in_out(name, params.schema_name)) return fn->argument_specs();
-    if (auto fn = find_table(name, params.schema_name, &params)) return fn->argument_specs();
-    auto candidates = scalars_named(name);
+    if (auto fn = find_buffering(name, scope_of(params))) return fn->argument_specs();
+    if (auto fn = find_table_in_out(name, scope_of(params))) return fn->argument_specs();
+    if (auto fn = find_table(name, scope_of(params), &params)) return fn->argument_specs();
+    auto candidates = scalars_named(name, scope_of(params));
     if (!candidates.empty()) return candidates.front()->argument_specs();
     return {};
 }
@@ -806,7 +821,13 @@ BindParams Dispatcher::read_bind_request(
     params.secrets =
         Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
     params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
-    params.catalog_name = catalog_.name;
+    // From the attachment's seal, not from the primary: one worker may serve
+    // several catalogs, and a bind carries nothing else that says which one.
+    const auto attachment = attachment_of(bind_call);
+    params.catalog_name = attachment.catalog;
+    params.attachment_id = attachment.id;
+    params.transaction_opaque_data =
+        wire::get_optional_binary(bind_call, "transaction_opaque_data");
     // Empty strings mean "no clause" on this wire, which is not the same as a
     // clause whose value happens to be empty.
     params.at_unit = wire::get_optional_string(bind_call, "at_unit");
@@ -852,12 +873,12 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
     // and writer deliberately share a name, so this is not hypothetical.
     const auto declared_kind = wire::get_optional_enum(bind_call, "function_type");
     std::shared_ptr<arrow::Schema> output_schema;
-    if (auto sink = find_buffering(function_name, params.schema_name)) {
+    if (auto sink = find_buffering(function_name, scope_of(params))) {
         output_schema = sink->bind(params);
-    } else if (auto transform = find_table_in_out(function_name, params.schema_name)) {
+    } else if (auto transform = find_table_in_out(function_name, scope_of(params))) {
         check_arg_constraints(function_name, transform->argument_specs(), params.arguments);
         output_schema = transform->bind(params);
-    } else if (auto table = find_table(function_name, params.schema_name, &params)) {
+    } else if (auto table = find_table(function_name, scope_of(params), &params)) {
         check_arg_constraints(function_name, table->argument_specs(), params.arguments);
         output_schema = table->bind(params);
     } else {
@@ -914,13 +935,13 @@ vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& r
     // `max` stay null when the function does not answer, which the planner
     // reads as "unknown" rather than as zero.
     TableCardinality cardinality;
-    if (auto table = find_table(function_name, bind_params.schema_name, &bind_params)) {
+    if (auto table = find_table(function_name, scope_of(bind_params), &bind_params)) {
         ProcessParams params;
         params.client_log = client_log_sink(nullptr);
         params.arguments = bind_params.arguments;
         params.settings = bind_params.settings;
         params.secrets = bind_params.secrets;
-        params.catalog_name = catalog_.name;
+        params.catalog_name = bind_params.catalog_name;
         params.schema_name = bind_params.schema_name;
         params.storage = default_storage();
         cardinality = table->cardinality(params);
@@ -954,13 +975,13 @@ vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& re
     const auto bind_params = read_bind_request(bind_call);
 
     std::optional<std::vector<ColumnStatistics>> statistics;
-    if (auto table = find_table(function_name, bind_params.schema_name, &bind_params)) {
+    if (auto table = find_table(function_name, scope_of(bind_params), &bind_params)) {
         ProcessParams params;
         params.client_log = client_log_sink(nullptr);
         params.arguments = bind_params.arguments;
         params.settings = bind_params.settings;
         params.secrets = bind_params.secrets;
-        params.catalog_name = catalog_.name;
+        params.catalog_name = bind_params.catalog_name;
         params.schema_name = bind_params.schema_name;
         params.storage = default_storage();
         statistics = table->statistics(params);
@@ -991,7 +1012,7 @@ vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Requ
 
     std::vector<std::string> keys;
     std::vector<std::string> values;
-    if (auto table = find_table(function_name, bind_params.schema_name, &bind_params)) {
+    if (auto table = find_table(function_name, scope_of(bind_params), &bind_params)) {
         for (const auto& [key, value] : table->dynamic_to_string(execution_id, *default_storage())) {
             keys.push_back(key);
             values.push_back(value);
@@ -1053,10 +1074,12 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.copy_from_path = bind_params.copy_from_path;
     params.settings = bind_params.settings;
     params.secrets = bind_params.secrets;
-    params.catalog_name = catalog_.name;
+    params.catalog_name = bind_params.catalog_name;
+    params.attachment_id = bind_params.attachment_id;
     params.schema_name = bind_params.schema_name;
     params.at_unit = bind_params.at_unit;
     params.at_value = bind_params.at_value;
+    params.transaction_opaque_data = bind_params.transaction_opaque_data;
     params.storage = default_storage();
     // Replaced per tick by the exchange and producer drivers, which are the
     // only calls with a channel; a no-op until then.
@@ -1096,7 +1119,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         wire::get_binary_list(init_request, "join_keys"));
 
     int64_t max_workers = 1;
-    if (auto table = find_table(function_name, params.schema_name, &bind_params)) {
+    if (auto table = find_table(function_name, scope_of(params), &bind_params)) {
         max_workers = std::max<int64_t>(1, table->max_workers(params));
         // Only the primary init divides the work, and only once. A follow-on
         // worker calling this too would push the same chunks again.
@@ -1116,7 +1139,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // A table function is a *producer* — it generates rows and reads none — so
     // its stream has no input schema. A scalar function is an *exchange*: one
     // output batch per input batch.
-    if (auto sink = find_buffering(function_name, params.schema_name)) {
+    if (auto sink = find_buffering(function_name, scope_of(params))) {
         // Stash the bind-time context for the buffering RPCs.
         //
         // `table_buffering_process` and `_combine` carry no arguments,
@@ -1159,7 +1182,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         return stream;
     }
 
-    if (auto table = find_table(function_name, params.schema_name, &bind_params)) {
+    if (auto table = find_table(function_name, scope_of(params), &bind_params)) {
         stream.input_schema = arrow::schema({});
         auto auto_apply = table->metadata().auto_apply_filters ? params.pushdown_filters
                                                               : PushdownFilters{};
@@ -1176,7 +1199,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         return schema ? schema : arrow::schema({});
     };
 
-    if (auto transform = find_table_in_out(function_name, params.schema_name)) {
+    if (auto transform = find_table_in_out(function_name, scope_of(params))) {
         // Two shapes behind one name, as for buffering: the FINALIZE phase is
         // a producer that drains what this substream's ticks accumulated, and
         // every other phase is the ordinary exchange.

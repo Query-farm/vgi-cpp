@@ -71,7 +71,9 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
                                            vgi_rpc::CallContext* context) const {
     ProcessParams params;
     params.client_log = client_log_sink(context);
-    params.catalog_name = catalog_.name;
+    const auto attachment = attachment_of(dto);
+    params.catalog_name = attachment.catalog;
+    params.attachment_id = attachment.id;
     params.schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
     params.execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
     params.storage = default_storage();
@@ -101,7 +103,8 @@ vgi_rpc::Result Dispatcher::table_buffering_process(const vgi_rpc::Request& requ
 
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
-    auto fn = require_buffering(function_name, schema_name);
+    const Scope scope{attachment_of(dto).catalog, schema_name};
+    auto fn = require_buffering(function_name, scope);
 
     auto batch = wire::decode_ipc(wire::get_binary(dto, "input_batch"));
     auto params = buffering_params(dto, &context);
@@ -121,7 +124,8 @@ vgi_rpc::Result Dispatcher::table_buffering_combine(const vgi_rpc::Request& requ
 
     const auto function_name = wire::get_string(dto, "function_name");
     const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
-    auto fn = require_buffering(function_name, schema_name);
+    const Scope scope{attachment_of(dto).catalog, schema_name};
+    auto fn = require_buffering(function_name, scope);
 
     auto params = buffering_params(dto, &context);
     auto finalize_ids = fn->combine(params, read_state_ids(dto, "state_ids"));

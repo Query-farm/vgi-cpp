@@ -5,6 +5,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,9 +47,23 @@ std::string next_execution_id();
 // connection while a Worker is a one-shot builder.
 class Dispatcher {
 public:
-    void set_catalog(CatalogModel catalog) { catalog_ = std::move(catalog); }
-    const CatalogModel& catalog() const noexcept { return catalog_; }
-    CatalogModel& catalog() noexcept { return catalog_; }
+    Dispatcher();
+
+    void set_catalog(CatalogModel catalog);
+    const CatalogModel& catalog() const noexcept { return *catalogs_.front(); }
+    CatalogModel& catalog() noexcept { return *catalogs_.front(); }
+    // A second (third, …) catalog this worker serves, created on first use.
+    //
+    // One process may serve several: the suite attaches two catalogs from one
+    // binary and expects a call to reach the one its attachment named, which
+    // nothing but the catalog identity can decide.
+    CatalogModel& catalog(const std::string& name);
+    const CatalogModel* find_catalog(const std::string& name) const;
+
+    // Names kept out of the advertised function surface. See
+    // `Worker::hide_function`.
+    void hide_function(std::string name) { hidden_.insert(std::move(name)); }
+    bool hidden(const std::string& name) const { return hidden_.count(name) != 0; }
 
     void register_scalar(std::shared_ptr<ScalarFunction> fn);
     void register_scalar_in(std::string catalog, std::string schema,
@@ -135,6 +150,9 @@ public:
     vgi_rpc::Result catalog_macro_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_index_get(const vgi_rpc::Request& request);
     void catalog_detach(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_transaction_begin(const vgi_rpc::Request& request);
+    void catalog_transaction_commit(const vgi_rpc::Request& request);
+    void catalog_transaction_rollback(const vgi_rpc::Request& request);
 
 private:
     // Serialize one Info dataclass as the IPC bytes a list<binary> column
@@ -149,9 +167,9 @@ private:
                                              const std::string& schema_name);
     static std::string encode_buffering_info(const TableBufferingFunction& fn,
                                              const std::string& schema_name);
-    std::vector<std::string> encode_settings() const;
-    std::vector<std::string> encode_secret_types() const;
-    bool supports_time_travel() const;
+    std::vector<std::string> encode_settings(const CatalogModel& model) const;
+    std::vector<std::string> encode_secret_types(const CatalogModel& model) const;
+    bool supports_time_travel(const CatalogModel& model) const;
     static std::string encode_table_info(const CatalogTable& table,
                                          const std::string& schema_name,
                                          const TimeTravelVersion* version = nullptr);
@@ -159,8 +177,8 @@ private:
     // hard guarantee: a declared zero lets it skip both the bulk listing and
     // every per-name lookup for that kind.
     // The `FunctionInfo` for each name this catalog publishes globally.
-    std::vector<std::string> encode_global_functions() const;
-    std::string encode_schema_info(const CatalogSchema& schema,
+    std::vector<std::string> encode_global_functions(const CatalogModel& model) const;
+    std::string encode_schema_info(const std::string& owner, const CatalogSchema& schema,
                                    const CatalogSchema* contents) const;
     static std::string encode_macro_info(const CatalogMacro& macro,
                                          const std::string& schema_name);
@@ -173,32 +191,28 @@ private:
     // argument type, and the engine chooses between them at the call site.
     // Resolution therefore happens at bind, against the types the engine
     // resolved, not at lookup.
-    std::vector<std::shared_ptr<ScalarFunction>> scalars_named(const std::string& name) const;
+    std::vector<std::shared_ptr<ScalarFunction>> scalars_named(const std::string& name,
+                                                               const Scope& scope) const;
     // The registrations declared in `schema`, in registration order.
-    std::vector<std::shared_ptr<ScalarFunction>> scalars_in_schema(
-        const std::string& schema) const;
-    std::vector<std::shared_ptr<TableFunction>> tables_in_schema(
-        const std::string& schema) const;
-    std::shared_ptr<TableFunction> find_table(const std::string& name,
-                                              const std::string& schema) const;
+    std::vector<std::shared_ptr<ScalarFunction>> scalars_in_schema(const Scope& scope) const;
+    std::vector<std::shared_ptr<TableFunction>> tables_in_schema(const Scope& scope) const;
+    std::shared_ptr<TableFunction> find_table(const std::string& name, const Scope& scope) const;
     // With `params`, resolves overloads by argument type as scalars do.
-    std::shared_ptr<TableFunction> find_table(const std::string& name,
-                                              const std::string& schema,
+    std::shared_ptr<TableFunction> find_table(const std::string& name, const Scope& scope,
                                               const BindParams* params) const;
     std::vector<std::shared_ptr<TableInOutFunction>> table_in_outs_in_schema(
-        const std::string& schema) const;
+        const Scope& scope) const;
     std::shared_ptr<TableInOutFunction> find_table_in_out(const std::string& name,
-                                                          const std::string& schema) const;
-    std::vector<std::shared_ptr<AggregateFunction>> aggregates_in_schema(
-        const std::string& schema) const;
+                                                          const Scope& scope) const;
+    std::vector<std::shared_ptr<AggregateFunction>> aggregates_in_schema(const Scope& scope) const;
     std::shared_ptr<AggregateFunction> require_aggregate(const std::string& name,
-                                                         const std::string& schema) const;
+                                                         const Scope& scope) const;
     std::vector<std::shared_ptr<TableBufferingFunction>> bufferings_in_schema(
-        const std::string& schema) const;
+        const Scope& scope) const;
     std::shared_ptr<TableBufferingFunction> find_buffering(const std::string& name,
-                                                           const std::string& schema) const;
+                                                           const Scope& scope) const;
     std::shared_ptr<TableBufferingFunction> require_buffering(const std::string& name,
-                                                              const std::string& schema) const;
+                                                              const Scope& scope) const;
     ProcessParams buffering_params(const std::shared_ptr<arrow::RecordBatch>& dto,
                                    vgi_rpc::CallContext* context) const;
     vgi_rpc::Result window_result(const std::shared_ptr<arrow::RecordBatch>& dto, bool batched);
@@ -227,6 +241,27 @@ private:
 
     BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
 
+    // The three fields `attach_opaque_data` seals, as sealed at ATTACH.
+    //
+    // Sealed rather than sent as separate columns because most catalog calls
+    // carry nothing else that identifies the attachment: the wire has one
+    // opaque field for the worker's own use, and this is what it is for.
+    struct Attachment {
+        std::string catalog;
+        std::string data_version;
+        std::string alias;
+        // Minted per ATTACH, so two sessions on the same catalog never share
+        // state keyed on it. The alias cannot serve: two ATTACHes may use the
+        // same one, and a user may attach the same catalog twice.
+        std::string id;
+    };
+    static std::string seal_attachment(const Attachment& attachment);
+    // The attachment a request belongs to. Falls back to the primary catalog
+    // when there is no seal — the engine asks some of these questions before
+    // any attachment exists.
+    Attachment attachment_of(const vgi_rpc::Request& request) const;
+    Attachment attachment_of(const std::shared_ptr<arrow::RecordBatch>& batch) const;
+
     // The schema `name`, as this attachment sees it.
     //
     // A catalog whose table set varies by data version answers from the
@@ -235,6 +270,9 @@ private:
     // schema, which is how "no such name" is spelled to the engine.
     const CatalogSchema* schema_for(const vgi_rpc::Request& request,
                                     const std::string& name) const;
+
+    static Scope scope_of(const BindParams& params);
+    static Scope scope_of(const ProcessParams& params);
 
     // Whether a function declared in `scope` belongs to the attachment this
     // request was made under.
@@ -245,7 +283,11 @@ private:
     // explicit catalog is, whatever name the attachment used.
     bool advertised_to(const Scope& scope, const vgi_rpc::Request& request) const;
 
-    CatalogModel catalog_;
+    // The first is the primary — the one a bare `register_*` and a bare
+    // `catalog()` mean. Held indirectly so a reference handed out by
+    // `catalog(name)` survives a later addition.
+    std::vector<std::unique_ptr<CatalogModel>> catalogs_;
+    std::set<std::string> hidden_;
     std::vector<std::shared_ptr<ScalarFunction>> scalars_;
     // Parallel to scalars_: where each one is declared.
     std::vector<Scope> scalar_scopes_;

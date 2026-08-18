@@ -9,10 +9,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <optional>
+#include <random>
+#include <sstream>
 #include <string_view>
+#include <unistd.h>
 #include <tuple>
 
 #include "arg_schema.h"
@@ -24,6 +29,16 @@
 
 namespace vgi {
 namespace {
+// A fresh id per ATTACH. Random rather than a counter: a worker pool spreads
+// one query's calls over several processes, and two of them would otherwise
+// mint the same id for different attachments.
+std::string next_attachment_id() {
+    static std::mt19937_64 generator{std::random_device{}()};
+    std::ostringstream out;
+    out << std::hex << generator() << generator();
+    return out.str();
+}
+
 
 namespace gen = ::duckdb::vgi::generated;
 
@@ -187,9 +202,9 @@ vgi_rpc::Result empty_items(const std::string& method) {
 // a schema inside a schema, which is how a setting's type travels without a
 // type-name vocabulary of its own.
 // Whether any table time-travels, or the catalog declared it outright.
-bool Dispatcher::supports_time_travel() const {
-    if (catalog_.supports_time_travel) return true;
-    for (const auto& schema : catalog_.schemas) {
+bool Dispatcher::supports_time_travel(const CatalogModel& model) const {
+    if (model.supports_time_travel) return true;
+    for (const auto& schema : model.schemas) {
         for (const auto& table : schema->tables) {
             if (!table.time_travel.empty()) return true;
         }
@@ -197,7 +212,7 @@ bool Dispatcher::supports_time_travel() const {
     return false;
 }
 
-std::vector<std::string> Dispatcher::encode_settings() const {
+std::vector<std::string> Dispatcher::encode_settings(const CatalogModel& model) const {
     static const auto schema = arrow::schema({
         arrow::field("name", arrow::utf8(), /*nullable=*/false),
         arrow::field("description", arrow::utf8(), /*nullable=*/false),
@@ -206,8 +221,8 @@ std::vector<std::string> Dispatcher::encode_settings() const {
     });
 
     std::vector<std::string> entries;
-    entries.reserve(catalog_.settings.size());
-    for (const auto& setting : catalog_.settings) {
+    entries.reserve(model.settings.size());
+    for (const auto& setting : model.settings) {
         auto value_schema =
             arrow::schema({arrow::field("value", setting.type, /*nullable=*/true)});
         entries.push_back(wire::encode_ipc(wire::ResultBuilder(schema)
@@ -241,7 +256,7 @@ std::vector<std::tuple<std::string, std::string, std::string>> secret_entries(
 // `parameters_schema` is the IPC schema of the secret's fields, metadata and
 // all — which is how the `redact=true` marker on a field reaches the engine
 // and keeps the value out of logs and error messages.
-std::vector<std::string> Dispatcher::encode_secret_types() const {
+std::vector<std::string> Dispatcher::encode_secret_types(const CatalogModel& model) const {
     static const auto schema = arrow::schema({
         arrow::field("name", arrow::utf8(), /*nullable=*/false),
         arrow::field("description", arrow::utf8(), /*nullable=*/false),
@@ -249,8 +264,8 @@ std::vector<std::string> Dispatcher::encode_secret_types() const {
     });
 
     std::vector<std::string> entries;
-    entries.reserve(catalog_.secret_types.size());
-    for (const auto& secret : catalog_.secret_types) {
+    entries.reserve(model.secret_types.size());
+    for (const auto& secret : model.secret_types) {
         entries.push_back(
             wire::encode_ipc(wire::ResultBuilder(schema)
                                  .set_string("name", secret.name)
@@ -264,44 +279,44 @@ std::vector<std::string> Dispatcher::encode_secret_types() const {
 
 const CatalogSchema* Dispatcher::schema_for(const vgi_rpc::Request& request,
                                             const std::string& name) const {
-    if (catalog_.version_schemas.empty()) return catalog_.find_schema(name);
+    const auto attachment = attachment_of(request);
+    const auto* model = find_catalog(attachment.catalog);
+    if (!model) model = &catalog();
 
-    // `<version>\0<alias>`, as sealed at ATTACH. An absent or unparseable
-    // value falls back to the declared schemas rather than failing: the engine
-    // asks some of these questions before any attachment exists.
-    const auto sealed = wire::get_optional_binary(request.batch(), "attach_opaque_data");
-    if (!sealed) return catalog_.find_schema(name);
-    const auto separator = sealed->find('\0');
-    if (separator == std::string::npos || separator == 0) return catalog_.find_schema(name);
-
-    const auto version = catalog_.version_schemas.find(sealed->substr(0, separator));
-    if (version == catalog_.version_schemas.end()) return catalog_.find_schema(name);
-    for (const auto& schema : version->second) {
-        if (schema.name == name) return &schema;
+    // A version-shaped catalog answers from the version this attachment
+    // resolved to; every other one from its declared schemas.
+    if (!attachment.data_version.empty()) {
+        const auto version = model->version_schemas.find(attachment.data_version);
+        if (version != model->version_schemas.end()) {
+            for (const auto& schema : version->second) {
+                if (schema.name == name) return &schema;
+            }
+            return nullptr;
+        }
     }
-    return nullptr;
+    return model->find_schema(name);
 }
 
-std::vector<std::string> Dispatcher::encode_global_functions() const {
+std::vector<std::string> Dispatcher::encode_global_functions(const CatalogModel& model) const {
     // Published from `main`, because a global name is an alias the engine
     // resolves back to a schema-resident registration — bind dispatch is keyed
     // on (schema, name), and there is nowhere else for it to look.
     std::vector<std::string> items;
-    items.reserve(catalog_.global_functions.size());
-    for (const auto& name : catalog_.global_functions) {
-        if (auto fn = find_buffering(name, "main")) {
+    items.reserve(model.global_functions.size());
+    for (const auto& name : model.global_functions) {
+        if (auto fn = find_buffering(name, {model.name, "main"})) {
             items.push_back(encode_buffering_info(*fn, "main"));
             continue;
         }
-        if (auto transform = find_table_in_out(name, "main")) {
+        if (auto transform = find_table_in_out(name, {model.name, "main"})) {
             items.push_back(encode_table_in_out_info(*transform, "main"));
             continue;
         }
-        if (auto table = find_table(name, "main")) {
+        if (auto table = find_table(name, {model.name, "main"})) {
             items.push_back(encode_table_function_info(*table, "main"));
             continue;
         }
-        const auto aggregates = aggregates_in_schema("main");
+        const auto aggregates = aggregates_in_schema({model.name, "main"});
         const auto aggregate = std::find_if(aggregates.begin(), aggregates.end(),
                                             [&](const auto& fn) { return fn->name() == name; });
         if (aggregate != aggregates.end()) {
@@ -310,7 +325,7 @@ std::vector<std::string> Dispatcher::encode_global_functions() const {
         }
         // An overload set publishes under one name, so the first registration
         // is the one the engine is told about.
-        const auto scalars = scalars_named(name);
+        const auto scalars = scalars_named(name, {model.name, "main"});
         if (scalars.empty()) {
             throw std::invalid_argument("catalog publishes '" + name +
                                         "' globally but no function of that name is registered");
@@ -326,11 +341,14 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     auto attach = wire::get_ipc(request.batch(), "request");
     if (!attach) throw std::runtime_error("catalog_attach: empty request");
 
-    // `name` is the ATTACH alias the user wrote, which need not match the
-    // catalog this worker serves — the suite attaches one binary under several
-    // names. It is echoed back through attach_opaque_data so later calls know
-    // which attachment they belong to.
+    // `name` is the catalog the user asked for. It is also the ATTACH alias
+    // when they wrote one, which is why it is echoed back in the seal — but
+    // what selects the model is the name matching a catalog this worker
+    // serves; anything else attaches the primary, which is what a worker with
+    // one catalog has always done under any alias.
     const auto name = wire::get_string(attach, "name");
+    const auto* requested = find_catalog(name);
+    const CatalogModel& model = requested ? *requested : catalog();
 
     // Version negotiation. An exact match against what this worker serves,
     // rather than a range check: a caller asking for something the worker
@@ -339,14 +357,14 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     const auto requested_impl = wire::get_optional_string(attach, "implementation_version");
 
     std::optional<std::string> resolved_data;
-    if (!catalog_.supported_data_versions.empty()) {
-        if (catalog_.npm_version_resolution) {
+    if (!model.supported_data_versions.empty()) {
+        if (model.npm_version_resolution) {
             resolved_data =
-                resolve_version_npm(requested_data, catalog_.supported_data_versions,
-                                    catalog_.default_data_version.value_or(""),
+                resolve_version_npm(requested_data, model.supported_data_versions,
+                                    model.default_data_version.value_or(""),
                                     "data_version_spec");
         } else if (requested_data) {
-            const auto& supported = catalog_.supported_data_versions;
+            const auto& supported = model.supported_data_versions;
             if (std::find(supported.begin(), supported.end(), *requested_data) ==
                 supported.end()) {
                 throw std::invalid_argument("Unsupported data_version_spec \"" +
@@ -355,19 +373,19 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
             }
             resolved_data = requested_data;
         } else {
-            resolved_data = catalog_.default_data_version;
+            resolved_data = model.default_data_version;
         }
     }
 
     std::optional<std::string> resolved_impl;
-    if (!catalog_.implementation_version.empty()) {
-        const auto& supported = catalog_.supported_implementation_versions.empty()
-                                    ? std::vector<std::string>{catalog_.implementation_version}
-                                    : catalog_.supported_implementation_versions;
-        if (catalog_.npm_version_resolution &&
-            !catalog_.supported_implementation_versions.empty()) {
+    if (!model.implementation_version.empty()) {
+        const auto& supported = model.supported_implementation_versions.empty()
+                                    ? std::vector<std::string>{model.implementation_version}
+                                    : model.supported_implementation_versions;
+        if (model.npm_version_resolution &&
+            !model.supported_implementation_versions.empty()) {
             resolved_impl = resolve_version_npm(requested_impl, supported,
-                                                catalog_.implementation_version,
+                                                model.implementation_version,
                                                 "implementation_version");
         } else if (requested_impl) {
             if (std::find(supported.begin(), supported.end(), *requested_impl) ==
@@ -378,21 +396,22 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
             }
             resolved_impl = requested_impl;
         } else {
-            resolved_impl = catalog_.implementation_version;
+            resolved_impl = model.implementation_version;
         }
     }
 
     auto batch = wire::ResultBuilder(payload_schema_of("catalog_attach"))
                      // Opaque to the engine, which only stores and echoes it.
-                     // `<resolved data version>\0<attach alias>`: the version
-                     // has to travel because a catalog whose table set varies
-                     // by version is asked about its tables long after ATTACH,
-                     // on calls that carry nothing else identifying which
-                     // attachment they belong to.
+                     // Both the catalog and the resolved version have to
+                     // travel: most later calls carry nothing else that says
+                     // which attachment they belong to, and one worker may
+                     // serve several catalogs whose schemas and function names
+                     // collide.
                      .set_binary("attach_opaque_data",
-                                 resolved_data.value_or("") + '\0' + name)
-                     .set_bool("supports_transactions", false)
-                     .set_bool("supports_time_travel", supports_time_travel())
+                                 seal_attachment({model.name, resolved_data.value_or(""), name,
+                                                  next_attachment_id()}))
+                     .set_bool("supports_transactions", model.supports_transactions)
+                     .set_bool("supports_time_travel", supports_time_travel(model))
                      .set_bool("catalog_version_frozen", true)
                      .set_int64("catalog_version", 1)
                      .set_bool("attach_opaque_data_required", true)
@@ -401,15 +420,15 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      // declared statistic, so leaving it off silently
                      // discarded them all.
                      .set_bool("supports_column_statistics", true)
-                     .set_binary_list("global_functions", encode_global_functions())
-                     .set_string("global_function_prefix", catalog_.global_function_prefix)
-                     .set_string_map("tags", catalog_.tags)
+                     .set_binary_list("global_functions", encode_global_functions(model))
+                     .set_string("global_function_prefix", model.global_function_prefix)
+                     .set_string_map("tags", model.tags)
                      .set_optional_string("resolved_data_version", resolved_data)
                      .set_optional_string("resolved_implementation_version", resolved_impl)
-                     .set_binary_list("settings", encode_settings())
-                     .set_binary_list("secret_types", encode_secret_types());
-    if (catalog_.comment) {
-        batch.set_string("comment", *catalog_.comment);
+                     .set_binary_list("settings", encode_settings(model))
+                     .set_binary_list("secret_types", encode_secret_types(model));
+    if (model.comment) {
+        batch.set_string("comment", *model.comment);
     } else {
         batch.set_null("comment");
     }
@@ -426,26 +445,63 @@ void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
     // Nothing is held per attachment yet. When something is, it is freed here.
 }
 
+namespace {
+
+// The storage scope one transaction's state lives under.
+std::string transaction_scope(const std::string& id) { return "txn:" + id; }
+
+}  // namespace
+
+vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
+    // Minted here rather than by the engine, and unique across processes: the
+    // pool hands a different worker to each RPC of one transaction, so two
+    // transactions that collided on an id would read each other's state
+    // through the shared store.
+    static std::atomic<uint64_t> counter{0};
+    const auto id = std::to_string(static_cast<uint64_t>(::getpid())) + '-' +
+                    std::to_string(counter.fetch_add(1)) + '-' +
+                    std::to_string(static_cast<uint64_t>(
+                        std::chrono::steady_clock::now().time_since_epoch().count()));
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_transaction_begin"))
+                        .set_binary("transaction_opaque_data", id)
+                        .finish());
+}
+
+void Dispatcher::catalog_transaction_commit(const vgi_rpc::Request& request) {
+    // Committing ends the transaction, so whatever it remembered goes with it.
+    // Rollback is the same discard — nothing here is written through to
+    // anything durable, so there is nothing to undo.
+    const auto id = wire::get_optional_binary(request.batch(), "transaction_opaque_data");
+    if (id && !id->empty()) default_storage()->clear(transaction_scope(*id));
+}
+
+void Dispatcher::catalog_transaction_rollback(const vgi_rpc::Request& request) {
+    catalog_transaction_commit(request);
+}
+
 vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
-    // One catalog: the one this worker serves. A MetaWorker serving several
-    // would list them all here.
-    auto builder = wire::ResultBuilder(gen::CatalogInfoSchema());
-    builder.set_string("name", catalog_.name);
-    // Discovery, before any ATTACH: what this catalog *is*, not what a
-    // particular attachment resolved to.
-    builder.set_optional_string("implementation_version",
-                                catalog_.implementation_version.empty()
-                                    ? std::nullopt
-                                    : std::optional<std::string>(
-                                          catalog_.implementation_version));
-    builder.set_optional_string("data_version_spec", catalog_.data_version_spec);
-    builder.set_optional_string("source_url", catalog_.source_url.empty()
-                                                  ? std::nullopt
-                                                  : std::optional<std::string>(
-                                                        catalog_.source_url));
-    auto info = builder.fill_defaults().finish();
+    // Every catalog this worker serves. Discovery runs before any ATTACH, so
+    // what each entry says is what the catalog *is* — not what some attachment
+    // resolved it to.
+    std::vector<std::string> items;
+    items.reserve(catalogs_.size());
+    for (const auto& model : catalogs_) {
+        auto builder = wire::ResultBuilder(gen::CatalogInfoSchema());
+        builder.set_string("name", model->name);
+        builder.set_optional_string(
+            "implementation_version",
+            model->implementation_version.empty()
+                ? std::nullopt
+                : std::optional<std::string>(model->implementation_version));
+        builder.set_optional_string("data_version_spec", model->data_version_spec);
+        builder.set_optional_string(
+            "source_url",
+            model->source_url.empty() ? std::nullopt
+                                      : std::optional<std::string>(model->source_url));
+        items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
+    }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_catalogs"))
-                        .set_binary_list("items", {wire::encode_ipc(info)})
+                        .set_binary_list("items", std::move(items))
                         .finish());
 }
 
@@ -786,7 +842,8 @@ vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&) {
     return empty_items("catalog_index_get");
 }
 
-std::string Dispatcher::encode_schema_info(const CatalogSchema& schema,
+std::string Dispatcher::encode_schema_info(const std::string& owner,
+                                           const CatalogSchema& schema,
                                            const CatalogSchema* contents) const {
     // `contents` is what this attachment will actually be shown, which is not
     // `schema` for a catalog whose table set varies by resolved data version:
@@ -804,21 +861,21 @@ std::string Dispatcher::encode_schema_info(const CatalogSchema& schema,
     auto builder = wire::ResultBuilder(gen::SchemaInfoSchema())
                        .set_string("name", schema.name)
                        .set_string_map("tags", schema.tags)
-                       .set_binary("attach_opaque_data", catalog_.name)
+                       .set_binary("attach_opaque_data", owner)
                        .set_int64_map(
                            "estimated_object_count",
                            {{"view", static_cast<int64_t>(contents->views.size())},
                             {"macro", static_cast<int64_t>(contents->macros.size())},
                             {"table", static_cast<int64_t>(contents->tables.size())},
-                            {"scalar_function", size(scalars_in_schema(schema.name))},
-                            {"aggregate_function", size(aggregates_in_schema(schema.name))},
+                            {"scalar_function", size(scalars_in_schema({owner, schema.name}))},
+                            {"aggregate_function", size(aggregates_in_schema({owner, schema.name}))},
                             // Every kind the engine registers as a table
                             // function, which is three of ours: a table-in-out
                             // and a buffering sink are table functions to it.
                             {"table_function",
-                             size(tables_in_schema(schema.name)) +
-                                 size(table_in_outs_in_schema(schema.name)) +
-                                 size(bufferings_in_schema(schema.name))},
+                             size(tables_in_schema({owner, schema.name})) +
+                                 size(table_in_outs_in_schema({owner, schema.name})) +
+                                 size(bufferings_in_schema({owner, schema.name}))},
                             {"index", 0}});
     if (schema.comment) {
         builder.set_string("comment", *schema.comment);
@@ -830,9 +887,12 @@ std::string Dispatcher::encode_schema_info(const CatalogSchema& schema,
 
 vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
     std::vector<std::string> items;
-    items.reserve(catalog_.schemas.size());
-    for (const auto& schema : catalog_.schemas) {
-        items.push_back(encode_schema_info(*schema, schema_for(request, schema->name)));
+
+    const auto owner = attachment_of(request).catalog;
+    const auto* model = find_catalog(owner);
+    if (!model) model = &catalog();
+    for (const auto& schema : model->schemas) {
+        items.push_back(encode_schema_info(owner, *schema, schema_for(request, schema->name)));
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
                                       .set_binary_list("items", items)
@@ -842,9 +902,12 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
 vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) {
     const auto wanted = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    for (const auto& schema : catalog_.schemas) {
+    const auto owner = attachment_of(request).catalog;
+    const auto* model = find_catalog(owner);
+    if (!model) model = &catalog();
+    for (const auto& schema : model->schemas) {
         if (schema->name != wanted) continue;
-        items.push_back(encode_schema_info(*schema, schema_for(request, wanted)));
+        items.push_back(encode_schema_info(owner, *schema, schema_for(request, wanted)));
     }
     // Zero or one item; the engine reads absence as "no such schema".
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_get"))
@@ -1048,14 +1111,49 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
 // error that says nothing about the enum.
 //
 // Empty means no filter.
+std::string Dispatcher::seal_attachment(const Attachment& attachment) {
+    return attachment.catalog + '\0' + attachment.data_version + '\0' + attachment.alias +
+           '\0' + attachment.id;
+}
+
+Dispatcher::Attachment Dispatcher::attachment_of(
+    const std::shared_ptr<arrow::RecordBatch>& batch) const {
+    Attachment attachment;
+    attachment.catalog = catalog().name;
+    if (!batch) return attachment;
+
+    const auto sealed = wire::get_optional_binary(batch, "attach_opaque_data");
+    if (!sealed || sealed->empty()) return attachment;
+
+    std::vector<std::string> fields;
+    for (size_t start = 0; start <= sealed->size();) {
+        const auto separator = sealed->find('\0', start);
+        if (separator == std::string::npos) {
+            fields.push_back(sealed->substr(start));
+            break;
+        }
+        fields.push_back(sealed->substr(start, separator - start));
+        start = separator + 1;
+    }
+    // Anything that is not the four-field seal is not ours — an older client,
+    // or a catalog we do not serve — and the primary is the honest answer.
+    if (fields.size() != 4 || !find_catalog(fields[0])) return attachment;
+
+    attachment.catalog = fields[0];
+    attachment.data_version = fields[1];
+    attachment.alias = fields[2];
+    attachment.id = fields[3];
+    return attachment;
+}
+
+Dispatcher::Attachment Dispatcher::attachment_of(const vgi_rpc::Request& request) const {
+    return attachment_of(request.batch());
+}
+
 bool Dispatcher::advertised_to(const Scope& scope, const vgi_rpc::Request& request) const {
-    if (scope.catalog == catalog_.name) return true;
-    // `<resolved data version>\0<attach name>`, as sealed at ATTACH.
-    const auto sealed = wire::get_optional_binary(request.batch(), "attach_opaque_data");
-    if (!sealed) return false;
-    const auto separator = sealed->find('\0');
-    if (separator == std::string::npos) return false;
-    return sealed->substr(separator + 1) == scope.catalog;
+    // A function declared in some other catalog is not part of this
+    // attachment's surface, however the attachment was named.
+    return scope.catalog == attachment_of(request).catalog;
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Request& request) {
@@ -1068,20 +1166,29 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
     // collision look like one flat entry with two overloads, which is what the
     // engine then reports.
     const auto mine = [&](const Scope& scope) { return advertised_to(scope, request); };
+    // Hidden names are still registered — the engine calls them to scan the
+    // tables they back — but they are not part of the surface a user browses.
+    const auto shown = [&](const std::string& name) { return !hidden(name); };
     if (!filter || *filter == enums::function_type::kScalar) {
         for (size_t i = 0; i < scalars_.size(); ++i) {
-            if (scalar_scopes_[i].schema != schema_name || !mine(scalar_scopes_[i])) continue;
+            if (scalar_scopes_[i].schema != schema_name || !mine(scalar_scopes_[i]) ||
+                !shown(scalars_[i]->name())) {
+                continue;
+            }
             items.push_back(encode_function_info(*scalars_[i], schema_name));
         }
     }
     if (!filter || *filter == enums::function_type::kTable) {
         for (size_t i = 0; i < tables_.size(); ++i) {
-            if (table_scopes_[i].schema != schema_name || !mine(table_scopes_[i])) continue;
+            if (table_scopes_[i].schema != schema_name || !mine(table_scopes_[i]) ||
+                !shown(tables_[i]->name())) {
+                continue;
+            }
             items.push_back(encode_table_function_info(*tables_[i], schema_name));
         }
         for (size_t i = 0; i < table_in_outs_.size(); ++i) {
             if (table_in_out_scopes_[i].schema != schema_name ||
-                !mine(table_in_out_scopes_[i])) {
+                !mine(table_in_out_scopes_[i]) || !shown(table_in_outs_[i]->name())) {
                 continue;
             }
             items.push_back(encode_table_in_out_info(*table_in_outs_[i], schema_name));
@@ -1092,7 +1199,8 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
         // something the engine knows to ask for — so listing them under their
         // own name means they are never returned and never resolve.
         for (size_t i = 0; i < bufferings_.size(); ++i) {
-            if (buffering_scopes_[i].schema != schema_name || !mine(buffering_scopes_[i])) {
+            if (buffering_scopes_[i].schema != schema_name || !mine(buffering_scopes_[i]) ||
+                !shown(bufferings_[i]->name())) {
                 continue;
             }
             items.push_back(encode_buffering_info(*bufferings_[i], schema_name));
@@ -1100,7 +1208,8 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
     }
     if (!filter || *filter == enums::function_type::kAggregate) {
         for (size_t i = 0; i < aggregates_.size(); ++i) {
-            if (aggregate_scopes_[i].schema != schema_name || !mine(aggregate_scopes_[i])) {
+            if (aggregate_scopes_[i].schema != schema_name || !mine(aggregate_scopes_[i]) ||
+                !shown(aggregates_[i]->name())) {
                 continue;
             }
             items.push_back(encode_aggregate_info(*aggregates_[i], schema_name));

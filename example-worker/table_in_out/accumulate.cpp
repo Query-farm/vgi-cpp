@@ -35,6 +35,10 @@
 namespace example {
 namespace {
 
+// The catalog these three serve. Named rather than spelled at each use: the
+// registrations and the model must agree or the functions are invisible.
+constexpr const char* kCatalog = "accumulate";
+
 // Appended to every output row, carrying the call time. Underscore-prefixed so
 // it is unlikely to collide with a column a caller already has.
 constexpr const char* kTimestampColumn = "_timestamp";
@@ -67,11 +71,14 @@ std::shared_ptr<arrow::Schema> clear_schema() {
                           arrow::field("rows_cleared", arrow::int64(), /*nullable=*/false)});
 }
 
-// A collection's storage scope. Deliberately not the execution id: the engine
-// discards that when the query ends, and a collection has to still be there for
-// the next one. One scope per collection, so clearing it is a single call.
-std::string collection_scope(const std::string& name) {
-    return "vgi-accumulate:" + name;
+// A collection's storage scope.
+//
+// Deliberately not the execution id: the engine discards that when the query
+// ends, and a collection has to still be there for the next one. Keyed by the
+// attachment as well as the name, because two sessions may use the same
+// collection name and must not see each other's rows.
+std::string collection_scope(const std::string& attachment, const std::string& name) {
+    return "vgi-accumulate:" + attachment + ":" + name;
 }
 
 int64_t now_micros() {
@@ -155,23 +162,25 @@ void validate_name(const std::string& name) {
 // The schema pinned by the first call to accumulate under `name`, or null when
 // nothing has been accumulated under it.
 std::shared_ptr<arrow::Schema> pinned_schema(vgi::FunctionStorage& storage,
+                                             const std::string& attachment,
                                              const std::string& name) {
-    auto blob = storage.kv_get(collection_scope(name), kSchemaKey);
+    auto blob = storage.kv_get(collection_scope(attachment, name), kSchemaKey);
     if (!blob) return nullptr;
     auto table = decode_table(*blob);
     return table ? table->schema() : nullptr;
 }
 
-void pin_schema(vgi::FunctionStorage& storage, const std::string& name,
-                const std::shared_ptr<arrow::Schema>& schema) {
-    storage.kv_put(collection_scope(name), kSchemaKey,
+void pin_schema(vgi::FunctionStorage& storage, const std::string& attachment,
+                const std::string& name, const std::shared_ptr<arrow::Schema>& schema) {
+    storage.kv_put(collection_scope(attachment, name), kSchemaKey,
                    encode_table(arrow::Table::MakeEmpty(schema).ValueOrDie()));
 }
 
 std::shared_ptr<arrow::Table> read_collection(vgi::FunctionStorage& storage,
+                                              const std::string& attachment,
                                               const std::string& name,
                                               const std::shared_ptr<arrow::Schema>& fallback) {
-    if (auto blob = storage.kv_get(collection_scope(name), kRowsKey)) {
+    if (auto blob = storage.kv_get(collection_scope(attachment, name), kRowsKey)) {
         if (auto table = decode_table(*blob)) return table;
     }
     return arrow::Table::MakeEmpty(fallback).ValueOrDie();
@@ -182,9 +191,9 @@ std::shared_ptr<arrow::Table> read_collection(vgi::FunctionStorage& storage,
 // offers neither ranged deletes nor key enumeration, and a hand-rolled segment
 // index buys nothing for a fixture whose largest collection is ten thousand
 // rows.
-void write_collection(vgi::FunctionStorage& storage, const std::string& name,
-                      const std::shared_ptr<arrow::Table>& table) {
-    storage.kv_put(collection_scope(name), kRowsKey, encode_table(table));
+void write_collection(vgi::FunctionStorage& storage, const std::string& attachment,
+                      const std::string& name, const std::shared_ptr<arrow::Table>& table) {
+    storage.kv_put(collection_scope(attachment, name), kRowsKey, encode_table(table));
 }
 
 // A DuckDB INTERVAL as microseconds, or nullopt when the argument was omitted.
@@ -350,13 +359,13 @@ public:
         // process-wide store directly; it is the same object the later phases
         // are handed.
         auto storage = vgi::default_storage();
-        auto pinned = pinned_schema(*storage, name);
+        auto pinned = pinned_schema(*storage, params.attachment_id, name);
         if (!pinned) {
             // Pinned on first use, then enforced. Two simultaneous first
             // appends of incompatible schemas race, and the loser gets a
             // confusing validation error — but never a mixed collection, since
             // every append is normalized to whichever schema won.
-            pin_schema(*storage, name, output_schema);
+            pin_schema(*storage, params.attachment_id, name, output_schema);
         } else if (!input_fields_match(input_schema_of(pinned), params.input_schema)) {
             throw std::invalid_argument(
                 "input schema for accumulate('" + name + "', ...) does not match the schema " +
@@ -385,7 +394,7 @@ public:
         // The pinned schema, not the bound one: all of a collection's rows must
         // share one exact schema for the append to concatenate, and only the
         // pin is invariant across the call sites that write to the name.
-        auto schema = pinned_schema(*params.storage, name);
+        auto schema = pinned_schema(*params.storage, params.attachment_id, name);
         if (!schema) schema = params.output_schema;
 
         const int64_t micros = now_micros();
@@ -401,7 +410,7 @@ public:
                             ? arrow::Table::MakeEmpty(schema).ValueOrDie()
                             : arrow::Table::FromRecordBatches(schema, added).ValueOrDie();
 
-        auto collection = read_collection(*params.storage, name, schema);
+        auto collection = read_collection(*params.storage, params.attachment_id, name, schema);
         if (new_rows->num_rows() > 0) {
             collection = arrow::ConcatenateTables({collection, new_rows}).ValueOrDie();
         }
@@ -418,7 +427,7 @@ public:
         if (max_rows > 0 && collection->num_rows() > max_rows) {
             collection = collection->Slice(collection->num_rows() - max_rows);
         }
-        write_collection(*params.storage, name, collection);
+        write_collection(*params.storage, params.attachment_id, name, collection);
 
         const auto mode = params.arguments.named_string("result").value_or("all");
         if (mode == "new") {
@@ -457,7 +466,7 @@ public:
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
         const auto name = params.arguments.const_string(0).value_or("");
         validate_name(name);
-        auto pinned = pinned_schema(*vgi::default_storage(), name);
+        auto pinned = pinned_schema(*vgi::default_storage(), params.attachment_id, name);
         if (!pinned) {
             throw std::invalid_argument("no accumulation named '" + name + "' in this session");
         }
@@ -467,7 +476,7 @@ public:
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         const auto name = params.arguments.const_string(0).value_or("");
         return std::make_unique<TableDrain>(
-            read_collection(*params.storage, name, params.output_schema), params.output_schema);
+            read_collection(*params.storage, params.attachment_id, name, params.output_schema), params.output_schema);
     }
 };
 
@@ -496,13 +505,13 @@ public:
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         const auto name = params.arguments.const_string(0).value_or("");
         int64_t rows_cleared = 0;
-        if (auto blob = params.storage->kv_get(collection_scope(name), kRowsKey)) {
+        if (auto blob = params.storage->kv_get(collection_scope(params.attachment_id, name), kRowsKey)) {
             if (auto table = decode_table(*blob)) rows_cleared = table->num_rows();
         }
         // The rows and the pinned schema share one scope, so both go in a
         // single call — which is what leaves the name free to be accumulated
         // again under a different schema.
-        params.storage->clear(collection_scope(name));
+        params.storage->clear(collection_scope(params.attachment_id, name));
 
         arrow::StringBuilder names;
         (void)names.Append(name);
@@ -521,9 +530,18 @@ public:
 }  // namespace
 
 void register_accumulate(vgi::Worker& worker) {
-    worker.register_buffering(std::make_shared<Accumulate>());
-    worker.register_table(std::make_shared<AccumulateRead>());
-    worker.register_table(std::make_shared<AccumulateClear>());
+    // Its own catalog, not `example`: what these probe is per-attachment
+    // scoping, and a catalog of their own is what a session attaches twice.
+    auto& model = worker.catalog(kCatalog);
+    model.data_version_spec = "2.0.0";
+    model.implementation_version = "vgi-fixture";
+    model.comment =
+        "Row accumulation keyed by name, persisted via FunctionStorage and scoped per ATTACH";
+    model.schema("main");
+
+    worker.register_buffering_in(kCatalog, "main", std::make_shared<Accumulate>());
+    worker.register_table_in(kCatalog, "main", std::make_shared<AccumulateRead>());
+    worker.register_table_in(kCatalog, "main", std::make_shared<AccumulateClear>());
 }
 
 }  // namespace example

@@ -298,6 +298,11 @@ void declare_catalog(vgi::Worker& worker) {
          })},
     };
 
+    // Opting in is what makes the engine open a catalog transaction around
+    // BEGIN/COMMIT and echo its id on every call, which `tx_cached_value` keys
+    // its per-transaction cache on.
+    worker.catalog().supports_transactions = true;
+
     // Published into the engine's global namespace as `vgi_example_<name>`.
     // Each stays schema-resident — the global name is an alias, and bind
     // dispatch is still keyed on (schema, name).
@@ -354,7 +359,7 @@ void declare_catalog(vgi::Worker& worker) {
         backed_by("cache_whoami", "cache_whoami", columns({{"who", arrow::utf8()}}),
                   "Cacheable result echoing the caller's auth principal (identity-scoped)"));
     data.tables.push_back(
-        backed_by("ten_thousand_table", "ten_thousand_table", columns({{"n", arrow::int64()}}),
+        backed_by("ten_thousand_table", "ten_thousand", columns({{"n", arrow::int64()}}),
                   "Function-backed table over the no-arg ten_thousand function"));
     data.tables.push_back(
         backed_by("cache_parallel", "cache_parallel", columns({{"v", arrow::int64()}})));
@@ -747,7 +752,7 @@ void declare_catalog(vgi::Worker& worker) {
         // The same function as `ten_thousand_table`, but with the row count
         // inlined on the table record: the engine reads it from there and
         // never fires the per-bind cardinality call.
-        auto inlined = backed_by("cardinality_inlined_table", "ten_thousand_table",
+        auto inlined = backed_by("cardinality_inlined_table", "ten_thousand",
                                  columns({{"n", arrow::int64()}}),
                                  "Function-backed table with inlined cardinality (10000 rows)");
         inlined.cardinality = 10000;

@@ -237,6 +237,14 @@ struct CatalogModel {
     // this is a catalog-level flag and not derived from the tables.
     bool supports_time_travel = false;
 
+    // Whether the engine should open a catalog transaction around BEGIN/COMMIT.
+    //
+    // Off, `BindParams::transaction_opaque_data` is never set and a function
+    // has no way to remember anything for the length of a statement group. On,
+    // the engine calls `catalog_transaction_begin` and echoes the id it gets
+    // back on every call the transaction covers.
+    bool supports_transactions = false;
+
     // Settings this catalog introduces to the engine.
     std::vector<SettingSpec> settings;
     // Secret types this catalog introduces.

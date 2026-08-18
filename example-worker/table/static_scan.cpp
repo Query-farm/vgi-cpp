@@ -33,6 +33,9 @@
 namespace example {
 namespace {
 
+// The catalog whose tables the three `versioned_tables_*` scans back.
+constexpr const char* kVersionedTables = "versioned_tables";
+
 std::shared_ptr<arrow::Array> int64_column(std::vector<int64_t> values) {
     arrow::Int64Builder builder;
     for (int64_t value : values) (void)builder.Append(value);
@@ -684,20 +687,21 @@ void register_static_scans(vgi::Worker& worker) {
                                {"color", string_column({"blue", "green", "red"})},
                                {"hex_code", string_column({"#0000FF", "#00FF00", "#FF0000"})}}));
 
-    // The `versioned_tables` catalog: one table per version, so the visible
-    // table *set* changes with the resolved data version rather than the rows.
-    worker.register_table(std::make_shared<StaticScan>(
+    // Registered into the `versioned_tables` catalog, not `example`: they back
+    // that catalog's tables and are not part of this one's function surface,
+    // which `function_registration.test` counts exactly.
+    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
         "versioned_tables_animals_scan",
         Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
                 {"legs", int64_column({2, 4, 4, 4, 4})},
                 {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})}}));
-    worker.register_table(std::make_shared<StaticScan>(
+    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
         "versioned_tables_animals_color_scan",
         Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
                 {"legs", int64_column({2, 4, 4, 4, 4})},
                 {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})},
                 {"color", string_column({"red", "brown", "black", "pink", "white"})}}));
-    worker.register_table(std::make_shared<StaticScan>(
+    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
         "versioned_tables_plants_scan",
         Columns{{"name", string_column({"oak", "pine", "rose", "tomato", "wheat"})},
                 {"kind", string_column({"tree", "tree", "flower", "vegetable", "grass"})},

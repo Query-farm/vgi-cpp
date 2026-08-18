@@ -352,6 +352,54 @@ std::string PushdownFilters::format() const {
     return out.empty() ? "(none)" : out;
 }
 
+std::string PushdownFilters::format_repr() const {
+    if (specs_.empty()) return "(none)";
+
+    // Bound to the member for the same reason `format` is: the recursion has
+    // to reach `values_`.
+    std::function<std::string(const std::shared_ptr<Spec>&, const std::string&)> render =
+        [&](const std::shared_ptr<Spec>& spec, const std::string& column) -> std::string {
+        const std::string& name = column.empty() ? spec->column_name : column;
+
+        if (spec->kind == "is_null") return "IsNullFilter(" + name + " IS NULL)";
+        if (spec->kind == "is_not_null") return "IsNotNullFilter(" + name + " IS NOT NULL)";
+        if (spec->kind == "constant") {
+            return "ConstantFilter(" + name + " " +
+                   op_symbol(spec->op.empty() ? "eq" : spec->op) + " " +
+                   format_scalar(values_for(*spec), 0) + ")";
+        }
+        if (spec->kind == "in" || spec->kind == "join_keys") {
+            // Every value, unlike `format`: this rendering names the kinds,
+            // and a fixture asserting on it wants the whole set.
+            auto values = values_for(*spec);
+            std::string items;
+            for (int64_t i = 0; values && i < values->length(); ++i) {
+                if (i) items += ", ";
+                items += format_scalar(values, i);
+            }
+            return "InFilter(" + name + " IN [" + items + "])";
+        }
+        if (spec->kind == "and" || spec->kind == "or") {
+            const std::string label = spec->kind == "and" ? "AndFilter(" : "OrFilter(";
+            const std::string joiner = spec->kind == "and" ? " AND " : " OR ";
+            std::string parts;
+            for (size_t i = 0; i < spec->children.size(); ++i) {
+                if (i) parts += joiner;
+                parts += render(spec->children[i], "");
+            }
+            return label + parts + ")";
+        }
+        return spec->kind;
+    };
+
+    std::string parts;
+    for (size_t i = 0; i < specs_.size(); ++i) {
+        if (i) parts += ", ";
+        parts += render(specs_[i], "");
+    }
+    return "PushdownFilters([" + parts + "])";
+}
+
 std::shared_ptr<arrow::RecordBatch> PushdownFilters::apply(
     const std::shared_ptr<arrow::RecordBatch>& batch) const {
     if (!batch || specs_.empty()) return batch;

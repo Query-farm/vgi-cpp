@@ -68,11 +68,14 @@ void register_partition_broken(vgi::Worker& worker);
 void register_accumulate(vgi::Worker& worker);
 void register_cached_scalars(vgi::Worker& worker);
 void register_projection_repro(vgi::Worker& worker);
+void register_transaction_storage(vgi::Worker& worker);
 std::vector<vgi::CatalogTable> rff_tables();
 std::vector<vgi::TimeTravelVersion> versioned_data_versions();
 // Declares the catalog's tables and views. Runs after the function
 // registrations, since a table names the function that scans it.
 void declare_catalog(vgi::Worker& worker);
+// Declares the catalogs beyond `example` this one binary also serves.
+void register_extra_catalogs(vgi::Worker& worker);
 // Shapes the `versioned_tables` catalog model, before any function registers.
 void declare_versioned_tables(vgi::CatalogModel& catalog);
 

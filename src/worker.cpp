@@ -34,6 +34,10 @@ void Worker::set_catalog(CatalogModel catalog) {
 
 CatalogModel& Worker::catalog() { return disp_->catalog(); }
 
+CatalogModel& Worker::catalog(const std::string& name) { return disp_->catalog(name); }
+
+void Worker::hide_function(std::string name) { disp_->hide_function(std::move(name)); }
+
 void Worker::set_server_id(std::string id) { server_id_ = std::move(id); }
 
 void Worker::register_scalar(std::shared_ptr<ScalarFunction> fn) {

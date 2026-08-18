@@ -36,7 +36,21 @@ public:
     // Mutable access, so a worker can declare tables and views after
     // registering the functions that back them.
     CatalogModel& catalog();
+    // A second catalog this worker serves, created on first use.
+    //
+    // One process may serve several, and which one a call belongs to is
+    // decided by the attachment, not by the process: two catalogs may declare
+    // the same schema and the same function name.
+    CatalogModel& catalog(const std::string& name);
     void set_server_id(std::string id);
+
+    // Keep `name` out of the function surface the catalog advertises.
+    //
+    // A function that exists only to back a catalog table is still registered
+    // — the engine calls it by name to scan the table — but it is not
+    // something a user should find in `duckdb_functions()`, and a worker whose
+    // surface is a cross-language contract has to be able to say so.
+    void hide_function(std::string name);
 
     // Register in the catalog's default schema (`main`).
     void register_scalar(std::shared_ptr<ScalarFunction> fn);

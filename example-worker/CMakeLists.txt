@@ -35,9 +35,11 @@ add_executable(vgi-example-worker
     table/partitioned.cpp
     table/partition_broken.cpp
     table/proj_repro.cpp
+    table/transaction.cpp
     copy_to/lines.cpp
     copy_from/lines.cpp
     catalog_def.cpp
+    twin_catalogs.cpp
     table_in_out/echo.cpp
     table_in_out/cached.cpp
     table_in_out/blended.cpp

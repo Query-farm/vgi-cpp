@@ -53,6 +53,15 @@ public:
         (void)log;
     }
 
+    // Filters the engine discovered after the scan began, handed over before
+    // each `next_batch` that follows.
+    //
+    // A join's build side is not known when the scan is planned, so its
+    // predicate arrives per tick rather than at init. Ignoring them is always
+    // safe — the engine re-checks every predicate — but a scan that can skip
+    // work on them is the whole reason they are sent.
+    virtual void on_dynamic_filters(const PushdownFilters& /*filters*/) {}
+
     // The validators a conditional request carried, handed over before the
     // first `next_batch`.
     //

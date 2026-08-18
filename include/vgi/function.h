@@ -49,6 +49,18 @@ struct BindParams {
     std::shared_ptr<arrow::Schema> copy_from_schema;
     std::string catalog_name;
     std::string schema_name;
+    // A fresh identifier per ATTACH.
+    //
+    // What distinguishes two sessions on the same catalog: the alias cannot,
+    // because two ATTACHes may use the same one and a user may attach the same
+    // catalog twice. A function whose state belongs to a session — rather than
+    // to a query — keys it on this.
+    std::string attachment_id;
+    // The engine's id for the catalog transaction this call belongs to, when
+    // the catalog declared `supports_transactions` and the statement ran
+    // inside BEGIN/COMMIT. Absent under autocommit, which is what makes
+    // "remember this for the transaction" impossible to fake there.
+    std::optional<std::string> transaction_opaque_data;
     // The `AT (VERSION => …)` / `AT (TIMESTAMP => …)` clause, when the call
     // site had one. A function-backed table that time-travels reads it here;
     // a table whose versions the catalog declares never sees it, because the
@@ -98,6 +110,8 @@ struct ProcessParams {
     Secrets secrets;
     std::string catalog_name;
     std::string schema_name;
+    // A fresh identifier per ATTACH, as on `BindParams`.
+    std::string attachment_id;
     // The engine's index for the input batch this call carries, when the
     // function declared `requires_input_batch_index`. Absent otherwise, which
     // is different from zero.
@@ -114,6 +128,8 @@ struct ProcessParams {
     // belongs to it. A function holding state across calls — a buffering sink,
     // an aggregate — keys on this; a stateless one can ignore it.
     std::string execution_id;
+    // The catalog transaction this call belongs to, as on `BindParams`.
+    std::optional<std::string> transaction_opaque_data;
     // The validators a conditional request carries, when the engine holds a
     // cached answer it would rather revalidate than recompute. A function that
     // recognises its own etag answers `not_modified` instead of the rows.

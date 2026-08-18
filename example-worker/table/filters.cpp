@@ -10,6 +10,8 @@
 // exists for.
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -18,7 +20,9 @@
 
 #include <arrow/array.h>
 #include <arrow/array/builder_binary.h>
+#include <arrow/array/builder_nested.h>
 #include <arrow/array/builder_primitive.h>
+#include <arrow/util/key_value_metadata.h>
 #include <arrow/compute/api.h>
 
 #include <vgi/worker.h>
@@ -554,6 +558,339 @@ private:
     };
 };
 
+// `dynamic_filter_echo(count, batch_size := 2048)` — descending values that
+// report the filter in force when each batch was produced.
+//
+// What it probes that `filter_echo` does not: the filters that arrive *after*
+// the scan began. A Top-N heap tightens its threshold as it fills, and the
+// engine re-sends the predicate on every tick, so the values are descending —
+// then the boundary moves with each batch and the report changes with it.
+class DynamicFilterEcho : public vgi::TableFunction {
+public:
+    std::string name() const override { return "dynamic_filter_echo"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Echoes the dynamic filters in force when each batch was produced";
+        md.categories = {"generator", "diagnostic"};
+        md.projection_pushdown = true;
+        md.filter_pushdown = true;
+        md.auto_apply_filters = true;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return count_and_batch_size("Number of rows to generate");
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("n", arrow::int64(), true),
+                              arrow::field("s", arrow::utf8(), true),
+                              arrow::field("pushed_filters", arrow::utf8(), true)});
+    }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        return count_cardinality(params);
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        return std::make_unique<Producer>(params.output_schema, arg_count(params),
+                                          arg_batch_size(params));
+    }
+
+private:
+    class Producer : public vgi::TableProducer {
+    public:
+        Producer(std::shared_ptr<arrow::Schema> schema, int64_t rows, int64_t batch_size)
+            : schema_(std::move(schema)), remaining_(rows), batch_size_(batch_size) {}
+
+        void on_dynamic_filters(const vgi::PushdownFilters& filters) override {
+            // Rendered as the kinds rather than as SQL: what the test is
+            // checking is which *shape* the engine pushed, and that it moved.
+            report_ = filters.format_repr();
+        }
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            if (remaining_ <= 0) return nullptr;
+            const int64_t size = std::min(remaining_, batch_size_);
+            const int64_t start = cursor_;
+            cursor_ += size;
+            remaining_ -= size;
+
+            const auto report = report_;
+            return assemble(schema_, size,
+                            [&](const std::string& column,
+                                int64_t count) -> std::shared_ptr<arrow::Array> {
+                                if (column == "n") {
+                                    // Descending, so a Top-N over `n` ASC has
+                                    // to keep tightening rather than settling
+                                    // on the first batch.
+                                    std::vector<int64_t> values;
+                                    values.reserve(static_cast<size_t>(count));
+                                    for (int64_t i = 0; i < count; ++i) {
+                                        values.push_back(total_ - 1 - (start + i));
+                                    }
+                                    return int64_array(values);
+                                }
+                                if (column == "s") {
+                                    arrow::StringBuilder builder;
+                                    for (int64_t i = 0; i < count; ++i) {
+                                        (void)builder.Append(
+                                            "row_" + std::to_string(total_ - 1 - (start + i)));
+                                    }
+                                    std::shared_ptr<arrow::Array> array;
+                                    (void)builder.Finish(&array);
+                                    return array;
+                                }
+                                if (column == "pushed_filters") {
+                                    return repeat_string(report, count);
+                                }
+                                return nullptr;
+                            });
+        }
+
+    private:
+        std::shared_ptr<arrow::Schema> schema_;
+        int64_t remaining_;
+        int64_t batch_size_;
+        int64_t total_ = remaining_;
+        int64_t cursor_ = 0;
+        // "(none)" until the engine sends one, which is what the first batch
+        // of an unfiltered scan reports.
+        std::string report_ = "(none)";
+    };
+};
+
+// `expression_filter_test(count, batch_size := 2048)` — rows an expression
+// filter can be pushed into, with a list column the simpler fixtures lack.
+class ExpressionFilterTest : public vgi::TableFunction {
+public:
+    std::string name() const override { return "expression_filter_test"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Generates rows for non-spatial expression filter testing";
+        md.categories = {"generator", "testing"};
+        md.projection_pushdown = true;
+        md.filter_pushdown = true;
+        md.auto_apply_filters = true;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return count_and_batch_size("Number of rows to generate");
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema(
+            {arrow::field("id", arrow::int64(), true), arrow::field("name", arrow::utf8(), true),
+             arrow::field("tags", arrow::list(arrow::field("item", arrow::utf8(), true)), true),
+             arrow::field("score", arrow::float64(), true)});
+    }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        return count_cardinality(params);
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        return std::make_unique<Producer>(params.output_schema, arg_count(params),
+                                          arg_batch_size(params));
+    }
+
+private:
+    class Producer : public vgi::TableProducer {
+    public:
+        Producer(std::shared_ptr<arrow::Schema> schema, int64_t rows, int64_t batch_size)
+            : schema_(std::move(schema)), remaining_(rows), batch_size_(batch_size) {}
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            if (remaining_ <= 0) return nullptr;
+            const int64_t size = std::min(remaining_, batch_size_);
+            const int64_t start = cursor_;
+            cursor_ += size;
+            remaining_ -= size;
+
+            return assemble(schema_, size,
+                            [&](const std::string& column,
+                                int64_t count) -> std::shared_ptr<arrow::Array> {
+                                if (column == "id") {
+                                    std::vector<int64_t> values;
+                                    values.reserve(static_cast<size_t>(count));
+                                    for (int64_t i = 0; i < count; ++i) values.push_back(start + i);
+                                    return int64_array(values);
+                                }
+                                if (column == "name") {
+                                    arrow::StringBuilder builder;
+                                    for (int64_t i = 0; i < count; ++i) {
+                                        (void)builder.Append("item_" + std::to_string(start + i));
+                                    }
+                                    std::shared_ptr<arrow::Array> array;
+                                    (void)builder.Finish(&array);
+                                    return array;
+                                }
+                                if (column == "score") {
+                                    arrow::DoubleBuilder builder;
+                                    (void)builder.Reserve(count);
+                                    for (int64_t i = 0; i < count; ++i) {
+                                        (void)builder.Append(
+                                            static_cast<double>(start + i) * 1.1);
+                                    }
+                                    std::shared_ptr<arrow::Array> array;
+                                    (void)builder.Finish(&array);
+                                    return array;
+                                }
+                                if (column == "tags") return tags(start, count);
+                                return nullptr;
+                            });
+        }
+
+    private:
+        // Two overlapping tags per row, so `list_contains` matches a run of
+        // rows rather than exactly one.
+        static std::shared_ptr<arrow::Array> tags(int64_t start, int64_t count) {
+            auto items = std::make_shared<arrow::StringBuilder>();
+            arrow::ListBuilder builder(arrow::default_memory_pool(), items);
+            for (int64_t i = 0; i < count; ++i) {
+                (void)builder.Append();
+                const int64_t id = start + i;
+                (void)items->Append("tag_" + std::to_string(id % 5));
+                (void)items->Append("tag_" + std::to_string((id + 1) % 5));
+            }
+            std::shared_ptr<arrow::Array> array;
+            (void)builder.Finish(&array);
+            return array;
+        }
+
+        std::shared_ptr<arrow::Schema> schema_;
+        int64_t remaining_;
+        int64_t batch_size_;
+        int64_t cursor_ = 0;
+    };
+};
+
+// `spatial_filter_example(count, batch_size := 2048)` — a grid of points with
+// a WKB geometry column, for spatial filter pushdown.
+class SpatialFilterExample : public vgi::TableFunction {
+public:
+    std::string name() const override { return "spatial_filter_example"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Generates points on a grid with geometry for spatial filter testing";
+        md.categories = {"generator", "spatial", "testing"};
+        md.projection_pushdown = true;
+        md.filter_pushdown = true;
+        md.auto_apply_filters = true;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return count_and_batch_size("Number of points to generate");
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        // The extension type markers are what make DuckDB read the blob as a
+        // GEOMETRY rather than as bytes.
+        auto geom = arrow::field("geom", arrow::binary(), true)
+                        ->WithMetadata(arrow::key_value_metadata(
+                            {"ARROW:extension:name", "ARROW:extension:metadata"},
+                            {"geoarrow.wkb", "{}"}));
+        return arrow::schema({arrow::field("n", arrow::int64(), true),
+                              arrow::field("x", arrow::float64(), true),
+                              arrow::field("y", arrow::float64(), true), geom});
+    }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        return count_cardinality(params);
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        const int64_t count = arg_count(params);
+        // A square grid, so the points spread over the unit square rather than
+        // along one line — a bounding-box filter has to exclude some.
+        const auto columns = std::max<int64_t>(
+            1, static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(count)))));
+        return std::make_unique<Producer>(params.output_schema, count, arg_batch_size(params),
+                                          columns);
+    }
+
+private:
+    class Producer : public vgi::TableProducer {
+    public:
+        Producer(std::shared_ptr<arrow::Schema> schema, int64_t rows, int64_t batch_size,
+                 int64_t columns)
+            : schema_(std::move(schema)),
+              remaining_(rows),
+              batch_size_(batch_size),
+              columns_(columns) {}
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            if (remaining_ <= 0) return nullptr;
+            const int64_t size = std::min(remaining_, batch_size_);
+            const int64_t start = cursor_;
+            cursor_ += size;
+            remaining_ -= size;
+
+            return assemble(schema_, size,
+                            [&](const std::string& column,
+                                int64_t count) -> std::shared_ptr<arrow::Array> {
+                                if (column == "n") {
+                                    std::vector<int64_t> values;
+                                    values.reserve(static_cast<size_t>(count));
+                                    for (int64_t i = 0; i < count; ++i) values.push_back(start + i);
+                                    return int64_array(values);
+                                }
+                                if (column == "x" || column == "y") {
+                                    arrow::DoubleBuilder builder;
+                                    (void)builder.Reserve(count);
+                                    for (int64_t i = 0; i < count; ++i) {
+                                        (void)builder.Append(coordinate(start + i, column == "x"));
+                                    }
+                                    std::shared_ptr<arrow::Array> array;
+                                    (void)builder.Finish(&array);
+                                    return array;
+                                }
+                                if (column == "geom") {
+                                    arrow::BinaryBuilder builder;
+                                    for (int64_t i = 0; i < count; ++i) {
+                                        (void)builder.Append(
+                                            wkb_point(coordinate(start + i, true),
+                                                      coordinate(start + i, false)));
+                                    }
+                                    std::shared_ptr<arrow::Array> array;
+                                    (void)builder.Finish(&array);
+                                    return array;
+                                }
+                                return nullptr;
+                            });
+        }
+
+    private:
+        double coordinate(int64_t index, bool horizontal) const {
+            const auto step = static_cast<double>(columns_);
+            return static_cast<double>(horizontal ? index % columns_ : index / columns_) / step;
+        }
+
+        // Little-endian WKB for POINT(x y), which is the blob DuckDB reads a
+        // GEOMETRY out of.
+        static std::string wkb_point(double x, double y) {
+            std::string wkb{'\x01', '\x01', '\x00', '\x00', '\x00'};
+            for (double value : {x, y}) {
+                char bytes[sizeof(double)];
+                std::memcpy(bytes, &value, sizeof(value));
+                wkb.append(bytes, sizeof(bytes));
+            }
+            return wkb;
+        }
+
+        std::shared_ptr<arrow::Schema> schema_;
+        int64_t remaining_;
+        int64_t batch_size_;
+        int64_t columns_;
+        int64_t cursor_ = 0;
+    };
+};
+
 }  // namespace
 
 void register_filter_fixtures(vgi::Worker& worker) {
@@ -561,6 +898,9 @@ void register_filter_fixtures(vgi::Worker& worker) {
     worker.register_table(std::make_shared<ValuePrune>());
     worker.register_table(std::make_shared<FilteredColumnsEcho>());
     worker.register_table(std::make_shared<DictFilterEcho>());
+    worker.register_table(std::make_shared<DynamicFilterEcho>());
+    worker.register_table(std::make_shared<ExpressionFilterTest>());
+    worker.register_table(std::make_shared<SpatialFilterExample>());
 }
 
 }  // namespace example

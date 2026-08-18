@@ -139,14 +139,14 @@ private:
     };
 };
 
-// `ten_thousand_table()` — a fixed 10,000-row scan, for tests about volume
-// rather than content.
+// `ten_thousand()` — a fixed 10,000-row scan, for tests about volume rather
+// than content. The `ten_thousand_table` catalog table is backed by it.
 class TenThousand : public vgi::TableFunction {
 public:
-    std::string name() const override { return "ten_thousand_table"; }
+    std::string name() const override { return "ten_thousand"; }
 
     vgi::FunctionMetadata metadata() const override {
-        return generator_metadata("Emits exactly 10,000 rows");
+        return generator_metadata("Generates 10000 integers from 0 to 9999");
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
@@ -242,8 +242,14 @@ public:
         for (size_t i = 1; i < params.arguments.positional_count(); ++i) {
             auto value = params.arguments.positional(i);
             if (!value) continue;
+            // DuckDB's lossless types (HUGEINT, UUID, …) arrive as a plain
+            // storage type plus an `ARROW:extension:name` entry on the field;
+            // rebuilding the column from the type alone hands them back as
+            // BLOBs.
+            auto field = params.arguments.positional_field(i);
             fields.push_back(arrow::field("col_" + std::to_string(i - 1), value->type(),
-                                          /*nullable=*/true));
+                                          /*nullable=*/true,
+                                          field ? field->metadata() : nullptr));
         }
         return arrow::schema(std::move(fields));
     }
