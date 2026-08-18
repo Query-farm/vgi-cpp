@@ -234,9 +234,141 @@ public:
     }
 };
 
+// `cache_multicol(n := 4, ttl := 300)` — three columns, so the cache has to
+// round-trip a wider result than a single int64.
+class MultiCol : public vgi::TableFunction {
+public:
+    std::string name() const override { return "cache_multicol"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return cache_metadata("Emits n rows of (a, b, c); cacheable, multi-column");
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::named("n", "int64", "Number of rows to generate"),
+                vgi::ArgSpec::named("ttl", "int64", "Cache TTL in seconds")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("a", arrow::int64(), true),
+                              arrow::field("b", arrow::int64(), true),
+                              arrow::field("c", arrow::int64(), true)});
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        vgi::CacheControl control;
+        control.ttl_seconds = params.arguments.named_int64("ttl").value_or(kDefaultTtlSeconds);
+        return std::make_unique<Rows>(
+            params.output_schema,
+            std::max<int64_t>(0, params.arguments.named_int64("n").value_or(4)),
+            std::move(control));
+    }
+
+private:
+    // a = i, b = i * 10, c = i * 100 — distinct per column so a transposition
+    // in the cache path shows up as wrong values rather than plausible ones.
+    class Rows : public vgi::TableProducer {
+    public:
+        Rows(std::shared_ptr<arrow::Schema> schema, int64_t rows, vgi::CacheControl control)
+            : schema_(std::move(schema)), rows_(rows), control_(std::move(control)) {}
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            if (done_) return nullptr;
+            done_ = true;
+            std::vector<std::shared_ptr<arrow::Array>> columns;
+            for (int64_t scale : {int64_t{1}, int64_t{10}, int64_t{100}}) {
+                arrow::Int64Builder builder;
+                (void)builder.Reserve(rows_);
+                for (int64_t i = 0; i < rows_; ++i) (void)builder.Append(i * scale);
+                std::shared_ptr<arrow::Array> array;
+                (void)builder.Finish(&array);
+                columns.push_back(array);
+            }
+            metadata_ = control_.to_metadata();
+            return arrow::RecordBatch::Make(schema_, rows_, columns);
+        }
+
+        std::map<std::string, std::string> last_metadata() const override {
+            return metadata_;
+        }
+
+    private:
+        std::shared_ptr<arrow::Schema> schema_;
+        int64_t rows_;
+        vgi::CacheControl control_;
+        bool done_ = false;
+        std::map<std::string, std::string> metadata_;
+    };
+};
+
+// `cache_big(rows := 5000)` — many small batches, so multi-batch capture and
+// the cache's size ceiling are both exercised.
+class CacheBig : public vgi::TableFunction {
+public:
+    std::string name() const override { return "cache_big"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return cache_metadata("Emits many small batches totaling `rows` rows; cacheable");
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::named("rows", "int64", "Number of rows to generate")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return single_i64_schema("n");
+    }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        vgi::TableCardinality estimate;
+        const int64_t rows = params.arguments.named_int64("rows").value_or(5000);
+        estimate.estimate = rows;
+        estimate.max = rows;
+        return estimate;
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        vgi::CacheControl control;
+        control.ttl_seconds = kDefaultTtlSeconds;
+        return std::make_unique<Countdown>(
+            params.output_schema, params.arguments.named_int64("rows").value_or(5000), 1000,
+            std::move(control));
+    }
+};
+
+// `cache_revalidatable()` — advertises that the worker can answer a
+// conditional request cheaply, which is what makes the engine send one.
+class CacheRevalidatable : public vgi::TableFunction {
+public:
+    std::string name() const override { return "cache_revalidatable"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return cache_metadata("Emits one nonce row; revalidatable with an ETag");
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return single_i64_schema("nonce");
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        vgi::CacheControl control;
+        control.ttl_seconds = kDefaultTtlSeconds;
+        control.revalidatable = true;
+        // A constant ETag: the fixture's result never actually changes, so
+        // every revalidation is expected to confirm freshness.
+        control.etag = "\"vgi-cpp-fixture\"";
+        return std::make_unique<OneRow>(params.output_schema, next_nonce(), std::move(control));
+    }
+};
+
 }  // namespace
 
 void register_cache(vgi::Worker& worker) {
+    worker.register_table(std::make_shared<MultiCol>());
+    worker.register_table(std::make_shared<CacheBig>());
+    worker.register_table(std::make_shared<CacheRevalidatable>());
     worker.register_table(std::make_shared<CachedNumbers>(
         "cacheable_numbers", "Emits n rows [0..n) and advertises a cache TTL", "n",
         /*takes_ttl=*/true));

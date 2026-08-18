@@ -53,6 +53,14 @@ void declare_catalog(vgi::Worker& worker) {
         backed_by("cache_scoped_txn", "cache_scoped_txn", columns({{"n", arrow::int64()}})));
     data.tables.push_back(
         backed_by("cache_bench", "cache_bench", columns({{"n", arrow::int64()}})));
+    data.tables.push_back(backed_by("cache_multicol", "cache_multicol",
+                                    columns({{"a", arrow::int64()},
+                                             {"b", arrow::int64()},
+                                             {"c", arrow::int64()}})));
+    data.tables.push_back(
+        backed_by("cache_big", "cache_big", columns({{"n", arrow::int64()}})));
+    data.tables.push_back(backed_by("cache_revalidatable", "cache_revalidatable",
+                                    columns({{"nonce", arrow::int64()}})));
 }
 
 }  // namespace example

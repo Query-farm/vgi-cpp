@@ -9,6 +9,8 @@
 
 #include <arrow/array.h>
 #include <arrow/array/builder_primitive.h>
+#include <arrow/table.h>
+#include <arrow/table_builder.h>
 
 #include <vgi/worker.h>
 
@@ -86,9 +88,72 @@ public:
     }
 };
 
+// `repeat_inputs(repeat_count, data)` — duplicate each input batch N times.
+//
+// The count is a bind-time constant, so column 0 of the input batch is the
+// relation's first column, not the count.
+class RepeatInputs : public vgi::TableInOutFunction {
+public:
+    std::string name() const override { return "repeat_inputs"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Duplicates each input batch N times";
+        md.categories = {"transform", "augmentation"};
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::constant_arg("repeat_count", 0, "int64",
+                                           "Times to repeat each input"),
+                vgi::ArgSpec::table("data", 1, "Input relation")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
+        const int64_t count = params.arguments.const_int64(0).value_or(1);
+        // Rejected at bind rather than silently clamped: a caller asking for
+        // zero copies means something, and quietly giving them one is worse
+        // than telling them.
+        if (count < 1) throw std::invalid_argument("Repeat count must be at least 1");
+        if (!params.input_schema) {
+            throw std::invalid_argument("input_schema is required but was None");
+        }
+        return params.input_schema;
+    }
+
+    std::vector<std::shared_ptr<arrow::RecordBatch>> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        const auto count =
+            std::max<int64_t>(1, params.arguments.const_int64(0).value_or(1));
+        auto projected = vgi::project_batch(batch, params.output_schema);
+
+        // Concatenated into one batch rather than emitted N times: the engine
+        // treats each emitted batch as a separate unit downstream, and the
+        // fixture's tests expect one.
+        std::vector<std::shared_ptr<arrow::RecordBatch>> copies(
+            static_cast<size_t>(count), projected);
+        auto table = arrow::Table::FromRecordBatches(projected->schema(), copies);
+        if (!table.ok()) throw std::runtime_error("repeat_inputs: " + table.status().message());
+        auto combined = table.ValueUnsafe()->CombineChunks();
+        if (!combined.ok()) {
+            throw std::runtime_error("repeat_inputs: " + combined.status().message());
+        }
+        arrow::TableBatchReader reader(*combined.ValueUnsafe());
+        std::shared_ptr<arrow::RecordBatch> out;
+        if (!reader.ReadNext(&out).ok() || !out) {
+            // An empty input repeated is still empty, which is a legitimate
+            // answer rather than a failure.
+            return {projected};
+        }
+        return {out};
+    }
+};
+
 }  // namespace
 
 void register_table_in_out(vgi::Worker& worker) {
+    worker.register_table_in_out(std::make_shared<RepeatInputs>());
     worker.register_table_in_out(std::make_shared<Echo>());
     worker.register_table_in_out(std::make_shared<EchoWitness>());
 }
