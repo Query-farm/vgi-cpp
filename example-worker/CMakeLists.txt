@@ -15,6 +15,7 @@ add_executable(vgi-example-worker
     scalar/same_name.cpp
     table/sequence.cpp
     table/cache.cpp
+    table/more.cpp
     catalog_def.cpp
     table_in_out/echo.cpp
     aggregate/basic.cpp

@@ -61,6 +61,8 @@ void declare_catalog(vgi::Worker& worker) {
         backed_by("cache_big", "cache_big", columns({{"n", arrow::int64()}})));
     data.tables.push_back(backed_by("cache_revalidatable", "cache_revalidatable",
                                     columns({{"nonce", arrow::int64()}})));
+    data.tables.push_back(backed_by("ten_thousand_table", "ten_thousand_table",
+                                    columns({{"n", arrow::int64()}})));
 }
 
 }  // namespace example
