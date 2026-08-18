@@ -5,9 +5,11 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
+#include <arrow/compute/initialize.h>
 #include <vgi_rpc/server.h>
 
 #include "dispatcher.h"
@@ -37,6 +39,15 @@ void Worker::register_scalar(std::shared_ptr<ScalarFunction> fn) {
 }
 
 void Worker::run(int argc, char** argv) {
+    // Arrow's compute kernels register themselves from a translation unit
+    // nothing here references, so linking statically drops it and `add`,
+    // `multiply` and friends are simply absent from the registry at runtime —
+    // while `cast`, which lives elsewhere, keeps working. That asymmetry makes
+    // it read like a missing feature flag rather than a linker artifact.
+    if (auto status = arrow::compute::Initialize(); !status.ok()) {
+        throw std::runtime_error("cannot initialize Arrow compute: " + status.ToString());
+    }
+
     vgi_rpc::ServerBuilder builder;
     builder.enable_describe("vgi")
         .protocol_version(std::string(gen::VGI_PROTOCOL_VERSION));

@@ -34,6 +34,11 @@ else()
 endif()
 
 find_package(Arrow CONFIG REQUIRED)
+# Arrow's compute kernels ship as their own library and CMake package. They are
+# not optional here: every function whose result type follows its input does
+# arithmetic through them, and without the package the kernels are absent from
+# the registry at runtime rather than missing at link time.
+find_package(ArrowCompute CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 # ── The SDK ───────────────────────────────────────────────────────────────
@@ -62,6 +67,11 @@ if(TARGET Arrow::arrow_shared)
     target_link_libraries(vgi PUBLIC Arrow::arrow_shared)
 else()
     target_link_libraries(vgi PUBLIC Arrow::arrow_static)
+endif()
+if(TARGET ArrowCompute::arrow_compute_shared)
+    target_link_libraries(vgi PUBLIC ArrowCompute::arrow_compute_shared)
+else()
+    target_link_libraries(vgi PUBLIC ArrowCompute::arrow_compute_static)
 endif()
 
 # ── The example worker: the integration-test fixture ──────────────────────
