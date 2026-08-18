@@ -653,9 +653,21 @@ void register_more_cache(vgi::Worker& worker) {
     worker.register_table(std::make_shared<CacheWhoami>());
     worker.register_table(std::make_shared<CacheVersionedScan>());
     worker.register_table_in(primary, "main", std::make_shared<SameNameCached>("main"));
-    worker.register_table_in(primary, "data", std::make_shared<SameNameCached>("data"));
     worker.register_table_in_out(std::make_shared<CachedEcho>());
     worker.register_table_in_out(std::make_shared<CachedRevalEcho>());
+}
+
+// The `data`-schema twin of `same_name_cached`, which is what
+// `cache/same_name_schemas` uses to prove the result-cache key carries the
+// owning schema.
+//
+// Separate from `register_more_cache` because registering into a schema
+// *creates* it, and only the composite fixture has a `data` schema to hold the
+// twin. A wrapper naming `versioned` advertises its schema count to
+// `attach/versioning_http.test`, and must not grow one as a side effect.
+void register_same_name_cached(vgi::Worker& worker) {
+    worker.register_table_in(worker.catalog().name, "data",
+                             std::make_shared<SameNameCached>("data"));
 }
 
 }  // namespace example

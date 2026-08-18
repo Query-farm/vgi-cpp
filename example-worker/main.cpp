@@ -43,7 +43,12 @@ int main(int argc, char** argv) {
     example::register_seeded(worker);
     example::register_geo(worker);
     example::register_types(worker);
-    example::register_same_name(worker);
+    // Composite-only: these register a same-named function into both `main`
+    // and `data`, which *creates* a `data` schema in whatever catalog is
+    // primary. A wrapper naming `versioned` is a fixture about version
+    // negotiation and cookie stickiness, and `attach/versioning_http.test`
+    // counts the schemas it advertises — one.
+    if (composite) example::register_same_name(worker);
     example::register_table_functions(worker);
     example::register_table_in_out(worker);
     example::register_aggregates(worker);
@@ -67,7 +72,7 @@ int main(int argc, char** argv) {
     example::register_generators(worker);
     example::register_secret_scalars(worker);
     example::register_secret_table_in_out(worker);
-    example::register_same_name_exchange(worker);
+    if (composite) example::register_same_name_exchange(worker);
     example::register_substream_finalize(worker);
     example::register_unnest_tensor_rows(worker);
     example::register_cancellable_inout(worker);
@@ -78,7 +83,8 @@ int main(int argc, char** argv) {
     example::register_static_scans(worker);
     example::register_window_aggregates(worker);
     example::register_percentile(worker);
-    example::register_same_name_aggregates(worker);
+    if (composite) example::register_same_name_aggregates(worker);
+    if (composite) example::register_same_name_cached(worker);
     example::register_nest_tensor(worker);
     example::register_rff(worker);
     example::register_more_cache(worker);
@@ -87,7 +93,11 @@ int main(int argc, char** argv) {
     example::register_partition_broken(worker);
     example::register_cached_scalars(worker);
     example::register_transaction_storage(worker);
-    example::declare_catalog(worker);
+    // The composite's own tables, views and macros. Guarded, because it
+    // declares a `data` schema: a wrapper naming `versioned` is a fixture about
+    // version negotiation and cookie stickiness, and its discovery answer has
+    // to be exactly that — `attach/versioning_http.test` counts its schemas.
+    if (composite) example::declare_catalog(worker);
 
     // A side catalog is registered when this binary is the composite fixture,
     // and also when the wrapper named that catalog outright — in which case it

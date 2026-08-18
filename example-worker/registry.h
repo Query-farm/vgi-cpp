@@ -62,6 +62,7 @@ void register_same_name_aggregates(vgi::Worker& worker);
 void register_nest_tensor(vgi::Worker& worker);
 void register_rff(vgi::Worker& worker);
 void register_more_cache(vgi::Worker& worker);
+void register_same_name_cached(vgi::Worker& worker);
 void register_cache_partitions(vgi::Worker& worker);
 void register_partitioned(vgi::Worker& worker);
 void register_partition_broken(vgi::Worker& worker);

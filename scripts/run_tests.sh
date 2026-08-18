@@ -72,6 +72,77 @@ W_VERSIONED_TABLES=$(mk_wrapper versioned_tables versioned_tables)
 W_ATTACH_OPTIONS=$(mk_wrapper attach_options attach_options)
 W_BAD_PROTOCOL=$(mk_wrapper bad_protocol example VGI_PROTOCOL_VERSION_OVERRIDE=99.0.0)
 
+# HTTP-mode workers. The engine talks to these over a URL rather than by
+# spawning them, so each is a long-lived process the harness owns for the run.
+#
+# Port 0 and read the port back: a fixed port collides with a previous run that
+# has not finished closing its socket, which surfaces as an unrelated test
+# failing to attach. The worker prints `PORT:<n>` once bound, which is the only
+# race-free way to learn an ephemeral port.
+HTTP_PIDS=()
+stop_http_workers() {
+  for pid in ${HTTP_PIDS[@]+"${HTTP_PIDS[@]}"}; do
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null
+  done
+}
+trap stop_http_workers EXIT
+
+start_http_worker() { # name catalog [extra-env...]
+  local name=$1 catalog=$2; shift 2
+  local out="$CACHE/http-$name.out"
+  : > "$out"
+  # Started from the engine's directory, not the harness's. A spawned worker
+  # inherits the engine's cwd; a long-lived HTTP one would otherwise resolve
+  # the relative paths the COPY tests use — `duckdb_unittest_tempdir/...` —
+  # against wherever this script happened to run, and report "cannot open"
+  # for a file the engine had just written.
+  ( cd "$VGI_EXT" || exit 1
+    for kv in "$@"; do export "${kv?}"; done
+    export VGI_WORKER_CATALOG_NAME="$catalog"
+    # A spawned worker inherits the engine's environment; a long-lived HTTP one
+    # has to be handed the same variables explicitly. `VGI_TEST_BRANCH_DIR` in
+    # particular is read by both sides — the test writes a file there and the
+    # catalog fixture names the same path — so a worker without it points its
+    # branches at a directory the test never wrote to.
+    export VGI_TEST_BRANCH_DIR="$BRANCH_DIR"
+    export VGI_TEST_BEARER_TOKEN="test-secret-token"
+    exec "$BIN" --http 0 >"$out" 2>>"$CACHE/worker.log" ) &
+  HTTP_PIDS+=($!)
+
+  # Bounded wait. A worker that never prints a port is a worker that failed to
+  # start, and hanging here would blame the first test that used it.
+  local port=""
+  for _ in $(seq 1 100); do
+    port=$(sed -n 's/^PORT:\([0-9]*\)$/\1/p' "$out" | head -1)
+    [[ -n "$port" ]] && break
+    sleep 0.1
+  done
+  if [[ -z "$port" ]]; then
+    echo "[harness] HTTP worker '$name' never reported a port; see $CACHE/worker.log" >&2
+    return 1
+  fi
+  echo "http://127.0.0.1:$port"
+}
+
+# Opt-in, because each one is a process held open for the whole run and the
+# suite is useful without them. VGI_HTTP=1 turns the group on.
+HTTP_ENV=()
+if [[ "${VGI_HTTP:-0}" == "1" ]]; then
+  echo "[harness] starting HTTP workers..."
+  H_EXAMPLE=$(start_http_worker example example) || exit 1
+  H_VERSIONED=$(start_http_worker versioned versioned) || exit 1
+  H_VERSIONED_TABLES=$(start_http_worker versioned_tables versioned_tables) || exit 1
+  echo "[harness] example=$H_EXAMPLE versioned=$H_VERSIONED tables=$H_VERSIONED_TABLES"
+  # VGI_HTTP_TRANSPORT is a flag: it says VGI_TEST_WORKER is itself a URL, so
+  # the whole suite runs over HTTP rather than by spawning a subprocess.
+  HTTP_ENV=(
+    VGI_TEST_WORKER="$H_EXAMPLE"
+    VGI_HTTP_TRANSPORT=1
+    VGI_VERSIONED_HTTP_WORKER="$H_VERSIONED"
+    VGI_VERSIONED_TABLES_HTTP_WORKER="$H_VERSIONED_TABLES"
+  )
+fi
+
 ARGS=()
 if [[ $# -ge 1 ]]; then
   case "$1" in
@@ -86,6 +157,7 @@ echo "[harness] running: ${ARGS[*]}"
 ( cd "$VGI_EXT" && env \
   VGI_TEST_BRANCH_DIR="$BRANCH_DIR" \
   VGI_TEST_WORKER="$WRAP" \
+  ${HTTP_ENV[@]+"${HTTP_ENV[@]}"} \
   VGI_VERSIONED_WORKER="$W_VERSIONED" \
   VGI_VERSIONED_TABLES_WORKER="$W_VERSIONED_TABLES" \
   VGI_ATTACH_OPTIONS_WORKER="$W_ATTACH_OPTIONS" \

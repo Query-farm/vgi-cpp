@@ -122,6 +122,9 @@ struct PlanParams {
     bool filters_complete = true;
     // The predicates known at plan time.
     PushdownFilters pushdown_filters;
+    // The columns the engine wants, by index into the bound output schema.
+    // Empty means it wants all of them.
+    std::vector<int32_t> projection_ids;
 };
 
 // A plan: the splits, plus what the engine needs to schedule them.

@@ -1080,6 +1080,9 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request)
         plan.cursor = wire::get_optional_binary(plan_request, "cursor");
         plan.filters_complete =
             wire::get_optional_bool(plan_request, "filters_complete").value_or(true);
+        for (auto id : wire::get_int64_list(plan_request, "projection_ids")) {
+            plan.projection_ids.push_back(static_cast<int32_t>(id));
+        }
         plan.pushdown_filters = PushdownFilters::parse(
             wire::get_optional_binary(plan_request, "pushdown_filters").value_or(std::string{}),
             wire::get_binary_list(plan_request, "join_keys"));
