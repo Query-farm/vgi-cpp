@@ -151,8 +151,8 @@ int score_overload(const std::vector<ArgSpec>& specs,
 
 class TableProduce : public vgi_rpc::ProducerState {
 public:
-    explicit TableProduce(std::unique_ptr<TableProducer> producer)
-        : producer_(std::move(producer)) {}
+    TableProduce(std::unique_ptr<TableProducer> producer, PushdownFilters filters = {})
+        : producer_(std::move(producer)), filters_(std::move(filters)) {}
 
     void produce(vgi_rpc::OutputCollector& out, vgi_rpc::CallContext&) override {
         // A null producer is the buffering sink phase, which emits nothing:
@@ -166,6 +166,10 @@ public:
             out.finish();
             return;
         }
+        // Applied here rather than in the producer so a function that only
+        // advertises the capability gets it for free, and one that uses the
+        // filters itself is not filtered twice.
+        if (!filters_.empty()) batch = filters_.apply(batch);
         const auto metadata = producer_->last_metadata();
         if (metadata.empty()) {
             out.emit_batch(batch);
@@ -184,6 +188,7 @@ public:
 
 private:
     std::unique_ptr<TableProducer> producer_;
+    PushdownFilters filters_;
 };
 
 // Drives a table-in-out function: one input batch in, zero or more out.
@@ -554,6 +559,11 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     if (primary) execution_id = next_execution_id();
     params.execution_id = execution_id;
 
+    // Parsed once for the whole scan; the engine sends it on init.
+    params.pushdown_filters =
+        PushdownFilters::parse(wire::get_optional_binary(init_request, "pushdown_filters")
+                                   .value_or(std::string{}));
+
     int64_t max_workers = 1;
     if (auto table = find_table(function_name, params.schema_name, &bind_params)) {
         max_workers = std::max<int64_t>(1, table->max_workers(params));
@@ -599,7 +609,10 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
 
     if (auto table = find_table(function_name, params.schema_name, &bind_params)) {
         stream.input_schema = arrow::schema({});
-        stream.state = std::make_shared<TableProduce>(table->init(params));
+        auto auto_apply = table->metadata().auto_apply_filters ? params.pushdown_filters
+                                                              : PushdownFilters{};
+        stream.state =
+            std::make_shared<TableProduce>(table->init(params), std::move(auto_apply));
         return stream;
     }
 

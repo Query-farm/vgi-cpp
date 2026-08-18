@@ -11,6 +11,7 @@
 #include <arrow/type.h>
 
 #include "vgi/arguments.h"
+#include "vgi/pushdown.h"
 #include "vgi/settings.h"
 #include "vgi/storage.h"
 #include "vgi/types.h"
@@ -57,6 +58,9 @@ struct ProcessParams {
     // belongs to it. A function holding state across calls — a buffering sink,
     // an aggregate — keys on this; a stateless one can ignore it.
     std::string execution_id;
+    // The predicates the engine pushed into this scan. Empty when none were,
+    // or when the function did not declare `filter_pushdown`.
+    PushdownFilters pushdown_filters;
     // Cross-process state, scoped by `execution_id`. Set for every call.
     //
     // Needed rather than optional: the engine parallelizes a buffering sink

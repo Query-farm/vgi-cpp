@@ -139,6 +139,21 @@ struct FunctionMetadata {
     // values in place. Two round trips, which is why the list is empty for
     // functions that need none.
     std::vector<SecretLookup> required_secrets;
+    // Whether the engine may narrow this scan's columns before calling.
+    // Declaring it is what makes the bound output schema carry only the
+    // columns the query needs; without it the function is always asked for
+    // all of them.
+    bool projection_pushdown = false;
+    // Whether the engine may push WHERE predicates into this scan.
+    bool filter_pushdown = false;
+    // Whether the framework should apply those predicates for you.
+    //
+    // Off by default: a function that declares filter_pushdown usually wants
+    // to *use* the filters — to skip a partition or narrow a remote request —
+    // and having them silently applied afterwards as well is only wasted work.
+    // On, the framework filters each emitted batch, which is what a fixture
+    // that merely advertises the capability wants.
+    bool auto_apply_filters = false;
     // DuckDB settings this function reads. Declaring them is what makes the
     // engine forward their values; a setting not declared here never arrives,
     // however it was set.

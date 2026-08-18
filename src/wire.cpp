@@ -101,9 +101,16 @@ std::string get_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
 std::optional<std::string> get_optional_binary(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
     if (!has_column(batch, field)) return std::nullopt;
-    auto arr = typed_column<arrow::BinaryArray>(batch, field, "binary");
-    if (arr->IsNull(0)) return std::nullopt;
-    return arr->GetString(0);
+    // `binary` and `large_binary` alike: the protocol picks the wide form for
+    // fields that can exceed 2 GiB — `pushdown_filters` is declared
+    // large_binary — and they are the same value to every caller here.
+    auto arr = column(batch, field);
+    if (auto wide = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr)) {
+        return wide->IsNull(0) ? std::nullopt : std::optional<std::string>(wide->GetString(0));
+    }
+    auto narrow = typed_column<arrow::BinaryArray>(batch, field, "binary or large_binary");
+    if (narrow->IsNull(0)) return std::nullopt;
+    return narrow->GetString(0);
 }
 
 bool get_bool(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {

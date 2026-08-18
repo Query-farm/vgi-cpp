@@ -60,6 +60,7 @@ add_library(vgi
     src/cache_control.cpp
     src/catalog_model.cpp
     src/settings.cpp
+    src/pushdown.cpp
 )
 add_library(vgi::vgi ALIAS vgi)
 
