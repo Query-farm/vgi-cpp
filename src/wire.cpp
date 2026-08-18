@@ -364,6 +364,24 @@ ResultBuilder& ResultBuilder::set_string_list(const std::string& field,
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_string_list_list(
+    const std::string& field, const std::vector<std::vector<std::string>>& groups) {
+    auto items = std::make_shared<arrow::StringBuilder>();
+    auto inner = std::make_shared<arrow::ListBuilder>(arrow::default_memory_pool(), items);
+    arrow::ListBuilder outer(arrow::default_memory_pool(), inner);
+
+    check_ok(outer.Append(), "opening list-of-lists field '" + field + "'");
+    for (const auto& group : groups) {
+        check_ok(inner->Append(), "opening a group in '" + field + "'");
+        for (const auto& value : group) {
+            check_ok(items->Append(value), "appending to '" + field + "'");
+        }
+    }
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(outer.Finish(), "finishing list-of-lists field '" + field + "'");
+    return *this;
+}
+
 ResultBuilder& ResultBuilder::set_secret_lookups(
     const std::string& field,
     const std::vector<std::tuple<std::string, std::string, std::string>>& lookups) {

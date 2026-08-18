@@ -165,6 +165,8 @@ void declare_catalog(vgi::Worker& worker) {
         data.tables.push_back(std::move(versioned));
     }
 
+    for (auto& table : rff_tables()) data.tables.push_back(std::move(table));
+
     data.views.push_back({"first_ten", "SELECT * FROM sequence(10)", std::nullopt});
     data.views.push_back(
         {"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0", std::nullopt});

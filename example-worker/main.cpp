@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
     example::register_blended(worker);
     example::register_versioned(worker);
     example::register_window_aggregates(worker);
+    example::register_rff(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.

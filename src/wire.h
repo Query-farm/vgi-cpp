@@ -150,6 +150,9 @@ public:
     // keys/values), which is what the canonical Python protocol emits.
     ResultBuilder& set_string_list(const std::string& field,
                                    const std::vector<std::string>& values);
+    // A `list<list<utf8>>` column.
+    ResultBuilder& set_string_list_list(
+        const std::string& field, const std::vector<std::vector<std::string>>& groups);
     // The `required_secrets` column: a list of
     // {secret_type, scope, secret_name}, where an absent scope or name is a
     // null rather than an empty string — the engine treats "" as a real scope.

@@ -358,7 +358,8 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table,
         .set_bool("supports_column_statistics", false)
         .set_int64("cardinality_estimate", table.cardinality.value_or(-1))
         .set_int64("cardinality_max", table.cardinality.value_or(-1))
-        .set_string_map("tags", table.tags);
+        .set_string_map("tags", table.tags)
+        .set_string_list_list("required_filters", table.required_filters);
     if (table.comment) {
         builder.set_string("comment", *table.comment);
     } else {

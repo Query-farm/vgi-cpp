@@ -23,6 +23,7 @@ add_executable(vgi-example-worker
     table/secrets.cpp
     table/series.cpp
     table/versioned.cpp
+    table/rff.cpp
     table/filters.cpp
     copy_to/lines.cpp
     catalog_def.cpp
