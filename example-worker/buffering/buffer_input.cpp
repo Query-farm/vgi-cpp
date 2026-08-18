@@ -79,7 +79,12 @@ private:
 // in another, so anything remembered in memory is gone by finalize.
 class BufferInput : public vgi::TableBufferingFunction {
 public:
-    explicit BufferInput(std::string name) : name_(std::move(name)) {}
+    // `failure` names the phase that should raise, for the fixtures that test
+    // how the engine recovers from a worker error mid-COPY or mid-aggregation.
+    enum class Failure { None, Combine, Finalize, Process };
+
+    explicit BufferInput(std::string name, Failure failure = Failure::None)
+        : name_(std::move(name)), failure_(failure) {}
 
     std::string name() const override { return name_; }
 
@@ -102,6 +107,9 @@ public:
 
     std::string process(const vgi::ProcessParams& params,
                         const std::shared_ptr<arrow::RecordBatch>& batch) override {
+        if (failure_ == Failure::Process) {
+            throw std::invalid_argument("Intentional exception during process()");
+        }
         if (batch && batch->num_rows() > 0) {
             params.storage->append(params.execution_id, kNamespace, "", encode_batch(batch));
         }
@@ -113,17 +121,24 @@ public:
     std::vector<std::string> combine(const vgi::ProcessParams& params,
                                      const std::vector<std::string>& state_ids) override {
         (void)state_ids;
+        if (failure_ == Failure::Combine) {
+            throw std::invalid_argument("Intentional exception during combine()");
+        }
         return {params.execution_id};
     }
 
     std::unique_ptr<vgi::TableProducer> finalize_producer(
         const vgi::ProcessParams& params, const std::string& finalize_state_id) override {
+        if (failure_ == Failure::Finalize) {
+            throw std::invalid_argument("Intentional exception during finalize()");
+        }
         const auto scope = finalize_state_id.empty() ? params.execution_id : finalize_state_id;
         return std::make_unique<Replay>(params.storage, scope, params.output_schema);
     }
 
 private:
     std::string name_;
+    Failure failure_;
 };
 
 }  // namespace
@@ -132,6 +147,20 @@ void register_buffering(vgi::Worker& worker) {
     worker.register_buffering(std::make_shared<BufferInput>("buffer_input"));
     worker.register_buffering(std::make_shared<BufferInput>("echo_buffering"));
     worker.register_buffering(std::make_shared<BufferInput>("ordered_buffer_input"));
+    worker.register_buffering(std::make_shared<BufferInput>("batch_index_buffer_input"));
+    worker.register_buffering(std::make_shared<BufferInput>("buffer_emit_wide"));
+    worker.register_buffering(std::make_shared<BufferInput>("ordered_source"));
+    worker.register_buffering(std::make_shared<BufferInput>("large_state"));
+    worker.register_buffering(std::make_shared<BufferInput>("slow_cancellable_buffering"));
+
+    // Failure fixtures: each raises in one phase, so the tests can check that
+    // the pool recovers rather than wedging — a later query must still work.
+    worker.register_buffering(
+        std::make_shared<BufferInput>("crash_on_combine", BufferInput::Failure::Combine));
+    worker.register_buffering(
+        std::make_shared<BufferInput>("crash_on_finalize", BufferInput::Failure::Finalize));
+    worker.register_buffering(
+        std::make_shared<BufferInput>("crash_on_process", BufferInput::Failure::Process));
 }
 
 }  // namespace example

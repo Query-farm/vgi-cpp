@@ -128,7 +128,10 @@ private:
 
 class SumAllColumns : public vgi::TableBufferingFunction {
 public:
-    explicit SumAllColumns(std::string name) : name_(std::move(name)) {}
+    enum class Failure { None, Finalize };
+
+    explicit SumAllColumns(std::string name, Failure failure = Failure::None)
+        : name_(std::move(name)), failure_(failure) {}
 
     std::string name() const override { return name_; }
 
@@ -177,6 +180,9 @@ public:
 
     std::unique_ptr<vgi::TableProducer> finalize_producer(
         const vgi::ProcessParams& params, const std::string& finalize_state_id) override {
+        if (failure_ == Failure::Finalize) {
+            throw std::invalid_argument("Intentional exception during finalize()");
+        }
         const auto scope = finalize_state_id.empty() ? params.execution_id : finalize_state_id;
         // Every partial is one row, so the whole log fits in memory here even
         // though the input relation did not.
@@ -217,6 +223,7 @@ public:
 
 private:
     std::string name_;
+    Failure failure_;
 };
 
 }  // namespace
@@ -225,6 +232,10 @@ void register_sum_all_columns(vgi::Worker& worker) {
     worker.register_buffering(std::make_shared<SumAllColumns>("sum_all_columns"));
     worker.register_buffering(
         std::make_shared<SumAllColumns>("sum_all_columns_simple_distributed"));
+    worker.register_buffering(std::make_shared<SumAllColumns>("cached_sum_all"));
+    worker.register_buffering(std::make_shared<SumAllColumns>("vgi_sum_all"));
+    worker.register_buffering(
+        std::make_shared<SumAllColumns>("exception_finalize", SumAllColumns::Failure::Finalize));
 }
 
 }  // namespace example
