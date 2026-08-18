@@ -184,6 +184,30 @@ std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes) {
     return batch;
 }
 
+std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                         const std::string& field) {
+    std::vector<std::string> items;
+    if (!has_column(batch, field)) return items;
+    auto list = std::dynamic_pointer_cast<arrow::ListArray>(column(batch, field));
+    if (!list || list->length() == 0 || list->IsNull(0)) return items;
+
+    const int64_t begin = list->value_offset(0);
+    const int64_t end = list->value_offset(1);
+    // Both widths, for the same reason get_optional_binary accepts both.
+    if (auto wide = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(list->values())) {
+        for (int64_t i = begin; i < end; ++i) {
+            if (!wide->IsNull(i)) items.push_back(wide->GetString(i));
+        }
+        return items;
+    }
+    if (auto narrow = std::dynamic_pointer_cast<arrow::BinaryArray>(list->values())) {
+        for (int64_t i = begin; i < end; ++i) {
+            if (!narrow->IsNull(i)) items.push_back(narrow->GetString(i));
+        }
+    }
+    return items;
+}
+
 std::shared_ptr<arrow::RecordBatch> get_ipc(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
     auto bytes = get_optional_binary(batch, field);

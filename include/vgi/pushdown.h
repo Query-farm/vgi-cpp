@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -46,7 +47,13 @@ class PushdownFilters {
 public:
     // Parse the IPC filter blob. Empty input yields no filters, which is what
     // a scan with nothing pushed into it sees.
-    static PushdownFilters parse(const std::string& ipc_bytes);
+    //
+    // `join_key_batches` are the side batches a `join_keys` filter refers to —
+    // DuckDB turns an `IN (…)` list, and a semi-join's build side, into a
+    // filter that names a column in them rather than carrying the values
+    // inline. Without them such a filter has no values at all.
+    static PushdownFilters parse(const std::string& ipc_bytes,
+                                 const std::vector<std::string>& join_key_batches = {});
 
     bool empty() const noexcept { return filters_.empty(); }
 
@@ -68,14 +75,25 @@ public:
     std::shared_ptr<arrow::RecordBatch> apply(
         const std::shared_ptr<arrow::RecordBatch>& batch) const;
 
+    // The filters as SQL-ish text, `(none)` when there are none.
+    //
+    // For diagnostics and for fixtures that report what they were told. The
+    // rendering matches the Python reference exactly — strings single-quoted,
+    // booleans `True`/`False`, an IN list of more than 20 values collapsed to
+    // a count — because the tests compare the string.
+    std::string format() const;
+
     // The parsed filter tree. Public only so the implementation's free
     // helpers can name it; it is not part of the SDK's surface.
     struct Spec;
 
 private:
+    std::shared_ptr<arrow::Array> values_for(const Spec& spec) const;
+
     std::vector<Filter> filters_;
     std::vector<std::shared_ptr<Spec>> specs_;
     std::vector<std::shared_ptr<arrow::Array>> values_;
+    std::map<std::string, std::shared_ptr<arrow::Array>> join_keys_;
 };
 
 }  // namespace vgi

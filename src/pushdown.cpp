@@ -4,6 +4,9 @@
 #include "vgi/pushdown.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
 
 #include <arrow/array/builder_primitive.h>
 #include <arrow/compute/api.h>
@@ -21,6 +24,9 @@ struct PushdownFilters::Spec {
     std::string column_name;
     std::string op;
     std::optional<size_t> value_ref;
+    // A `join_keys` filter names a column in the side batches rather than
+    // carrying its values inline.
+    std::string keys_column;
     std::vector<std::shared_ptr<Spec>> children;
 };
 
@@ -38,6 +44,7 @@ std::shared_ptr<Spec> parse_spec(const json& node) {
     if (node.contains("value_ref") && node["value_ref"].is_number_unsigned()) {
         spec->value_ref = node["value_ref"].get<size_t>();
     }
+    spec->keys_column = node.value("keys_column", "");
     if (node.contains("children") && node["children"].is_array()) {
         for (const auto& child : node["children"]) spec->children.push_back(parse_spec(child));
     }
@@ -85,8 +92,16 @@ std::optional<int64_t> as_int64(const std::shared_ptr<arrow::Array>& array) {
 
 }  // namespace
 
-PushdownFilters PushdownFilters::parse(const std::string& ipc_bytes) {
+PushdownFilters PushdownFilters::parse(const std::string& ipc_bytes,
+                                       const std::vector<std::string>& join_key_batches) {
     PushdownFilters filters;
+    for (const auto& blob : join_key_batches) {
+        auto batch = wire::decode_ipc(blob);
+        if (!batch) continue;
+        for (int i = 0; i < batch->num_columns(); ++i) {
+            filters.join_keys_[batch->schema()->field(i)->name()] = batch->column(i);
+        }
+    }
     if (ipc_bytes.empty()) return filters;
 
     auto batch = wire::decode_ipc(ipc_bytes);
@@ -104,6 +119,13 @@ PushdownFilters PushdownFilters::parse(const std::string& ipc_bytes) {
         // and never correctness.
         return filters;
     }
+    // VGI_FILTER_DEBUG=1 prints the filter tree. Which predicates DuckDB
+    // actually pushes is not obvious — an `IN` list arrives as a `join_keys`
+    // filter with no inline values at all — and this is the quickest way to
+    // find out.
+    if (std::getenv("VGI_FILTER_DEBUG")) {
+        std::fprintf(stderr, "[vgi-filter] %s\n", encoded->GetString(0).c_str());
+    }
     if (!tree.is_array()) return filters;
 
     for (const auto& node : tree) filters.specs_.push_back(parse_spec(node));
@@ -113,6 +135,18 @@ PushdownFilters PushdownFilters::parse(const std::string& ipc_bytes) {
     }
     for (const auto& spec : filters.specs_) flatten(spec, filters.filters_);
     return filters;
+}
+
+// The values a spec refers to: inline for most kinds, from the side batches
+// for `join_keys`.
+std::shared_ptr<arrow::Array> PushdownFilters::values_for(const Spec& spec) const {
+    if (spec.kind == "join_keys") {
+        auto it = join_keys_.find(spec.keys_column.empty() ? spec.column_name
+                                                          : spec.keys_column);
+        return it == join_keys_.end() ? nullptr : it->second;
+    }
+    if (!spec.value_ref || *spec.value_ref >= values_.size()) return nullptr;
+    return values_[*spec.value_ref];
 }
 
 std::vector<Filter> PushdownFilters::column_filters(const std::string& column) const {
@@ -134,8 +168,7 @@ ColumnBounds PushdownFilters::column_bounds(const std::string& column) const {
             continue;
         }
         if (spec->kind != "constant" || spec->column_name != column) continue;
-        if (!spec->value_ref || *spec->value_ref >= values_.size()) continue;
-        auto value = as_int64(values_[*spec->value_ref]);
+        auto value = as_int64(values_for(*spec));
         if (!value) continue;
 
         const auto& op = spec->op;
@@ -149,6 +182,94 @@ ColumnBounds PushdownFilters::column_bounds(const std::string& column) const {
         }
     }
     return bounds;
+}
+
+namespace {
+
+const char* op_symbol(const std::string& op) {
+    if (op == "eq") return "=";
+    if (op == "ne") return "!=";
+    if (op == "lt") return "<";
+    if (op == "le") return "<=";
+    if (op == "gt") return ">";
+    if (op == "ge") return ">=";
+    return "?";
+}
+
+// Rendered as the Python fixtures render it: strings single-quoted, booleans
+// `True`/`False`, nulls `NULL`, everything else via its own display. The tests
+// compare this text, so the spelling is the contract.
+std::string format_scalar(const std::shared_ptr<arrow::Array>& array, int64_t i) {
+    if (!array || i >= array->length() || array->IsNull(i)) return "NULL";
+    switch (array->type()->id()) {
+        case arrow::Type::STRING:
+            return "'" + static_cast<const arrow::StringArray&>(*array).GetString(i) + "'";
+        case arrow::Type::LARGE_STRING:
+            return "'" + static_cast<const arrow::LargeStringArray&>(*array).GetString(i) + "'";
+        case arrow::Type::BOOL:
+            return static_cast<const arrow::BooleanArray&>(*array).Value(i) ? "True" : "False";
+        default:
+            break;
+    }
+    auto casted = arrow::compute::Cast(*array->Slice(i, 1), arrow::utf8());
+    if (!casted.ok()) return {};
+    return std::static_pointer_cast<arrow::StringArray>(casted.MoveValueUnsafe())->GetString(0);
+}
+
+}  // namespace
+
+std::string PushdownFilters::format() const {
+    if (specs_.empty()) return "(none)";
+
+    // Bound to the member so the recursion can reach `values_`; a free
+    // function would have to take them as a parameter at every level.
+    std::function<std::string(const std::shared_ptr<Spec>&, const std::string&)> render =
+        [&](const std::shared_ptr<Spec>& spec, const std::string& column) -> std::string {
+        const std::string& name = column.empty() ? spec->column_name : column;
+        auto value = [&]() -> std::shared_ptr<arrow::Array> { return values_for(*spec); };
+
+        if (spec->kind == "is_null") return name + " IS NULL";
+        if (spec->kind == "is_not_null") return name + " IS NOT NULL";
+        if (spec->kind == "constant") {
+            return name + " " + op_symbol(spec->op.empty() ? "eq" : spec->op) + " " +
+                   format_scalar(value(), 0);
+        }
+        if (spec->kind == "in" || spec->kind == "join_keys") {
+            auto values = value();
+            if (!values) return name + " IN ()";
+            // A long IN list is collapsed: the point is that a filter arrived,
+            // and printing thousands of values makes the output unreadable and
+            // the test unwriteable.
+            if (values->length() > 20) {
+                return name + " IN (" + std::to_string(values->length()) + " values)";
+            }
+            std::string items;
+            for (int64_t i = 0; i < values->length(); ++i) {
+                if (i) items += ", ";
+                items += format_scalar(values, i);
+            }
+            return name + " IN (" + items + ")";
+        }
+        if (spec->kind == "and" || spec->kind == "or") {
+            const std::string joiner = spec->kind == "and" ? " AND " : " OR ";
+            std::string parts;
+            for (size_t i = 0; i < spec->children.size(); ++i) {
+                if (i) parts += joiner;
+                parts += render(spec->children[i], "");
+            }
+            // Parenthesized, so a nested group reads unambiguously and the
+            // text matches what the reference implementations emit.
+            return "(" + parts + ")";
+        }
+        return spec->kind;
+    };
+
+    std::string out;
+    for (size_t i = 0; i < specs_.size(); ++i) {
+        if (i) out += " AND ";
+        out += render(specs_[i], "");
+    }
+    return out.empty() ? "(none)" : out;
 }
 
 std::shared_ptr<arrow::RecordBatch> PushdownFilters::apply(
@@ -177,10 +298,11 @@ std::shared_ptr<arrow::RecordBatch> PushdownFilters::apply(
             mask = arrow::compute::IsNull(column);
         } else if (spec->kind == "is_not_null") {
             mask = arrow::compute::IsValid(column);
-        } else if (spec->kind == "constant" || spec->kind == "in") {
-            if (!spec->value_ref || *spec->value_ref >= values_.size()) continue;
-            auto value = values_[*spec->value_ref];
-            if (spec->kind == "in") {
+        } else if (spec->kind == "constant" || spec->kind == "in" ||
+                   spec->kind == "join_keys") {
+            auto value = values_for(*spec);
+            if (!value) continue;
+            if (spec->kind != "constant") {
                 arrow::compute::SetLookupOptions options(value);
                 mask = arrow::compute::CallFunction("is_in", {column}, &options);
             } else {
@@ -200,16 +322,16 @@ std::shared_ptr<arrow::RecordBatch> PushdownFilters::apply(
 
         // A null result is neither true nor false; SQL drops those rows, and
         // Filter's default emits them, so nulls are made explicit false first.
-        // A null comparison result is neither true nor false; SQL drops those
-        // rows, and Filter's default *emits* them, so nulls are resolved to
-        // false first. Getting this wrong keeps rows the predicate rejected.
-        auto resolved = arrow::compute::CallFunction(
-            "fill_null", {mask.MoveValueUnsafe(),
-                          arrow::Datum(std::make_shared<arrow::BooleanScalar>(false))});
-        if (!resolved.ok()) continue;
-        auto filtered = arrow::compute::Filter(surviving, resolved.MoveValueUnsafe());
+        // DROP, explicitly. A null comparison result is neither true nor
+        // false and SQL excludes those rows; `EMIT_NULL` would keep them,
+        // which is a wrong answer rather than a slow one. Named rather than
+        // left to the default so the choice survives an Arrow upgrade.
+        arrow::compute::FilterOptions options(
+            arrow::compute::FilterOptions::NullSelectionBehavior::DROP);
+        auto filtered =
+            arrow::compute::Filter(surviving, mask.MoveValueUnsafe(), options);
         if (!filtered.ok()) continue;
-        surviving = filtered.MoveValueUnsafe().record_batch();
+        if (auto next = filtered.MoveValueUnsafe().record_batch()) surviving = next;
     }
     return surviving;
 }

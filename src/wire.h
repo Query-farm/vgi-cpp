@@ -75,6 +75,10 @@ std::optional<std::string> get_optional_enum(
 // dataclass is represented.
 std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes);
 
+// A `list<binary>` or `list<large_binary>` parameter, as its elements.
+std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                        const std::string& field);
+
 // Read a dataclass parameter: the named binary column, decoded.
 std::shared_ptr<arrow::RecordBatch> get_ipc(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);

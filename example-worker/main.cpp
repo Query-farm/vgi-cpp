@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
     example::register_settings_tables(worker);
     example::register_secret_fixtures(worker);
     example::register_series(worker);
+    example::register_filter_fixtures(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.

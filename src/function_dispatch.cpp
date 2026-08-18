@@ -560,9 +560,9 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.execution_id = execution_id;
 
     // Parsed once for the whole scan; the engine sends it on init.
-    params.pushdown_filters =
-        PushdownFilters::parse(wire::get_optional_binary(init_request, "pushdown_filters")
-                                   .value_or(std::string{}));
+    params.pushdown_filters = PushdownFilters::parse(
+        wire::get_optional_binary(init_request, "pushdown_filters").value_or(std::string{}),
+        wire::get_binary_list(init_request, "join_keys"));
 
     int64_t max_workers = 1;
     if (auto table = find_table(function_name, params.schema_name, &bind_params)) {
