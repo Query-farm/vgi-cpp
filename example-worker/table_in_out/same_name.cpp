@@ -33,7 +33,6 @@
 namespace example {
 namespace {
 
-constexpr const char* kCatalog = "example";
 // Shared across the two schemas — the collision is the point.
 constexpr const char* kTransformName = "test_same_name_transform";
 constexpr const char* kBufferedName = "test_same_name_buffered";
@@ -185,10 +184,13 @@ private:
 }  // namespace
 
 void register_same_name_exchange(vgi::Worker& worker) {
-    worker.register_table_in_out_in(kCatalog, "main", std::make_shared<SameNameTransform>("main"));
-    worker.register_table_in_out_in(kCatalog, "data", std::make_shared<SameNameTransform>("data"));
-    worker.register_buffering_in(kCatalog, "main", std::make_shared<SameNameBuffered>("main"));
-    worker.register_buffering_in(kCatalog, "data", std::make_shared<SameNameBuffered>("data"));
+    // The primary catalog, not a hardcoded name: one binary stands in for
+    // several fixtures, and these belong to whichever it is serving.
+    const auto& primary = worker.catalog().name;
+    worker.register_table_in_out_in(primary, "main", std::make_shared<SameNameTransform>("main"));
+    worker.register_table_in_out_in(primary, "data", std::make_shared<SameNameTransform>("data"));
+    worker.register_buffering_in(primary, "main", std::make_shared<SameNameBuffered>("main"));
+    worker.register_buffering_in(primary, "data", std::make_shared<SameNameBuffered>("data"));
 }
 
 }  // namespace example

@@ -654,6 +654,28 @@ private:
 
 }  // namespace
 
+// The `versioned_tables` catalog's scans, registered separately because that
+// catalog is a fixture of its own: the binary serves it beside `example` only
+// when it is serving `example`, and alone when the wrapper names it.
+void register_versioned_tables_scans(vgi::Worker& worker) {
+    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
+        "versioned_tables_animals_scan",
+        Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
+                {"legs", int64_column({2, 4, 4, 4, 4})},
+                {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})}}));
+    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
+        "versioned_tables_animals_color_scan",
+        Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
+                {"legs", int64_column({2, 4, 4, 4, 4})},
+                {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})},
+                {"color", string_column({"red", "brown", "black", "pink", "white"})}}));
+    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
+        "versioned_tables_plants_scan",
+        Columns{{"name", string_column({"oak", "pine", "rose", "tomato", "wheat"})},
+                {"kind", string_column({"tree", "tree", "flower", "vegetable", "grass"})},
+                {"height_m", double_column({20.0, 25.0, 0.6, 1.5, 1.0})}}));
+}
+
 void register_static_scans(vgi::Worker& worker) {
     // The reference tables the constraint, comment, default and statistics
     // tests read. Values are pinned by those tests, not chosen here.
@@ -686,26 +708,6 @@ void register_static_scans(vgi::Worker& worker) {
         "colors_scan", Columns{{"id", int64_column({1, 2, 3})},
                                {"color", string_column({"blue", "green", "red"})},
                                {"hex_code", string_column({"#0000FF", "#00FF00", "#FF0000"})}}));
-
-    // Registered into the `versioned_tables` catalog, not `example`: they back
-    // that catalog's tables and are not part of this one's function surface,
-    // which `function_registration.test` counts exactly.
-    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
-        "versioned_tables_animals_scan",
-        Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
-                {"legs", int64_column({2, 4, 4, 4, 4})},
-                {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})}}));
-    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
-        "versioned_tables_animals_color_scan",
-        Columns{{"name", string_column({"chicken", "cow", "horse", "pig", "sheep"})},
-                {"legs", int64_column({2, 4, 4, 4, 4})},
-                {"sound", string_column({"cluck", "moo", "neigh", "oink", "baa"})},
-                {"color", string_column({"red", "brown", "black", "pink", "white"})}}));
-    worker.register_table_in(kVersionedTables, "main", std::make_shared<StaticScan>(
-        "versioned_tables_plants_scan",
-        Columns{{"name", string_column({"oak", "pine", "rose", "tomato", "wheat"})},
-                {"kind", string_column({"tree", "tree", "flower", "vegetable", "grass"})},
-                {"height_m", double_column({20.0, 25.0, 0.6, 1.5, 1.0})}}));
 
     worker.register_table(std::make_shared<RowIdSequence>());
     worker.register_table(std::make_shared<FilterEchoTableScan>());

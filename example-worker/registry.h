@@ -56,6 +56,7 @@ void register_source_shapes(vgi::Worker& worker);
 void register_blended(vgi::Worker& worker);
 void register_versioned(vgi::Worker& worker);
 void register_static_scans(vgi::Worker& worker);
+void register_versioned_tables_scans(vgi::Worker& worker);
 void register_window_aggregates(vgi::Worker& worker);
 void register_percentile(vgi::Worker& worker);
 void register_same_name_aggregates(vgi::Worker& worker);

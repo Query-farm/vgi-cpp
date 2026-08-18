@@ -33,7 +33,6 @@
 namespace example {
 namespace {
 
-constexpr const char* kCatalog = "example";
 
 // Long enough that freshness never lapses part-way through a test.
 constexpr int64_t kDefaultTtlSeconds = 300;
@@ -626,14 +625,17 @@ public:
 }  // namespace
 
 void register_more_cache(vgi::Worker& worker) {
+    // The primary catalog, not a hardcoded name: one binary stands in for
+    // several fixtures, and these belong to whichever it is serving.
+    const auto& primary = worker.catalog().name;
     worker.register_table(std::make_shared<CacheTypes>());
     worker.register_table(std::make_shared<CacheFiltered>());
     worker.register_table(std::make_shared<CacheOrdered>());
     worker.register_table(std::make_shared<CacheExternalFail>());
     worker.register_table(std::make_shared<CacheWhoami>());
     worker.register_table(std::make_shared<CacheVersionedScan>());
-    worker.register_table_in(kCatalog, "main", std::make_shared<SameNameCached>("main"));
-    worker.register_table_in(kCatalog, "data", std::make_shared<SameNameCached>("data"));
+    worker.register_table_in(primary, "main", std::make_shared<SameNameCached>("main"));
+    worker.register_table_in(primary, "data", std::make_shared<SameNameCached>("data"));
     worker.register_table_in_out(std::make_shared<CachedEcho>());
     worker.register_table_in_out(std::make_shared<CachedRevalEcho>());
 }

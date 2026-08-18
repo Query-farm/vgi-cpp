@@ -726,7 +726,9 @@ std::string Dispatcher::encode_view_info(const CatalogView& view,
         // `definition`, not `sql` — the latter is not a ViewInfo field, and
         // ResultBuilder refuses an unknown one, so every view encode threw and
         // took `SHOW TABLES` on the schema with it.
-        .set_string("definition", view.definition);
+        .set_string("definition", view.definition)
+        .set_string_map("tags", view.tags)
+        .set_string_map("column_comments", view.column_comments);
     if (view.comment) {
         builder.set_string("comment", *view.comment);
     } else {

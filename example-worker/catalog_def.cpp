@@ -321,6 +321,10 @@ void declare_catalog(vgi::Worker& worker) {
     {
         auto numbers = backed_by("numbers", "sequence", columns({{"value", arrow::int64()}}),
                                  "First 100 integers (demonstrates explicit columns)");
+        // The legacy path on purpose: the engine asks for the scan function
+        // separately, which is the round trip `inlined_scan_function.test`
+        // checks is *not* taken by the inlined tables beside it.
+        numbers.inline_scan = false;
         numbers.scan_arguments = vgi::serialize_scan_arguments({int64_arg(100)});
         numbers.cardinality = 100;
         numbers.column_statistics = {sequence_statistics("value", 100)};
@@ -478,7 +482,8 @@ void declare_catalog(vgi::Worker& worker) {
     }
 
     {
-        auto large = backed_by("large_sequence", "sequence", columns({{"n", arrow::int64()}}));
+        auto large = backed_by("large_sequence", "sequence", columns({{"n", arrow::int64()}}),
+                               "A large sequence of integers from 0 to 1,000,000");
         large.scan_arguments = vgi::serialize_scan_arguments({int64_arg(1000000)});
         large.cardinality = 1000000;
         data.tables.push_back(std::move(large));
@@ -532,14 +537,22 @@ void declare_catalog(vgi::Worker& worker) {
                            "Table macro returning range of values",
                            {},
                            {{"n", "Number of rows to generate"}}});
-    main.views.push_back(
-        {"first_ten", "SELECT * FROM sequence(10)", "First 10 integers"});
+    main.views.push_back({"first_ten",
+                          "SELECT * FROM sequence(10)",
+                          "First 10 integers",
+                          {{"layer", "demo"}, {"origin", "sequence"}},
+                          {{"n", "Sequence index 0..9"}}});
+    // Commented, but with no column comments: a commented view is not a view
+    // with commented columns, and the pair of them proves the two are separate.
     main.views.push_back({"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0",
                           "Even numbers from 0 to 98"});
     // Over the `numbers` table rather than over `sequence` directly: what it
     // probes is that a view can name another catalog object.
-    data.views.push_back(
-        {"small_numbers", "SELECT * FROM numbers WHERE value < 10", std::nullopt});
+    data.views.push_back({"small_numbers",
+                          "SELECT * FROM numbers WHERE value < 10",
+                          std::nullopt,
+                          {},
+                          {{"value", "Single-digit value 0..9"}}});
 
     data.tables.push_back(
         backed_by("cache_projection", "cache_projection",

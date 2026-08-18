@@ -143,6 +143,10 @@ struct CatalogView {
     // mismatch here is rejected rather than ignored.
     std::string definition;
     std::optional<std::string> comment;
+    std::vector<std::pair<std::string, std::string>> tags;
+    // Aligned by name, not by position: the view's columns are whatever its
+    // SQL produces, and the engine matches these against them.
+    std::vector<std::pair<std::string, std::string>> column_comments;
 };
 
 // A macro: a name bound to SQL the engine substitutes at the call site.

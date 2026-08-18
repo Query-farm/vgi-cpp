@@ -33,7 +33,6 @@
 namespace example {
 namespace {
 
-constexpr const char* kCatalog = "example";
 // Identical for both implementations — the collision is the point.
 constexpr const char* kFunctionName = "test_same_name_agg";
 
@@ -108,8 +107,11 @@ private:
 }  // namespace
 
 void register_same_name_aggregates(vgi::Worker& worker) {
-    worker.register_aggregate_in(kCatalog, "main", std::make_shared<SameNameAgg>("main"));
-    worker.register_aggregate_in(kCatalog, "data", std::make_shared<SameNameAgg>("data"));
+    // The primary catalog, not a hardcoded name: one binary stands in for
+    // several fixtures, and these belong to whichever it is serving.
+    const auto& primary = worker.catalog().name;
+    worker.register_aggregate_in(primary, "main", std::make_shared<SameNameAgg>("main"));
+    worker.register_aggregate_in(primary, "data", std::make_shared<SameNameAgg>("data"));
 }
 
 }  // namespace example

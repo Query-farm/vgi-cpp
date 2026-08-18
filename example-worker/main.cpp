@@ -20,6 +20,12 @@ int main(int argc, char** argv) {
     vgi::CatalogModel catalog;
     const char* name = std::getenv("VGI_WORKER_CATALOG_NAME");
     catalog.name = (name && *name) ? name : "example";
+    // `example` is the composite fixture: it serves the side catalogs beside
+    // its own, because several tests attach two of them from one binary. A
+    // wrapper that names one of the other fixtures serves that one alone, and
+    // its discovery answer has to list exactly it.
+    const bool composite = catalog.name == "example";
+    const bool catalog_name_is_versioned_tables = catalog.name == "versioned_tables";
     if (catalog.name == "versioned") {
         // The versioned fixture: three data versions, one implementation, and
         // an advertised range. ATTACH resolves against these.
@@ -80,12 +86,18 @@ int main(int argc, char** argv) {
     example::register_cache_partitions(worker);
     example::register_partitioned(worker);
     example::register_partition_broken(worker);
-    example::register_accumulate(worker);
     example::register_cached_scalars(worker);
-    example::register_projection_repro(worker);
     example::register_transaction_storage(worker);
     example::declare_catalog(worker);
-    example::register_extra_catalogs(worker);
+
+    if (composite || catalog_name_is_versioned_tables) {
+        example::register_versioned_tables_scans(worker);
+    }
+    if (composite) {
+        example::register_accumulate(worker);
+        example::register_projection_repro(worker);
+        example::register_extra_catalogs(worker);
+    }
 
     // Serves until the engine disconnects; does not return.
     worker.run(argc, argv);
