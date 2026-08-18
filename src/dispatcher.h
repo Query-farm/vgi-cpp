@@ -118,6 +118,7 @@ private:
                                              const std::string& schema_name);
     static std::string encode_buffering_info(const TableBufferingFunction& fn,
                                              const std::string& schema_name);
+    std::vector<std::string> encode_settings() const;
     static std::string encode_table_info(const CatalogTable& table,
                                          const std::string& schema_name);
     static std::string encode_view_info(const CatalogView& view,

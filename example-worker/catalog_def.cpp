@@ -39,6 +39,17 @@ vgi::CatalogTable backed_by(std::string name, std::string scan_function,
 }  // namespace
 
 void declare_catalog(vgi::Worker& worker) {
+    // Settings the catalog introduces. `SET greeting = 'Bonjour'` only works
+    // because they are declared here; a function then names the ones it reads
+    // in `required_settings` to have the values forwarded.
+    worker.catalog().settings = {
+        {"vgi_verbose_mode", "Enable verbose output", arrow::boolean()},
+        {"greeting", "Greeting prefix", arrow::utf8()},
+        {"multiplier", "Integer multiplier", arrow::int64()},
+        {"threshold", "Floating-point threshold", arrow::float64()},
+        {"config", "Free-form configuration string", arrow::utf8()},
+    };
+
     auto& data = worker.catalog().schema("data");
 
     data.tables.push_back(

@@ -52,6 +52,18 @@ struct CatalogView {
     std::optional<std::string> comment;
 };
 
+// A DuckDB setting this catalog introduces.
+//
+// Declared at ATTACH, which is what makes `SET my_setting = ...` work at all:
+// the engine registers each of these as a real DuckDB setting. Separately, a
+// function must name a setting in `required_settings` for its *value* to be
+// forwarded — declaring it here creates it, naming it there delivers it.
+struct SettingSpec {
+    std::string name;
+    std::string description;
+    std::shared_ptr<arrow::DataType> type;
+};
+
 // A schema and everything declared in it.
 struct CatalogSchema {
     std::string name = "main";
@@ -69,6 +81,9 @@ struct CatalogModel {
     std::string name = "main";
     std::string implementation_version;
     std::string source_url;
+
+    // Settings this catalog introduces to the engine.
+    std::vector<SettingSpec> settings;
 
     // Schemas declared up front. Registering a function in a schema adds it
     // here too, so a worker with only functions never has to list them.

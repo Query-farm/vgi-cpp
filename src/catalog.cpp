@@ -66,6 +66,35 @@ vgi_rpc::Result empty_items(const std::string& method) {
 
 }  // namespace
 
+// One IPC entry per declared setting.
+//
+// The batch schema is `{name, description, type, default_value}`, where `type`
+// is itself the IPC schema of a single `value` field of the setting's type —
+// a schema inside a schema, which is how a setting's type travels without a
+// type-name vocabulary of its own.
+std::vector<std::string> Dispatcher::encode_settings() const {
+    static const auto schema = arrow::schema({
+        arrow::field("name", arrow::utf8(), /*nullable=*/false),
+        arrow::field("description", arrow::utf8(), /*nullable=*/false),
+        arrow::field("type", arrow::binary(), /*nullable=*/false),
+        arrow::field("default_value", arrow::binary(), /*nullable=*/true),
+    });
+
+    std::vector<std::string> entries;
+    entries.reserve(catalog_.settings.size());
+    for (const auto& setting : catalog_.settings) {
+        auto value_schema =
+            arrow::schema({arrow::field("value", setting.type, /*nullable=*/true)});
+        entries.push_back(wire::encode_ipc(wire::ResultBuilder(schema)
+                                               .set_string("name", setting.name)
+                                               .set_string("description", setting.description)
+                                               .set_binary("type", wire::encode_schema(value_schema))
+                                               .set_null("default_value")
+                                               .finish()));
+    }
+    return entries;
+}
+
 vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     // The request dataclass rides in one binary column as a self-describing
     // IPC stream; the params schema is only ever {request: binary}.
@@ -92,6 +121,7 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      .set_string("default_schema", "main")
                      .set_bool("supports_column_statistics", false)
                      .set_string("global_function_prefix", "")
+                     .set_binary_list("settings", encode_settings())
                      .fill_defaults()
                      .finish();
     return envelope(batch);
