@@ -128,7 +128,6 @@ public:
         // apply the predicates to this function's *nested* output, and
         // filtering a struct/list batch that way crashed the engine — see the
         // note in register_generators.
-        md.projection_pushdown = true;
         return md;
     }
 
@@ -204,18 +203,34 @@ private:
             return array;
         }
 
+        // Children are built from the *type's* fields, one at a time.
+        //
+        // DuckDB pushes projection down into a struct, so this type may be
+        // `struct<label>` rather than `struct<index, label>`. Building a fixed
+        // two-child array for a one-field type produces a StructArray whose
+        // child count disagrees with its type — Arrow's constructor does not
+        // check, and the corruption surfaces as a segfault in the *consumer*,
+        // in an unrelated query, long after this call returned.
         std::shared_ptr<arrow::Array> build_metadata(
             const std::shared_ptr<arrow::DataType>& type) const {
-            arrow::StringBuilder labels;
-            (void)labels.Reserve(count_);
-            for (int64_t i = 0; i < count_; ++i) {
-                (void)labels.Append("row_" + std::to_string(i));
+            const auto& fields = static_cast<const arrow::StructType&>(*type);
+            std::vector<std::shared_ptr<arrow::Array>> children;
+            children.reserve(static_cast<size_t>(fields.num_fields()));
+            for (int i = 0; i < fields.num_fields(); ++i) {
+                if (fields.field(i)->name() == "label") {
+                    arrow::StringBuilder labels;
+                    (void)labels.Reserve(count_);
+                    for (int64_t row = 0; row < count_; ++row) {
+                        (void)labels.Append("row_" + std::to_string(row));
+                    }
+                    std::shared_ptr<arrow::Array> array;
+                    (void)labels.Finish(&array);
+                    children.push_back(array);
+                } else {
+                    children.push_back(build_index());
+                }
             }
-            std::shared_ptr<arrow::Array> label_array;
-            (void)labels.Finish(&label_array);
-            return std::make_shared<arrow::StructArray>(
-                type, count_,
-                std::vector<std::shared_ptr<arrow::Array>>{build_index(), label_array});
+            return std::make_shared<arrow::StructArray>(type, count_, children);
         }
 
         // Row i lists the last `history_size` values ending at i, so the list
@@ -624,21 +639,9 @@ private:
 }  // namespace
 
 void register_generators(vgi::Worker& worker) {
-    // `NestedSequence` is deliberately NOT registered.
-    //
-    // Advertising it segfaults the DuckDB extension — not when it is scanned,
-    // but later, in an unrelated test, which is why it is worth spelling out
-    // rather than leaving as a silent omission. Bisected to the registration
-    // itself: the crash survives turning off its filter and projection
-    // pushdown, so it is something about the advertised record rather than
-    // about anything the function does. Not yet diagnosed.
-    //
-    // The implementation below is kept because it is correct as far as it has
-    // been verified (its batches round-trip and match the reference), and
-    // because whoever picks this up should start from the FunctionInfo it
-    // produces rather than rewrite it.
     worker.register_table(std::make_shared<GeneratorException>());
     worker.register_table(std::make_shared<NamedParamsEcho>());
+    worker.register_table(std::make_shared<NestedSequence>());
     worker.register_table(std::make_shared<TypedProbe>());
     worker.register_table(std::make_shared<UnionVarargs>());
 }

@@ -208,6 +208,19 @@ public:
         // advertises the capability gets it for free, and one that uses the
         // filters itself is not filtered twice.
         if (!filters_.empty()) batch = filters_.apply(batch);
+
+        // Validated before it leaves.
+        //
+        // A batch whose arrays disagree with their type — a StructArray with
+        // two children for a one-field type, say, which is what projection
+        // pushdown into a struct produces if a producer builds a fixed shape —
+        // is accepted by Arrow's constructors and corrupts the *consumer*.
+        // That surfaces as a crash in an unrelated query, arbitrarily later,
+        // and cost a full bisect to attribute. Checking here turns it into an
+        // error naming the function.
+        if (auto status = batch->ValidateFull(); !status.ok()) {
+            throw std::runtime_error("producer emitted an invalid batch: " + status.ToString());
+        }
         const auto metadata = producer_->last_metadata();
         if (metadata.empty()) {
             out.emit_batch(batch);
