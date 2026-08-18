@@ -14,6 +14,7 @@ add_executable(vgi-example-worker
     scalar/types.cpp
     scalar/same_name.cpp
     table/sequence.cpp
+    table_in_out/echo.cpp
 )
 target_include_directories(vgi-example-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(vgi-example-worker PRIVATE vgi::vgi)

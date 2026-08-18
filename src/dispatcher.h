@@ -14,6 +14,7 @@
 #include "vgi/catalog.h"
 #include "vgi/function.h"
 #include "vgi/table_function.h"
+#include "vgi/table_in_out.h"
 
 namespace vgi {
 
@@ -38,6 +39,9 @@ public:
     void register_table(std::shared_ptr<TableFunction> fn);
     void register_table_in(std::string catalog, std::string schema,
                            std::shared_ptr<TableFunction> fn);
+    void register_table_in_out(std::shared_ptr<TableInOutFunction> fn);
+    void register_table_in_out_in(std::string catalog, std::string schema,
+                                  std::shared_ptr<TableInOutFunction> fn);
 
     // Where a registered function is declared. Every registration has exactly
     // one; the default is the catalog's own name and `main`.
@@ -81,6 +85,8 @@ private:
                                             const std::string& schema_name);
     static std::string encode_table_function_info(const TableFunction& fn,
                                                   const std::string& schema_name);
+    static std::string encode_table_in_out_info(const TableInOutFunction& fn,
+                                                const std::string& schema_name);
 
     // Every registration under `name`, in registration order.
     //
@@ -96,6 +102,10 @@ private:
         const std::string& schema) const;
     std::shared_ptr<TableFunction> find_table(const std::string& name,
                                               const std::string& schema) const;
+    std::vector<std::shared_ptr<TableInOutFunction>> table_in_outs_in_schema(
+        const std::string& schema) const;
+    std::shared_ptr<TableInOutFunction> find_table_in_out(const std::string& name,
+                                                          const std::string& schema) const;
 
     // The overload of `name` that matches `params`, or a clear error.
     //
@@ -117,6 +127,10 @@ private:
     std::vector<std::shared_ptr<TableFunction>> tables_;
     std::vector<Scope> table_scopes_;
     std::unordered_map<std::string, std::vector<size_t>> table_by_name_;
+
+    std::vector<std::shared_ptr<TableInOutFunction>> table_in_outs_;
+    std::vector<Scope> table_in_out_scopes_;
+    std::unordered_map<std::string, std::vector<size_t>> table_in_out_by_name_;
 };
 
 }  // namespace vgi

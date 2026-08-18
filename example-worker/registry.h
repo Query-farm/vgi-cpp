@@ -22,5 +22,6 @@ void register_geo(vgi::Worker& worker);
 void register_types(vgi::Worker& worker);
 void register_same_name(vgi::Worker& worker);
 void register_table_functions(vgi::Worker& worker);
+void register_table_in_out(vgi::Worker& worker);
 
 }  // namespace example

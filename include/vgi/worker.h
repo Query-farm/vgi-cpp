@@ -10,6 +10,7 @@
 #include "vgi/catalog.h"
 #include "vgi/function.h"
 #include "vgi/table_function.h"
+#include "vgi/table_in_out.h"
 
 namespace vgi {
 
@@ -46,6 +47,10 @@ public:
     void register_table(std::shared_ptr<TableFunction> fn);
     void register_table_in(std::string catalog, std::string schema,
                            std::shared_ptr<TableFunction> fn);
+
+    void register_table_in_out(std::shared_ptr<TableInOutFunction> fn);
+    void register_table_in_out_in(std::string catalog, std::string schema,
+                                  std::shared_ptr<TableInOutFunction> fn);
 
     // Serve, selecting the transport from argv.  Never returns.
     [[noreturn]] void run(int argc, char** argv);

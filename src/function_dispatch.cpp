@@ -103,7 +103,49 @@ private:
     std::unique_ptr<TableProducer> producer_;
 };
 
+// Drives a table-in-out function: one input batch in, zero or more out.
+//
+// Unlike a scalar exchange there is no row-count relationship to enforce —
+// that a batch may fan out or collapse is the whole point of the shape.
+class TableInOutExchange : public vgi_rpc::ExchangeState {
+public:
+    TableInOutExchange(std::shared_ptr<TableInOutFunction> fn, ProcessParams params)
+        : fn_(std::move(fn)), params_(std::move(params)) {}
+
+    void exchange(const vgi_rpc::AnnotatedBatch& input, vgi_rpc::OutputCollector& out,
+                  vgi_rpc::CallContext&) override {
+        for (const auto& batch : fn_->process(params_, input.batch)) {
+            if (batch) out.emit_batch(batch);
+        }
+    }
+
+private:
+    std::shared_ptr<TableInOutFunction> fn_;
+    ProcessParams params_;
+};
+
 }  // namespace
+
+std::vector<std::shared_ptr<TableInOutFunction>> Dispatcher::table_in_outs_in_schema(
+    const std::string& schema) const {
+    std::vector<std::shared_ptr<TableInOutFunction>> found;
+    for (size_t i = 0; i < table_in_outs_.size(); ++i) {
+        if (table_in_out_scopes_[i].schema == schema) found.push_back(table_in_outs_[i]);
+    }
+    return found;
+}
+
+std::shared_ptr<TableInOutFunction> Dispatcher::find_table_in_out(
+    const std::string& name, const std::string& schema) const {
+    auto it = table_in_out_by_name_.find(name);
+    if (it == table_in_out_by_name_.end()) return nullptr;
+    for (size_t index : it->second) {
+        if (schema.empty() || table_in_out_scopes_[index].schema == schema) {
+            return table_in_outs_[index];
+        }
+    }
+    return table_in_outs_[it->second.front()];
+}
 
 std::vector<std::shared_ptr<TableFunction>> Dispatcher::tables_in_schema(
     const std::string& schema) const {
@@ -251,7 +293,9 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
     // deliberate pairing (a COPY format's reader and writer share a name), and
     // the scalar path cannot serve a scan.
     std::shared_ptr<arrow::Schema> output_schema;
-    if (auto table = find_table(function_name, params.schema_name)) {
+    if (auto transform = find_table_in_out(function_name, params.schema_name)) {
+        output_schema = transform->bind(params);
+    } else if (auto table = find_table(function_name, params.schema_name)) {
         output_schema = table->bind(params);
     } else {
         auto fn = resolve_scalar(function_name, params);
@@ -317,10 +361,20 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         return stream;
     }
 
+    auto input_schema_or_empty = [&] {
+        auto schema = wire::get_schema(bind_call, "input_schema");
+        return schema ? schema : arrow::schema({});
+    };
+
+    if (auto transform = find_table_in_out(function_name, params.schema_name)) {
+        stream.input_schema = input_schema_or_empty();
+        stream.state = std::make_shared<TableInOutExchange>(std::move(transform),
+                                                            std::move(params));
+        return stream;
+    }
+
     auto fn = resolve_scalar(function_name, bind_params);
-    auto input_schema = wire::get_schema(bind_call, "input_schema");
-    if (!input_schema) input_schema = arrow::schema({});
-    stream.input_schema = std::move(input_schema);
+    stream.input_schema = input_schema_or_empty();
     stream.state = std::make_shared<ScalarExchange>(std::move(fn), std::move(params));
     return stream;
 }

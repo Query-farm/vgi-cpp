@@ -29,6 +29,7 @@ int main(int argc, char** argv) {
     example::register_types(worker);
     example::register_same_name(worker);
     example::register_table_functions(worker);
+    example::register_table_in_out(worker);
 
     // Serves until the engine disconnects; does not return.
     worker.run(argc, argv);

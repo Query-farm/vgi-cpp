@@ -52,6 +52,15 @@ void Worker::register_table_in(std::string catalog, std::string schema,
     disp_->register_table_in(std::move(catalog), std::move(schema), std::move(fn));
 }
 
+void Worker::register_table_in_out(std::shared_ptr<TableInOutFunction> fn) {
+    disp_->register_table_in_out(std::move(fn));
+}
+
+void Worker::register_table_in_out_in(std::string catalog, std::string schema,
+                                      std::shared_ptr<TableInOutFunction> fn) {
+    disp_->register_table_in_out_in(std::move(catalog), std::move(schema), std::move(fn));
+}
+
 void Worker::run(int argc, char** argv) {
     // Arrow's compute kernels register themselves from a translation unit
     // nothing here references, so linking statically drops it and `add`,

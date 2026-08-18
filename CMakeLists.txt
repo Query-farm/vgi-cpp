@@ -53,6 +53,7 @@ add_library(vgi
     src/function_dispatch.cpp
     src/arguments.cpp
     src/numeric.cpp
+    src/table_in_out.cpp
 )
 add_library(vgi::vgi ALIAS vgi)
 

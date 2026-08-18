@@ -39,6 +39,10 @@ ArgSpec ArgSpec::constant_typed(std::string name, int index,
     return spec;
 }
 
+ArgSpec ArgSpec::table(std::string name, int index, std::string description) {
+    return column(std::move(name), index, "table", std::move(description));
+}
+
 ArgSpec ArgSpec::column_typed(std::string name, int index,
                               std::shared_ptr<arrow::DataType> type,
                               std::string description) {

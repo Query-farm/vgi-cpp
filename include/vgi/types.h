@@ -48,6 +48,10 @@ struct ArgSpec {
     // reports it to bind. Declared as `any` with a null placeholder type.
     static ArgSpec any_column(std::string name, int index,
                               std::string description = "");
+    // A table-valued argument — the input relation of a table-in-out function.
+    // Marked with `vgi_type=table` rather than an Arrow type, since the shape
+    // is whatever the caller passes.
+    static ArgSpec table(std::string name, int index, std::string description = "");
 
     // A named predicate the resolved type must satisfy, checked at bind.
     //
