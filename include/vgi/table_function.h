@@ -11,6 +11,7 @@
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
+#include <functional>
 #include <map>
 
 #include "vgi/cache_control.h"
@@ -18,6 +19,10 @@
 #include "vgi/types.h"
 
 namespace vgi {
+
+// Severity of a message sent to the client.
+enum class LogLevel { Debug, Info, Warning, Error };
+
 
 // A table function's estimated output size, used by the planner.
 //
@@ -40,6 +45,16 @@ public:
 
     // The next batch, or null when the scan is exhausted.
     virtual std::shared_ptr<arrow::RecordBatch> next_batch() = 0;
+
+    // Called once before the first `next_batch`, with a sink for messages the
+    // client should see.
+    //
+    // A producer that has something to say — a warning about an argument, a
+    // note about what it skipped — has nowhere else to put it: stdout is the
+    // Arrow channel and stderr is swallowed by the engine.
+    virtual void set_log(std::function<void(LogLevel, const std::string&)> log) {
+        (void)log;
+    }
 
     // Wire metadata for the batch just returned. Called once after each
     // `next_batch` that produced one.

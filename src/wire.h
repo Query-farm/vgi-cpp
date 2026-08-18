@@ -27,6 +27,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -145,6 +146,12 @@ public:
     // keys/values), which is what the canonical Python protocol emits.
     ResultBuilder& set_string_list(const std::string& field,
                                    const std::vector<std::string>& values);
+    // The `required_secrets` column: a list of
+    // {secret_type, scope, secret_name}, where an absent scope or name is a
+    // null rather than an empty string — the engine treats "" as a real scope.
+    ResultBuilder& set_secret_lookups(
+        const std::string& field,
+        const std::vector<std::tuple<std::string, std::string, std::string>>& lookups);
     // The `examples` column: a list of {sql, description, expected_output}.
     ResultBuilder& set_examples(const std::string& field,
                                 const std::vector<FunctionExample>& examples);

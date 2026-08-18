@@ -350,6 +350,39 @@ ResultBuilder& ResultBuilder::set_string_list(const std::string& field,
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_secret_lookups(
+    const std::string& field,
+    const std::vector<std::tuple<std::string, std::string, std::string>>& lookups) {
+    const int index = field_index(field);
+    std::unique_ptr<arrow::ArrayBuilder> raw;
+    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), schema_->field(index)->type(),
+                                &raw),
+             "building secrets field '" + field + "'");
+    auto* list = dynamic_cast<arrow::ListBuilder*>(raw.get());
+    if (!list) fail("result field '" + field + "' is not a list");
+    auto* entry = dynamic_cast<arrow::StructBuilder*>(list->value_builder());
+    if (!entry) fail("result field '" + field + "' is not a list of structs");
+
+    check_ok(list->Append(), "opening secrets field '" + field + "'");
+    for (const auto& [type, scope, name] : lookups) {
+        check_ok(entry->Append(), "opening a secret lookup");
+        auto* type_builder = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(0));
+        auto* scope_builder = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(1));
+        auto* name_builder = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(2));
+        if (!type_builder || !scope_builder || !name_builder) {
+            fail("unexpected secret-lookup struct layout");
+        }
+        check_ok(type_builder->Append(type), "appending secret_type");
+        check_ok(scope.empty() ? scope_builder->AppendNull() : scope_builder->Append(scope),
+                 "appending secret scope");
+        check_ok(name.empty() ? name_builder->AppendNull() : name_builder->Append(name),
+                 "appending secret_name");
+    }
+    arrays_[static_cast<size_t>(index)] =
+        unwrap(list->Finish(), "finishing secrets field '" + field + "'");
+    return *this;
+}
+
 ResultBuilder& ResultBuilder::set_examples(const std::string& field,
                                            const std::vector<FunctionExample>& examples) {
     const int index = field_index(field);

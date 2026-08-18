@@ -42,6 +42,9 @@ public:
         vgi::FunctionMetadata md;
         md.description = "Cacheable blended map x -> x*2 (advertises vgi.cache.ttl)";
         md.categories = {"blended", "cache", "test"};
+        // Blended: its input rows come from its arguments, which is what lets
+        // the same registration serve a plain call and a correlated one.
+        md.input_from_args = true;
         return md;
     }
 
@@ -91,6 +94,9 @@ public:
         vgi::FunctionMetadata md;
         md.description = "Cacheable blended 1:N fan-out emitting range(n) per input row";
         md.categories = {"blended", "cache", "test"};
+        // Blended: its input rows come from its arguments, which is what lets
+        // the same registration serve a plain call and a correlated one.
+        md.input_from_args = true;
         return md;
     }
 

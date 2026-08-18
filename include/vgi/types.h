@@ -139,6 +139,14 @@ struct FunctionMetadata {
     // values in place. Two round trips, which is why the list is empty for
     // functions that need none.
     std::vector<SecretLookup> required_secrets;
+    // Whether the function's *input rows come from its arguments* rather than
+    // from a table-valued argument.
+    //
+    // This is what makes a "blended" function callable both as a plain scan —
+    // `f(52, 13)` — and correlated against a table — `FROM t, f(t.x, t.y)`.
+    // Without it neither call site resolves, because the engine is looking for
+    // a table argument the function does not declare.
+    bool input_from_args = false;
     // How this function's output is partitioned. Declaring
     // SINGLE_VALUE_PARTITIONS says each batch holds exactly one distinct value
     // of the partition column, which is what lets the engine cache and skip

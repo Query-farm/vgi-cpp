@@ -27,6 +27,7 @@ add_executable(vgi-example-worker
     catalog_def.cpp
     table_in_out/echo.cpp
     table_in_out/cached.cpp
+    table_in_out/blended.cpp
     aggregate/basic.cpp
     aggregate/more.cpp
     buffering/buffer_input.cpp

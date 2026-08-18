@@ -8,6 +8,7 @@
 #include <vgi_rpc/result.h>
 
 #include <algorithm>
+#include <tuple>
 #include <cctype>
 #include <optional>
 #include <string_view>
@@ -102,6 +103,22 @@ std::vector<std::string> Dispatcher::encode_settings() const {
                                                .set_binary("type", wire::encode_schema(value_schema))
                                                .set_null("default_value")
                                                .finish()));
+    }
+    return entries;
+}
+
+// The `required_secrets` list, as the struct entries the wire carries.
+//
+// Written for every function kind. Only the two-phase bind path consulted the
+// metadata before, and aggregates have no such path — so an aggregate that
+// declared a secret could never receive one.
+std::vector<std::tuple<std::string, std::string, std::string>> secret_entries(
+    const FunctionMetadata& metadata) {
+    std::vector<std::tuple<std::string, std::string, std::string>> entries;
+    entries.reserve(metadata.required_secrets.size());
+    for (const auto& lookup : metadata.required_secrets) {
+        entries.emplace_back(lookup.secret_type, lookup.scope.value_or(""),
+                             lookup.secret_name.value_or(""));
     }
     return entries;
 }
@@ -384,8 +401,10 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
             .set_string_list("required_settings", metadata.required_settings)
+            .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
@@ -414,8 +433,10 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
             .set_string_list("required_settings", metadata.required_settings)
+            .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
@@ -442,8 +463,10 @@ std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
             .set_string_list("required_settings", metadata.required_settings)
+            .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
@@ -475,8 +498,10 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
             .set_string_list("required_settings", metadata.required_settings)
+            .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", metadata.partition_kind.empty()
                                             ? enums::partition_kind::kNotPartitioned
                                             : metadata.partition_kind.c_str())
@@ -512,8 +537,10 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
             .set_string_list("required_settings", metadata.required_settings)
+            .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)

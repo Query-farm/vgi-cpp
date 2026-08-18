@@ -55,6 +55,7 @@ int main(int argc, char** argv) {
     example::register_more_aggregates(worker);
     example::register_generators(worker);
     example::register_secret_scalars(worker);
+    example::register_blended(worker);
     example::declare_catalog(worker);
 
     // Serves until the engine disconnects; does not return.

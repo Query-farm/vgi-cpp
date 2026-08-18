@@ -172,6 +172,16 @@ int score_overload(const std::vector<ArgSpec>& specs,
     return score;
 }
 
+vgi_rpc::LogLevel to_rpc_level(LogLevel level) {
+    switch (level) {
+        case LogLevel::Debug: return vgi_rpc::LogLevel::DEBUG;
+        case LogLevel::Warning: return vgi_rpc::LogLevel::WARN;
+        case LogLevel::Error: return vgi_rpc::LogLevel::ERROR;
+        case LogLevel::Info: break;
+    }
+    return vgi_rpc::LogLevel::INFO;
+}
+
 class TableProduce : public vgi_rpc::ProducerState {
 public:
     TableProduce(std::unique_ptr<TableProducer> producer, PushdownFilters filters = {})
@@ -184,6 +194,11 @@ public:
             out.finish();
             return;
         }
+        // Bound per tick, since the collector is created per tick: a producer
+        // holding one from an earlier tick would write into a dead sink.
+        producer_->set_log([&out](LogLevel level, const std::string& message) {
+            out.client_log(to_rpc_level(level), message);
+        });
         auto batch = producer_->next_batch();
         if (!batch) {
             out.finish();
