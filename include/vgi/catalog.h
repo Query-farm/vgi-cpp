@@ -64,6 +64,17 @@ struct SettingSpec {
     std::shared_ptr<arrow::DataType> type;
 };
 
+// A secret type this catalog introduces.
+//
+// Declaring it is what lets a user write `CREATE SECRET ... (TYPE vgi_example,
+// ...)`. Its parameter schema names the fields, and a field carrying
+// `redact=true` metadata is one the engine must not print.
+struct SecretTypeSpec {
+    std::string name;
+    std::string description;
+    std::shared_ptr<arrow::Schema> parameters;
+};
+
 // A schema and everything declared in it.
 struct CatalogSchema {
     std::string name = "main";
@@ -84,6 +95,8 @@ struct CatalogModel {
 
     // Settings this catalog introduces to the engine.
     std::vector<SettingSpec> settings;
+    // Secret types this catalog introduces.
+    std::vector<SecretTypeSpec> secret_types;
 
     // Schemas declared up front. Registering a function in a schema adds it
     // here too, so a worker with only functions never has to list them.

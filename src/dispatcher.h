@@ -119,6 +119,7 @@ private:
     static std::string encode_buffering_info(const TableBufferingFunction& fn,
                                              const std::string& schema_name);
     std::vector<std::string> encode_settings() const;
+    std::vector<std::string> encode_secret_types() const;
     static std::string encode_table_info(const CatalogTable& table,
                                          const std::string& schema_name);
     static std::string encode_view_info(const CatalogView& view,
@@ -166,6 +167,8 @@ private:
     std::shared_ptr<ScalarFunction> resolve_scalar(const std::string& name,
                                                    const BindParams& params) const;
     static void check_type_bounds(const ScalarFunction& fn, const BindParams& params);
+    std::vector<SecretLookup> required_secrets_of(const std::string& name,
+                                                  const BindParams& params) const;
     BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
 
     CatalogModel catalog_;

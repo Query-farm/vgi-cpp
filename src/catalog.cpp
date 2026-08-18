@@ -95,6 +95,32 @@ std::vector<std::string> Dispatcher::encode_settings() const {
     return entries;
 }
 
+// One IPC entry per declared secret type.
+//
+// `parameters_schema` is the IPC schema of the secret's fields, metadata and
+// all — which is how the `redact=true` marker on a field reaches the engine
+// and keeps the value out of logs and error messages.
+std::vector<std::string> Dispatcher::encode_secret_types() const {
+    static const auto schema = arrow::schema({
+        arrow::field("name", arrow::utf8(), /*nullable=*/false),
+        arrow::field("description", arrow::utf8(), /*nullable=*/false),
+        arrow::field("parameters_schema", arrow::binary(), /*nullable=*/false),
+    });
+
+    std::vector<std::string> entries;
+    entries.reserve(catalog_.secret_types.size());
+    for (const auto& secret : catalog_.secret_types) {
+        entries.push_back(
+            wire::encode_ipc(wire::ResultBuilder(schema)
+                                 .set_string("name", secret.name)
+                                 .set_string("description", secret.description)
+                                 .set_binary("parameters_schema",
+                                             wire::encode_schema(secret.parameters))
+                                 .finish()));
+    }
+    return entries;
+}
+
 vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     // The request dataclass rides in one binary column as a self-describing
     // IPC stream; the params schema is only ever {request: binary}.
@@ -122,6 +148,7 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      .set_bool("supports_column_statistics", false)
                      .set_string("global_function_prefix", "")
                      .set_binary_list("settings", encode_settings())
+                     .set_binary_list("secret_types", encode_secret_types())
                      .fill_defaults()
                      .finish();
     return envelope(batch);

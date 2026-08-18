@@ -29,6 +29,9 @@ struct BindParams {
     Arguments arguments;
     Settings settings;
     Secrets secrets;
+    // Whether the engine has already resolved this function's secret lookups.
+    // A bind that asks again once they are resolved would loop.
+    bool secrets_resolved = false;
     std::string catalog_name;
     std::string schema_name;
 

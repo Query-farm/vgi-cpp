@@ -423,6 +423,27 @@ void Dispatcher::check_type_bounds(const ScalarFunction& fn, const BindParams& p
     }
 }
 
+// The secrets `name` declares, whichever registry it lives in.
+//
+// Answered only on the *first* bind: once the engine has resolved them it sets
+// `resolved_secrets_provided`, and asking again would loop.
+std::vector<SecretLookup> Dispatcher::required_secrets_of(const std::string& name,
+                                                          const BindParams& params) const {
+    if (params.secrets_resolved) return {};
+    if (auto fn = find_buffering(name, params.schema_name)) {
+        return fn->metadata().required_secrets;
+    }
+    if (auto fn = find_table_in_out(name, params.schema_name)) {
+        return fn->metadata().required_secrets;
+    }
+    if (auto fn = find_table(name, params.schema_name, &params)) {
+        return fn->metadata().required_secrets;
+    }
+    auto candidates = scalars_named(name);
+    if (!candidates.empty()) return candidates.front()->metadata().required_secrets;
+    return {};
+}
+
 BindParams Dispatcher::read_bind_request(
     const std::shared_ptr<arrow::RecordBatch>& bind_call) const {
     BindParams params;
@@ -435,6 +456,8 @@ BindParams Dispatcher::read_bind_request(
         Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
     params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
     params.catalog_name = catalog_.name;
+    params.secrets_resolved =
+        wire::get_optional_bool(bind_call, "resolved_secrets_provided").value_or(false);
     return params;
 }
 
@@ -467,7 +490,23 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
         throw std::runtime_error("function '" + function_name + "' bound to no schema");
     }
 
+    // A function that needs secrets says so here; the engine resolves them and
+    // binds again with the values in place.
+    std::vector<std::string> secret_types;
+    std::vector<std::string> secret_scopes;
+    std::vector<std::string> secret_names;
+    for (const auto& lookup : required_secrets_of(function_name, params)) {
+        secret_types.push_back(lookup.secret_type);
+        // Absent scope and name travel as empty strings, since the columns are
+        // parallel lists and must stay the same length.
+        secret_scopes.push_back(lookup.scope.value_or(""));
+        secret_names.push_back(lookup.secret_name.value_or(""));
+    }
+
     auto payload = wire::ResultBuilder(payload_schema_of("bind"))
+                       .set_string_list("lookup_secret_types", secret_types)
+                       .set_string_list("lookup_scopes", secret_scopes)
+                       .set_string_list("lookup_names", secret_names)
                        .set_binary("output_schema", wire::encode_schema(output_schema))
                        // Nothing to carry from bind to init yet. When a
                        // function needs bind-time state, this is where it

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <arrow/type.h>
+#include <arrow/util/key_value_metadata.h>
 
 #include <vgi/worker.h>
 
@@ -48,6 +49,20 @@ void declare_catalog(vgi::Worker& worker) {
         {"multiplier", "Integer multiplier", arrow::int64()},
         {"threshold", "Floating-point threshold", arrow::float64()},
         {"config", "Free-form configuration string", arrow::utf8()},
+    };
+
+    // A field marked `redact` is one the engine must keep out of logs and
+    // error text; declaring the schema is what carries that marker across.
+    const auto redacted = arrow::key_value_metadata({"redact"}, {"true"});
+    worker.catalog().secret_types = {
+        {"vgi_example", "Example VGI secret for testing",
+         arrow::schema({
+             arrow::field("secret_string", arrow::utf8(), true)->WithMetadata(redacted),
+             arrow::field("api_key", arrow::utf8(), true)->WithMetadata(redacted),
+             arrow::field("port", arrow::int32(), true),
+             arrow::field("use_ssl", arrow::boolean(), true),
+             arrow::field("timeout", arrow::float64(), true),
+         })},
     };
 
     auto& data = worker.catalog().schema("data");

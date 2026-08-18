@@ -54,6 +54,8 @@ std::optional<std::string> get_optional_binary(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
 
 bool get_bool(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+std::optional<bool> get_optional_bool(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                      const std::string& field);
 int64_t get_int64(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
 std::optional<int64_t> get_optional_int64(const std::shared_ptr<arrow::RecordBatch>& batch,
                                           const std::string& field);

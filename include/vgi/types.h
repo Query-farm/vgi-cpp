@@ -111,6 +111,16 @@ enum class Stability {
     ConsistentWithinQuery,
 };
 
+// A secret the engine should resolve before calling.
+struct SecretLookup {
+    std::string secret_type;
+    // A scope narrows which secret matches (an S3 prefix, a host). Empty means
+    // any secret of this type.
+    std::optional<std::string> scope;
+    // A specific secret by name, when the caller knows it.
+    std::optional<std::string> secret_name;
+};
+
 // Everything the engine shows a user about a function, plus the return type
 // when it is fixed.  A function whose return type depends on its arguments
 // leaves `return_type` empty and answers during bind instead.
@@ -122,6 +132,13 @@ struct FunctionMetadata {
     std::vector<std::string> categories;
     Stability stability = Stability::Consistent;
     NullHandling null_handling = NullHandling::Default;
+    // Secrets this function needs resolved before it runs.
+    //
+    // Answered from bind: when a function asks and the engine has not resolved
+    // them yet, bind returns the lookups and the engine re-binds with the
+    // values in place. Two round trips, which is why the list is empty for
+    // functions that need none.
+    std::vector<SecretLookup> required_secrets;
     // DuckDB settings this function reads. Declaring them is what makes the
     // engine forward their values; a setting not declared here never arrives,
     // however it was set.

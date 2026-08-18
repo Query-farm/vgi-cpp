@@ -112,6 +112,14 @@ bool get_bool(const std::shared_ptr<arrow::RecordBatch>& batch, const std::strin
     return arr->Value(0);
 }
 
+std::optional<bool> get_optional_bool(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                      const std::string& field) {
+    if (!has_column(batch, field)) return std::nullopt;
+    auto arr = typed_column<arrow::BooleanArray>(batch, field, "boolean");
+    if (arr->IsNull(0)) return std::nullopt;
+    return arr->Value(0);
+}
+
 int64_t get_int64(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
     auto arr = typed_column<arrow::Int64Array>(batch, field, "int64");
     if (arr->IsNull(0)) fail("param '" + field + "' is null but not optional");
