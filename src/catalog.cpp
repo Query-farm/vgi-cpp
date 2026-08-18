@@ -1061,46 +1061,58 @@ vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) 
                         .finish());
 }
 
+// The fields every FunctionInfo carries, whatever kind of function it is.
+//
+// Written once because the five encoders that used to spell them out had
+// already drifted: `has_finalize` sat in the *table* encoder under a comment
+// explaining buffering, and buffering itself never set it. A field added to
+// `FunctionMetadata` and wired into four of five chains does not fail — it is
+// silently defaulted, which is the same shape of bug.
+//
+// Returns the builder so each caller appends the fields that are genuinely
+// its own, then `fill_defaults().finish()`.
+wire::ResultBuilder Dispatcher::common_function_info(
+    const std::string& name, const std::string& schema_name, const char* function_type,
+    const std::vector<ArgSpec>& specs, const std::shared_ptr<arrow::Schema>& output_schema,
+    const FunctionMetadata& metadata) {
+    return wire::ResultBuilder(gen::FunctionInfoSchema())
+        .set_string("name", name)
+        .set_string("schema_name", schema_name)
+        .set_enum("function_type", function_type)
+        .set_binary("arguments", wire::encode_schema(build_arg_schema(specs)))
+        .set_binary("output_schema", wire::encode_schema(output_schema))
+        .set_enum("stability", stability_wire_value(metadata.stability))
+        .set_enum("null_handling", metadata.null_handling == NullHandling::Special
+                                       ? enums::null_handling::kSpecial
+                                       : enums::null_handling::kDefault)
+        .set_string("description", metadata.description)
+        .set_examples("examples", metadata.examples)
+        .set_string_list("categories", metadata.categories)
+        .set_string_map("tags", metadata.tags)
+        .set_string_list("required_settings", metadata.required_settings)
+        .set_secret_lookups("required_secrets", secret_entries(metadata))
+        .set_bool("projection_pushdown", metadata.projection_pushdown)
+        .set_bool("filter_pushdown", metadata.filter_pushdown)
+        .set_bool("sampling_pushdown", metadata.sampling_pushdown)
+        .set_bool("input_from_args", metadata.input_from_args)
+        .set_enum("partition_kind", partition_kind_wire_value(metadata))
+        .set_enum("order_dependent", metadata.order_dependent
+                                         ? enums::order_dependence::kOrderDependent
+                                         : enums::order_dependence::kNotOrderDependent)
+        .set_enum("distinct_dependent", metadata.distinct_dependent
+                                            ? enums::distinct_dependence::kDistinctDependent
+                                            : enums::distinct_dependence::kNotDistinctDependent);
+}
+
 std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
                                                    const std::string& schema_name) {
     const auto metadata = fn.metadata();
     // A table function's output schema is settled at bind, so nothing useful
     // can be advertised here; an empty schema is how that is spelled.
-    auto builder =
-        wire::ResultBuilder(gen::FunctionInfoSchema())
-            .set_string("name", fn.name())
-            .set_string("schema_name", schema_name)
-            .set_enum("function_type", enums::function_type::kTable)
-            .set_binary("arguments", wire::encode_schema(build_arg_schema(fn.argument_specs())))
-            .set_binary("output_schema", wire::encode_schema(arrow::schema({})))
-            .set_enum("stability", stability_wire_value(metadata.stability))
-            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
-                                           ? enums::null_handling::kSpecial
-                                           : enums::null_handling::kDefault)
-            .set_string("description", metadata.description)
-            .set_examples("examples", metadata.examples)
-            .set_string_list("categories", metadata.categories)
-            .set_string_map("tags", metadata.tags)
-            .set_string_list("required_settings", metadata.required_settings)
-            .set_secret_lookups("required_secrets", secret_entries(metadata))
-            .set_bool("projection_pushdown", metadata.projection_pushdown)
-            .set_bool("filter_pushdown", metadata.filter_pushdown)
-            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
-            .set_bool("late_materialization", metadata.late_materialization)
-            .set_bool("supports_batch_index", metadata.supports_batch_index)
-            // Always: a buffering function's whole shape is sink then combine
-            // then source, and `finalize_producer` is pure virtual. There is no
-            // buffering function without a finalize phase.
-            .set_bool("has_finalize", true)
-            .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", metadata.order_dependent
-                                             ? enums::order_dependence::kOrderDependent
-                                             : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent",
-                      metadata.distinct_dependent
-                          ? enums::distinct_dependence::kDistinctDependent
-                          : enums::distinct_dependence::kNotDistinctDependent);
+    auto builder = common_function_info(fn.name(), schema_name, enums::function_type::kTable,
+                                        fn.argument_specs(), arrow::schema({}), metadata);
+    builder.set_bool("late_materialization", metadata.late_materialization)
+        .set_bool("supports_batch_index", metadata.supports_batch_index);
     // Only when the function says so: the field is nullable, and writing a
     // value unconditionally would replace the engine's default for every
     // table function that never thought about ordering.
@@ -1114,75 +1126,29 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
                                                  const std::string& schema_name) {
     const auto metadata = fn.metadata();
     // The engine sees a table-in-out as a table function that happens to take
-    // a table argument; there is no separate wire kind for it.
-    return wire::encode_ipc(
-        wire::ResultBuilder(gen::FunctionInfoSchema())
-            .set_string("name", fn.name())
-            .set_string("schema_name", schema_name)
-            .set_enum("function_type", enums::function_type::kTable)
-            .set_binary("arguments", wire::encode_schema(build_arg_schema(fn.argument_specs())))
-            .set_binary("output_schema", wire::encode_schema(arrow::schema({})))
-            .set_enum("stability", stability_wire_value(metadata.stability))
-            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
-                                           ? enums::null_handling::kSpecial
-                                           : enums::null_handling::kDefault)
-            .set_string("description", metadata.description)
-            .set_examples("examples", metadata.examples)
-            .set_string_list("categories", metadata.categories)
-            .set_string_map("tags", metadata.tags)
-            .set_string_list("required_settings", metadata.required_settings)
-            .set_secret_lookups("required_secrets", secret_entries(metadata))
-            .set_bool("projection_pushdown", metadata.projection_pushdown)
-            .set_bool("filter_pushdown", metadata.filter_pushdown)
-            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
-            .set_bool("has_finalize", fn.has_finish())
-            .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", metadata.order_dependent
-                                             ? enums::order_dependence::kOrderDependent
-                                             : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", metadata.distinct_dependent
-                                                ? enums::distinct_dependence::kDistinctDependent
-                                                : enums::distinct_dependence::kNotDistinctDependent)
-            .fill_defaults()
-            .finish());
+    // a table argument, so it is advertised as one.
+    return wire::encode_ipc(common_function_info(fn.name(), schema_name,
+                                                 enums::function_type::kTable, fn.argument_specs(),
+                                                 arrow::schema({}), metadata)
+                                .set_bool("has_finalize", fn.has_finish())
+                                .fill_defaults()
+                                .finish());
 }
 
 std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
                                               const std::string& schema_name) {
     const auto metadata = fn.metadata();
     return wire::encode_ipc(
-        wire::ResultBuilder(gen::FunctionInfoSchema())
-            .set_string("name", fn.name())
-            .set_string("schema_name", schema_name)
-            .set_enum("function_type", enums::function_type::kTableBuffering)
-            .set_binary("arguments", wire::encode_schema(build_arg_schema(fn.argument_specs())))
-            .set_binary("output_schema", wire::encode_schema(arrow::schema({})))
-            .set_enum("stability", stability_wire_value(metadata.stability))
-            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
-                                           ? enums::null_handling::kSpecial
-                                           : enums::null_handling::kDefault)
-            .set_string("description", metadata.description)
-            .set_examples("examples", metadata.examples)
-            .set_string_list("categories", metadata.categories)
-            .set_string_map("tags", metadata.tags)
-            .set_string_list("required_settings", metadata.required_settings)
-            .set_secret_lookups("required_secrets", secret_entries(metadata))
-            .set_bool("projection_pushdown", metadata.projection_pushdown)
-            .set_bool("filter_pushdown", metadata.filter_pushdown)
-            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
+        common_function_info(fn.name(), schema_name, enums::function_type::kTableBuffering,
+                             fn.argument_specs(), arrow::schema({}), metadata)
             .set_bool("requires_input_batch_index", metadata.requires_input_batch_index)
             .set_bool("sink_order_dependent", metadata.sink_order_dependent)
             .set_bool("source_order_dependent", metadata.source_order_dependent)
             .set_bool("supports_batch_index", metadata.supports_batch_index)
-            .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", metadata.order_dependent
-                                             ? enums::order_dependence::kOrderDependent
-                                             : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", metadata.distinct_dependent
-                                                ? enums::distinct_dependence::kDistinctDependent
-                                                : enums::distinct_dependence::kNotDistinctDependent)
+            // Always: a buffering function's whole shape is sink then combine
+            // then source, and `finalize_producer` is pure virtual. There is
+            // no buffering function without a finalize phase.
+            .set_bool("has_finalize", true)
             .fill_defaults()
             .finish());
 }
@@ -1190,38 +1156,14 @@ std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
 std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
                                               const std::string& schema_name) {
     const auto metadata = fn.metadata();
+    // An aggregate must advertise exactly one output field — the engine
+    // rejects a zero-field schema outright. A declared return type wins;
+    // otherwise ask bind with empty params, which answers for any aggregate
+    // whose type does not depend on its input. One that does throws, and the
+    // `vgi:any` marker defers the type.
     return wire::encode_ipc(
-        wire::ResultBuilder(gen::FunctionInfoSchema())
-            .set_string("name", fn.name())
-            .set_string("schema_name", schema_name)
-            .set_enum("function_type", enums::function_type::kAggregate)
-            .set_binary("arguments", wire::encode_schema(build_arg_schema(fn.argument_specs())))
-            // An aggregate must advertise exactly one output field — the
-            // engine rejects a zero-field schema outright. A declared return
-            // type wins; otherwise ask bind with empty params, which answers
-            // for any aggregate whose type does not depend on its input. One
-            // that does throws, and the `vgi:any` marker defers the type.
-            .set_binary("output_schema", wire::encode_schema(advertised_aggregate_schema(fn)))
-            .set_enum("stability", stability_wire_value(metadata.stability))
-            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
-                                           ? enums::null_handling::kSpecial
-                                           : enums::null_handling::kDefault)
-            .set_string("description", metadata.description)
-            .set_examples("examples", metadata.examples)
-            .set_string_list("categories", metadata.categories)
-            .set_string_map("tags", metadata.tags)
-            .set_string_list("required_settings", metadata.required_settings)
-            .set_secret_lookups("required_secrets", secret_entries(metadata))
-            .set_bool("projection_pushdown", metadata.projection_pushdown)
-            .set_bool("filter_pushdown", metadata.filter_pushdown)
-            .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", metadata.order_dependent
-                                             ? enums::order_dependence::kOrderDependent
-                                             : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", metadata.distinct_dependent
-                                                ? enums::distinct_dependence::kDistinctDependent
-                                                : enums::distinct_dependence::kNotDistinctDependent)
+        common_function_info(fn.name(), schema_name, enums::function_type::kAggregate,
+                             fn.argument_specs(), advertised_aggregate_schema(fn), metadata)
             // Declared, or the engine never sends a window request at all and
             // an aggregate that implements `window` is simply never asked.
             .set_bool("supports_window", fn.supports_window())
@@ -1233,43 +1175,15 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
 std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
                                              const std::string& schema_name) {
     const auto metadata = fn.metadata();
-
     // Both are IPC-serialized *schemas*, not batches: a parameter list is
     // carried as fields plus metadata, and the output schema is what lets the
     // engine type the call site before any bind happens.
-    const auto arguments = build_arg_schema(fn.argument_specs());
-    const auto output = build_scalar_output_schema(metadata.return_type);
-
-    return wire::encode_ipc(
-        wire::ResultBuilder(gen::FunctionInfoSchema())
-            .set_string("name", fn.name())
-            .set_string("schema_name", schema_name)
-            .set_enum("function_type", enums::function_type::kScalar)
-            .set_binary("arguments", wire::encode_schema(arguments))
-            .set_binary("output_schema", wire::encode_schema(output))
-            .set_enum("stability", stability_wire_value(metadata.stability))
-            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
-                                           ? enums::null_handling::kSpecial
-                                           : enums::null_handling::kDefault)
-            .set_string("description", metadata.description)
-            .set_examples("examples", metadata.examples)
-            .set_string_list("categories", metadata.categories)
-            .set_string_map("tags", metadata.tags)
-            .set_string_list("required_settings", metadata.required_settings)
-            .set_secret_lookups("required_secrets", secret_entries(metadata))
-            .set_bool("projection_pushdown", metadata.projection_pushdown)
-            .set_bool("filter_pushdown", metadata.filter_pushdown)
-            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
-            .set_bool("input_from_args", metadata.input_from_args)
-            .set_enum("partition_kind", partition_kind_wire_value(metadata))
-            .set_enum("order_dependent", metadata.order_dependent
-                                             ? enums::order_dependence::kOrderDependent
-                                             : enums::order_dependence::kNotOrderDependent)
-            .set_enum("distinct_dependent", metadata.distinct_dependent
-                                                ? enums::distinct_dependence::kDistinctDependent
-                                                : enums::distinct_dependence::kNotDistinctDependent)
-            .fill_defaults()
-            .finish());
+    return wire::encode_ipc(common_function_info(fn.name(), schema_name,
+                                                 enums::function_type::kScalar, fn.argument_specs(),
+                                                 build_scalar_output_schema(metadata.return_type),
+                                                 metadata)
+                                .fill_defaults()
+                                .finish());
 }
 
 std::string Dispatcher::seal_attachment(const Attachment& attachment) {

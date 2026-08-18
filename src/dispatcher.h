@@ -13,6 +13,8 @@
 #include <vgi_rpc/server.h>
 #include <vgi_rpc/stream.h>
 
+#include "wire.h"
+
 #include "vgi/catalog.h"
 #include "vgi/function.h"
 #include "vgi/table_function.h"
@@ -153,6 +155,15 @@ public:
     void catalog_transaction_rollback(const vgi_rpc::Request& request);
 
 private:
+    // The fields every FunctionInfo carries, whatever kind of function it is.
+    // Each `encode_*_info` starts here and appends only what is its own; the
+    // five of them spelling the shared set out separately is how a field ends
+    // up wired into four chains and silently defaulted in the fifth.
+    static wire::ResultBuilder common_function_info(
+        const std::string& name, const std::string& schema_name, const char* function_type,
+        const std::vector<ArgSpec>& specs, const std::shared_ptr<arrow::Schema>& output_schema,
+        const FunctionMetadata& metadata);
+
     // Serialize one Info dataclass as the IPC bytes a list<binary> column
     // carries.
     static std::string encode_function_info(const ScalarFunction& fn,
