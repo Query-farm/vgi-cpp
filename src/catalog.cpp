@@ -187,7 +187,10 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
 
     std::vector<std::string> items;
     if (!filter || *filter == enums::function_type::kScalar) {
-        for (const auto& fn : scalars_) {
+        // Only what is declared in this schema. Advertising everything under
+        // every schema would make a two-schema collision look like one flat
+        // entry with two overloads, which is what the engine then reports.
+        for (const auto& fn : scalars_in_schema(schema_name)) {
             items.push_back(encode_function_info(*fn, schema_name));
         }
     }

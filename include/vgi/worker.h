@@ -29,7 +29,18 @@ public:
     void set_catalog(CatalogModel catalog);
     void set_server_id(std::string id);
 
+    // Register in the catalog's default schema (`main`).
     void register_scalar(std::shared_ptr<ScalarFunction> fn);
+
+    // Register in a named schema of a named catalog.
+    //
+    // A function's identity is (catalog, schema, name), not name alone: the
+    // same name may be declared in two schemas with different implementations,
+    // and a schema-qualified call has to reach the right one rather than
+    // resolving as an ambiguous overload. Declaring a schema here also creates
+    // it if the catalog does not list it.
+    void register_scalar_in(std::string catalog, std::string schema,
+                            std::shared_ptr<ScalarFunction> fn);
 
     // Serve, selecting the transport from argv.  Never returns.
     [[noreturn]] void run(int argc, char** argv);

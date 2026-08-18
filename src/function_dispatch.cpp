@@ -81,6 +81,15 @@ private:
 
 }  // namespace
 
+std::vector<std::shared_ptr<ScalarFunction>> Dispatcher::scalars_in_schema(
+    const std::string& schema) const {
+    std::vector<std::shared_ptr<ScalarFunction>> found;
+    for (size_t i = 0; i < scalars_.size(); ++i) {
+        if (scalar_scopes_[i].schema == schema) found.push_back(scalars_[i]);
+    }
+    return found;
+}
+
 std::vector<std::shared_ptr<ScalarFunction>> Dispatcher::scalars_named(
     const std::string& name) const {
     std::vector<std::shared_ptr<ScalarFunction>> found;
@@ -97,6 +106,23 @@ std::shared_ptr<ScalarFunction> Dispatcher::resolve_scalar(const std::string& na
     if (candidates.empty()) {
         throw std::invalid_argument("no scalar function named '" + name + "'");
     }
+
+    // Narrow to the schema the call named before considering types. Two
+    // schemas may declare the same name with different implementations, and
+    // routing a schema-qualified call to the wrong one is silently plausible —
+    // the fixtures tag their output with their schema precisely so a
+    // mis-routed call is visible in the result.
+    if (!params.schema_name.empty()) {
+        std::vector<std::shared_ptr<ScalarFunction>> in_schema;
+        auto it = scalar_by_name_.find(name);
+        for (size_t index : it->second) {
+            if (scalar_scopes_[index].schema == params.schema_name) {
+                in_schema.push_back(scalars_[index]);
+            }
+        }
+        if (!in_schema.empty()) candidates = std::move(in_schema);
+    }
+
     if (candidates.size() == 1) return candidates.front();
 
     // Score each overload by how many declared argument types the engine's

@@ -3,6 +3,7 @@
 
 #include "dispatcher.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 #include <stdexcept>
@@ -12,11 +13,23 @@
 namespace vgi {
 
 void Dispatcher::register_scalar(std::shared_ptr<ScalarFunction> fn) {
+    register_scalar_in(catalog_.name, "main", std::move(fn));
+}
+
+void Dispatcher::register_scalar_in(std::string catalog, std::string schema,
+                                    std::shared_ptr<ScalarFunction> fn) {
     if (!fn) throw std::invalid_argument("register_scalar: null function");
+    // Declaring a function in a schema creates it: a worker should not have to
+    // list the schema separately and keep the two in step.
+    if (std::find(catalog_.schemas.begin(), catalog_.schemas.end(), schema) ==
+        catalog_.schemas.end()) {
+        catalog_.schemas.push_back(schema);
+    }
     // Repeating a name is not an error but an overload: the fixtures register
     // `type_info` five times, one per argument type, and the engine picks by
     // the call site's types. Each registration is advertised separately.
     scalar_by_name_[fn->name()].push_back(scalars_.size());
+    scalar_scopes_.push_back({std::move(catalog), std::move(schema)});
     scalars_.push_back(std::move(fn));
 }
 

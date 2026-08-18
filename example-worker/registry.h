@@ -20,5 +20,6 @@ void register_strings(vgi::Worker& worker);
 void register_seeded(vgi::Worker& worker);
 void register_geo(vgi::Worker& worker);
 void register_types(vgi::Worker& worker);
+void register_same_name(vgi::Worker& worker);
 
 }  // namespace example

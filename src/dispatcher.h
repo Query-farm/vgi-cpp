@@ -32,10 +32,15 @@ public:
     const CatalogModel& catalog() const noexcept { return catalog_; }
 
     void register_scalar(std::shared_ptr<ScalarFunction> fn);
+    void register_scalar_in(std::string catalog, std::string schema,
+                            std::shared_ptr<ScalarFunction> fn);
 
-    const std::vector<std::shared_ptr<ScalarFunction>>& scalars() const noexcept {
-        return scalars_;
-    }
+    // Where a registered function is declared. Every registration has exactly
+    // one; the default is the catalog's own name and `main`.
+    struct Scope {
+        std::string catalog;
+        std::string schema;
+    };
 
     // Register every VGI method on `builder`.
     void install(vgi_rpc::ServerBuilder& builder);
@@ -78,6 +83,9 @@ private:
     // Resolution therefore happens at bind, against the types the engine
     // resolved, not at lookup.
     std::vector<std::shared_ptr<ScalarFunction>> scalars_named(const std::string& name) const;
+    // The registrations declared in `schema`, in registration order.
+    std::vector<std::shared_ptr<ScalarFunction>> scalars_in_schema(
+        const std::string& schema) const;
 
     // The overload of `name` that matches `params`, or a clear error.
     //
@@ -91,6 +99,8 @@ private:
 
     CatalogModel catalog_;
     std::vector<std::shared_ptr<ScalarFunction>> scalars_;
+    // Parallel to scalars_: where each one is declared.
+    std::vector<Scope> scalar_scopes_;
     // name -> indices into scalars_, in registration order.
     std::unordered_map<std::string, std::vector<size_t>> scalar_by_name_;
 };
