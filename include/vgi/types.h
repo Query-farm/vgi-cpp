@@ -139,6 +139,11 @@ struct FunctionMetadata {
     // values in place. Two round trips, which is why the list is empty for
     // functions that need none.
     std::vector<SecretLookup> required_secrets;
+    // How this function's output is partitioned. Declaring
+    // SINGLE_VALUE_PARTITIONS says each batch holds exactly one distinct value
+    // of the partition column, which is what lets the engine cache and skip
+    // per partition.
+    std::string partition_kind;
     // Whether the engine may narrow this scan's columns before calling.
     // Declaring it is what makes the bound output schema carry only the
     // columns the query needs; without it the function is always asked for

@@ -233,7 +233,6 @@ void register_sum_all_columns(vgi::Worker& worker) {
     worker.register_buffering(
         std::make_shared<SumAllColumns>("sum_all_columns_simple_distributed"));
     worker.register_buffering(std::make_shared<SumAllColumns>("cached_sum_all"));
-    worker.register_buffering(std::make_shared<SumAllColumns>("vgi_sum_all"));
     worker.register_buffering(
         std::make_shared<SumAllColumns>("exception_finalize", SumAllColumns::Failure::Finalize));
 }

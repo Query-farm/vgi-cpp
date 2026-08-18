@@ -130,6 +130,16 @@ void declare_catalog(vgi::Worker& worker) {
                                        {sequence_branch(100, "n < 50"),
                                         sequence_branch(100, "n >= 50")}));
     data.tables.push_back(multi_branch("multi_branch_empty", {}));
+
+    for (const char* name : {"cache_poison", "cache_filtered", "cache_ordered",
+                             "cache_external_fail", "cache_partitioned",
+                             "cache_partition_scope", "cache_partition_parallel"}) {
+        data.tables.push_back(backed_by(name, name, columns({{"n", arrow::int64()}})));
+    }
+    data.tables.push_back(backed_by("cache_projection", "cache_projection",
+                                    columns({{"a", arrow::int64()},
+                                             {"b", arrow::int64()},
+                                             {"c", arrow::int64()}})));
 }
 
 }  // namespace example

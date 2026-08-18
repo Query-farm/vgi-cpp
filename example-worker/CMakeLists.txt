@@ -14,6 +14,7 @@ add_executable(vgi-example-worker
     scalar/types.cpp
     scalar/same_name.cpp
     scalar/settings.cpp
+    scalar/secrets.cpp
     table/sequence.cpp
     table/cache.cpp
     table/more.cpp
@@ -26,6 +27,7 @@ add_executable(vgi-example-worker
     table_in_out/echo.cpp
     table_in_out/cached.cpp
     aggregate/basic.cpp
+    aggregate/more.cpp
     buffering/buffer_input.cpp
     buffering/sum_all_columns.cpp
 )

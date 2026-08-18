@@ -477,7 +477,9 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
             .set_string_list("required_settings", metadata.required_settings)
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
-            .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
+            .set_enum("partition_kind", metadata.partition_kind.empty()
+                                            ? enums::partition_kind::kNotPartitioned
+                                            : metadata.partition_kind.c_str())
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
             .fill_defaults()
