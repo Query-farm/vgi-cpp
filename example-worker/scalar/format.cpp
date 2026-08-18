@@ -84,8 +84,8 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        const auto precision =
-            vgi::ArgSpec::constant_arg("precision", 0, "int64", "Decimals");
+        auto precision = vgi::ArgSpec::constant_arg("precision", 0, "int64", "Decimals");
+        precision.with_range(0, 10);
         switch (shape_) {
             case Shape::Precision:
                 return {precision, vgi::ArgSpec::column("value", 1, "float64", "Number")};

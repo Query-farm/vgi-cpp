@@ -103,9 +103,14 @@ public:
         if (!options.fail_on_value.empty()) {
             for (int i = 0; i < batch->num_columns(); ++i) {
                 auto text = cast_to(batch->column(i), arrow::utf8());
-                const auto& values = static_cast<const arrow::StringArray&>(*text);
-                for (int64_t row = 0; row < values.length(); ++row) {
-                    if (!values.IsNull(row) && values.GetString(row) == options.fail_on_value) {
+                const auto* values = dynamic_cast<const arrow::StringArray*>(text.get());
+                if (!values) {
+                    throw std::runtime_error(format_ + ": column '" +
+                                             batch->schema()->field(i)->name() +
+                                             "' did not cast to text");
+                }
+                for (int64_t row = 0; row < values->length(); ++row) {
+                    if (!values->IsNull(row) && values->GetString(row) == options.fail_on_value) {
                         // The message must name the option: the test matches
                         // on `fail_on_value`, which is also the only thing
                         // that tells a user which knob caused the failure.
@@ -136,45 +141,57 @@ public:
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) throw std::runtime_error(format_ + ": cannot open " + path);
 
+        // Written before any shard is read, from the schema the COPY source
+        // was bound to: close runs even for an empty COPY, and then there is
+        // no shard to take the column names from.
+        if (options.header) {
+            if (!params.output_schema) {
+                throw std::runtime_error(format_ + ": header requested but the source schema " +
+                                         "did not reach close");
+            }
+            for (int64_t repeat = 0; repeat < options.header_repeat; ++repeat) {
+                for (int i = 0; i < params.output_schema->num_fields(); ++i) {
+                    if (i) out << options.delimiter;
+                    out << params.output_schema->field(i)->name();
+                }
+                out << '\n';
+            }
+        }
+
         int64_t written = 0;
-        bool wrote_header = false;
         for (const auto& [id, bytes] : shards) {
             (void)id;
             auto batch = decode_batch(bytes);
             if (!batch) continue;
 
-            if (options.header && !wrote_header) {
-                wrote_header = true;
-                for (int64_t repeat = 0; repeat < options.header_repeat; ++repeat) {
-                    for (int i = 0; i < batch->num_columns(); ++i) {
-                        if (i) out << options.delimiter;
-                        out << batch->schema()->field(i)->name();
-                    }
-                    out << '\n';
-                }
-            }
-
+            // Cast once per column, and hold the cast arrays alongside the
+            // typed views into them: the row loop below runs per cell, and a
+            // per-cell cast or downcast is the whole cost of a large COPY.
             std::vector<std::shared_ptr<arrow::Array>> text;
+            std::vector<const arrow::StringArray*> columns;
             text.reserve(static_cast<size_t>(batch->num_columns()));
+            columns.reserve(static_cast<size_t>(batch->num_columns()));
             for (int i = 0; i < batch->num_columns(); ++i) {
                 text.push_back(cast_to(batch->column(i), arrow::utf8()));
+                const auto* values = dynamic_cast<const arrow::StringArray*>(text.back().get());
+                if (!values) {
+                    throw std::runtime_error(format_ + ": column '" +
+                                             batch->schema()->field(i)->name() +
+                                             "' did not cast to text");
+                }
+                columns.push_back(values);
             }
             for (int64_t row = 0; row < batch->num_rows(); ++row) {
-                for (size_t i = 0; i < text.size(); ++i) {
+                for (size_t i = 0; i < columns.size(); ++i) {
                     if (i) out << options.delimiter;
-                    const auto& values = static_cast<const arrow::StringArray&>(*text[i]);
-                    out << (values.IsNull(row) ? options.null_string : values.GetString(row));
+                    out << (columns[i]->IsNull(row) ? options.null_string
+                                                    : columns[i]->GetString(row));
                 }
                 out << '\n';
                 ++written;
             }
         }
 
-        // Headers still go out for an empty COPY: close is called even when
-        // nothing was written, and a header-only file is the right result.
-        if (options.header && !wrote_header) {
-            for (int64_t repeat = 0; repeat < options.header_repeat; ++repeat) out << '\n';
-        }
         out.flush();
         if (!out) throw std::runtime_error(format_ + ": write failed for " + path);
         return written;
@@ -195,8 +212,8 @@ private:
         }
         if (auto header = arguments.named("header")) {
             auto values = cast_to(header, arrow::boolean());
-            options.header = !values->IsNull(0) &&
-                             static_cast<const arrow::BooleanArray&>(*values).Value(0);
+            const auto* flags = dynamic_cast<const arrow::BooleanArray*>(values.get());
+            options.header = flags && !flags->IsNull(0) && flags->Value(0);
         }
         options.header_repeat = arguments.named_int64("header_repeat").value_or(1);
         if (options.header_repeat < 0 || options.header_repeat > 3) {
@@ -256,8 +273,19 @@ public:
     }
 
     int64_t close(const vgi::ProcessParams& params) override {
-        const auto type = secret_type(params.arguments);
-        const auto api_key = params.secrets.field(type, "api_key").value_or("NONE");
+        const auto path = params.copy_to_path.value_or("");
+        if (path.empty()) throw std::runtime_error("secret_lines_out: no destination path");
+
+        // By scope and type, never by name: the user chose the secret's name
+        // in CREATE SECRET, so the fixture cannot know it. A miss is silent —
+        // the test asserts NONE rather than an error.
+        std::string api_key = "NONE";
+        if (const auto* secret =
+                params.secrets.for_scope_of_type(path, secret_type(params.arguments))) {
+            if (auto found = secret->find("api_key"); found != secret->end()) {
+                api_key = found->second;
+            }
+        }
 
         int64_t rows = 0;
         for (const auto& [id, value] : params.storage->scan(params.execution_id,
@@ -267,11 +295,11 @@ public:
             rows += std::strtoll(value.c_str(), nullptr, 10);
         }
 
-        const auto path = params.copy_to_path.value_or("");
-        if (path.empty()) throw std::runtime_error("secret_lines_out: no destination path");
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out << api_key << "," << rows << '\n';
+        if (!out) throw std::runtime_error("secret_lines_out: cannot open " + path);
+        out << "api_key=" << api_key << '\n' << "rows=" << rows << '\n';
         out.flush();
+        if (!out) throw std::runtime_error("secret_lines_out: write failed for " + path);
         return rows;
     }
 

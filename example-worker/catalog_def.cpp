@@ -656,7 +656,10 @@ void declare_catalog(vgi::Worker& worker) {
 
     {
         // The columns-based arm: the catalog resolves AT to a version and
-        // hands it to the scan as an argument, so it must not be inlined.
+        // hands it to the scan as an argument. Inlined, because
+        // `catalog_table_get` is the call that carries the AT clause — asked
+        // for the scan separately, the engine has nothing to resolve against
+        // and every AT reads the current version.
         auto pushdown_cols = backed_by("tt_pushdown_cols", "tt_pushdown_cols_scan",
                                        columns({{"id", arrow::int64()},
                                                 {"val", arrow::int64()},
@@ -664,7 +667,6 @@ void declare_catalog(vgi::Worker& worker) {
                                                 {"pushed_filters", arrow::utf8()}}),
                                        "Columns-based: prunes by filter AND time-travels "
                                        "(AT → version arg).");
-        pushdown_cols.inline_scan = false;
         const int cols_years[] = {2000, 2021};
         for (int64_t version = 1; version <= 2; ++version) {
             vgi::TimeTravelVersion entry;
@@ -685,7 +687,6 @@ void declare_catalog(vgi::Worker& worker) {
         vgi::CatalogTable constraints;
         constraints.name = "versioned_constraints";
         constraints.scan_function = "versioned_constraints_scan";
-        constraints.inline_scan = false;
         constraints.comment = "Table with constraints that evolve across versions";
         const std::vector<std::vector<std::pair<std::string, std::shared_ptr<arrow::DataType>>>>
             per_version = {

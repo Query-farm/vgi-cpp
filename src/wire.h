@@ -92,6 +92,14 @@ std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatc
 std::optional<std::map<std::string, std::string>> get_struct_fields(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
 
+// One *binary* child of a struct parameter, as its raw bytes. Separate from
+// get_struct_fields because that one renders every child as a string, and a
+// binary child rendered that way is escaped rather than reproduced — which an
+// IPC payload does not survive.
+std::optional<std::string> get_struct_binary(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field,
+    const std::string& child);
+
 // Read a dataclass parameter: the named binary column, decoded.
 std::shared_ptr<arrow::RecordBatch> get_ipc(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);

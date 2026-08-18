@@ -485,6 +485,29 @@ void Dispatcher::check_type_bounds(const ScalarFunction& fn, const BindParams& p
     }
 }
 
+void Dispatcher::check_arg_constraints(const std::string& function_name,
+                                       const std::vector<ArgSpec>& specs,
+                                       const Arguments& arguments) {
+    for (size_t i = 0; i < specs.size(); ++i) {
+        const auto& spec = specs[i];
+        if (!spec.ge && !spec.le && !spec.gt && !spec.lt) continue;
+        // Only a constant can be checked here: a column's values are not known
+        // until process(), and the engine re-checks nothing on our behalf.
+        if (!spec.constant) continue;
+        const auto value = arguments.const_double(i);
+        if (!value) continue;
+
+        const auto refuse = [&](const std::string& bound) {
+            throw std::invalid_argument("function '" + function_name + "' argument '" +
+                                        spec.name + "' must be " + bound);
+        };
+        if (spec.ge && *value < *spec.ge) refuse(">= " + std::to_string(*spec.ge));
+        if (spec.gt && *value <= *spec.gt) refuse("> " + std::to_string(*spec.gt));
+        if (spec.le && *value > *spec.le) refuse("<= " + std::to_string(*spec.le));
+        if (spec.lt && *value >= *spec.lt) refuse("< " + std::to_string(*spec.lt));
+    }
+}
+
 // The secrets `name` declares, whichever registry it lives in.
 //
 // Answered only on the *first* bind: once the engine has resolved them it sets
@@ -533,6 +556,16 @@ BindParams Dispatcher::read_bind_request(
         if (format != copy_to->end()) params.copy_to_format = format->second;
         if (path != copy_to->end()) params.copy_to_path = path->second;
     }
+    if (auto copy_from = wire::get_struct_fields(bind_call, "copy_from")) {
+        auto format = copy_from->find("format");
+        auto path = copy_from->find("file_path");
+        if (format != copy_from->end()) params.copy_from_format = format->second;
+        if (path != copy_from->end()) params.copy_from_path = path->second;
+        // The target's columns ride the same struct as IPC bytes, so they are
+        // read separately rather than through the stringified fields above.
+        params.copy_from_schema = wire::decode_schema(
+            wire::get_struct_binary(bind_call, "copy_from", "expected_schema").value_or(""));
+    }
     return params;
 }
 
@@ -553,12 +586,15 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
     if (auto sink = find_buffering(function_name, params.schema_name)) {
         output_schema = sink->bind(params);
     } else if (auto transform = find_table_in_out(function_name, params.schema_name)) {
+        check_arg_constraints(function_name, transform->argument_specs(), params.arguments);
         output_schema = transform->bind(params);
     } else if (auto table = find_table(function_name, params.schema_name, &params)) {
+        check_arg_constraints(function_name, table->argument_specs(), params.arguments);
         output_schema = table->bind(params);
     } else {
         auto fn = resolve_scalar(function_name, params);
         check_type_bounds(*fn, params);
+        check_arg_constraints(function_name, fn->argument_specs(), params.arguments);
         output_schema = fn->bind(params);
     }
     if (!output_schema) {
@@ -742,6 +778,8 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.arguments = bind_params.arguments;
     params.copy_to_format = bind_params.copy_to_format;
     params.copy_to_path = bind_params.copy_to_path;
+    params.copy_from_format = bind_params.copy_from_format;
+    params.copy_from_path = bind_params.copy_from_path;
     params.settings = bind_params.settings;
     params.secrets = bind_params.secrets;
     params.catalog_name = catalog_.name;

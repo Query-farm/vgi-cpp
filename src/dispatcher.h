@@ -17,6 +17,7 @@
 #include "vgi/table_function.h"
 #include "vgi/aggregate.h"
 #include "vgi/buffering.h"
+#include "vgi/copy_from.h"
 #include "vgi/copy_to.h"
 #include "vgi/table_in_out.h"
 
@@ -55,6 +56,7 @@ public:
                                std::shared_ptr<AggregateFunction> fn);
     void register_buffering(std::shared_ptr<TableBufferingFunction> fn);
     void register_copy_to(std::shared_ptr<CopyToFunction> writer);
+    void register_copy_from(std::shared_ptr<CopyFromFunction> reader);
     void register_buffering_in(std::string catalog, std::string schema,
                                std::shared_ptr<TableBufferingFunction> fn);
 
@@ -186,6 +188,15 @@ private:
     static void check_type_bounds(const ScalarFunction& fn, const BindParams& params);
     std::vector<SecretLookup> required_secrets_of(const std::string& name,
                                                   const BindParams& params) const;
+    // Reject a constant argument outside the range its spec declares.
+    //
+    // Declaring a range is a discovery surface *and* a contract: a caller told
+    // that `count` is `[0, +inf)` should be refused at bind rather than have a
+    // negative value quietly produce an empty scan.
+    static void check_arg_constraints(const std::string& function_name,
+                                      const std::vector<ArgSpec>& specs,
+                                      const Arguments& arguments);
+
     BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
 
     // The schema `name`, as this attachment sees it.
@@ -217,6 +228,7 @@ private:
     std::unordered_map<std::string, std::vector<size_t>> aggregate_by_name_;
 
     std::vector<std::shared_ptr<CopyToFunction>> copy_to_;
+    std::vector<std::shared_ptr<CopyFromFunction>> copy_from_;
     std::vector<std::shared_ptr<TableBufferingFunction>> bufferings_;
     std::vector<Scope> buffering_scopes_;
     std::unordered_map<std::string, std::vector<size_t>> buffering_by_name_;

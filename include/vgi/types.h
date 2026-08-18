@@ -64,6 +64,23 @@ struct ArgSpec {
     };
     std::optional<TypeBound> type_bound;
 
+    // Per-argument constraint metadata, surfaced by
+    // `vgi_function_arguments()` for discovery. All optional.
+    //
+    // A discovery surface, not a validator: the engine renders the bounds as
+    // interval notation and shows a caller what a sensible value looks like.
+    std::optional<double> ge;
+    std::optional<double> le;
+    std::optional<double> gt;
+    std::optional<double> lt;
+    // A closed set of allowed values, as a JSON array.
+    std::optional<std::string> choices;
+    // A regex the value must match — an open set, where `choices` is closed.
+    std::optional<std::string> pattern;
+    // The argument's default, as a JSON scalar.
+    std::optional<std::string> default_value;
+
+    ArgSpec& with_range(std::optional<double> low, std::optional<double> high);
     ArgSpec& with_bound(TypeBound bound);
     // Mark the parameter variadic: it stands for one or more arguments of its
     // type rather than exactly one.

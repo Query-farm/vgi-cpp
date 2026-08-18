@@ -39,6 +39,7 @@ void register_secret_fixtures(vgi::Worker& worker);
 void register_series(vgi::Worker& worker);
 void register_filter_fixtures(vgi::Worker& worker);
 void register_copy_to(vgi::Worker& worker);
+void register_copy_from(vgi::Worker& worker);
 void register_cached(vgi::Worker& worker);
 void register_more_aggregates(vgi::Worker& worker);
 void register_generators(vgi::Worker& worker);

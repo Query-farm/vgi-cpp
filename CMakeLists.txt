@@ -63,6 +63,7 @@ add_library(vgi
     src/pushdown.cpp
     src/statistics.cpp
     src/copy_to.cpp
+    src/copy_from.cpp
     src/partition.cpp
 )
 add_library(vgi::vgi ALIAS vgi)

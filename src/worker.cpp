@@ -58,6 +58,10 @@ void Worker::register_copy_to(std::shared_ptr<CopyToFunction> writer) {
     disp_->register_copy_to(std::move(writer));
 }
 
+void Worker::register_copy_from(std::shared_ptr<CopyFromFunction> reader) {
+    disp_->register_copy_from(std::move(reader));
+}
+
 void Worker::register_buffering(std::shared_ptr<TableBufferingFunction> fn) {
     disp_->register_buffering(std::move(fn));
 }

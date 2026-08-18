@@ -29,6 +29,7 @@ add_executable(vgi-example-worker
     table/cache_more.cpp
     table/partitioned.cpp
     copy_to/lines.cpp
+    copy_from/lines.cpp
     catalog_def.cpp
     table_in_out/echo.cpp
     table_in_out/cached.cpp

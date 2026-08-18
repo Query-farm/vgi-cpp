@@ -39,6 +39,13 @@ struct BindParams {
     // scopes its secret lookups to the path.
     std::optional<std::string> copy_to_format;
     std::optional<std::string> copy_to_path;
+    // The COPY source, when this bind is part of a `COPY … FROM`. A reader
+    // scopes its secret lookups to the path, and binds its output to
+    // `copy_from_schema` — the COPY target's columns, which DuckDB does not
+    // cast, so the reader has to agree with them exactly.
+    std::optional<std::string> copy_from_format;
+    std::optional<std::string> copy_from_path;
+    std::shared_ptr<arrow::Schema> copy_from_schema;
     std::string catalog_name;
     std::string schema_name;
 
@@ -100,6 +107,10 @@ struct ProcessParams {
     // writer reads it here rather than from its declared arguments.
     std::optional<std::string> copy_to_format;
     std::optional<std::string> copy_to_path;
+    // The COPY source, when this call is part of a `COPY … FROM`. Same
+    // reasoning: the path comes from the statement, not from an option.
+    std::optional<std::string> copy_from_format;
+    std::optional<std::string> copy_from_path;
     // Cross-process state, scoped by `execution_id`. Set for every call.
     //
     // Needed rather than optional: the engine parallelizes a buffering sink

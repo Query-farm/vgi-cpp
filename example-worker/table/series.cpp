@@ -95,17 +95,22 @@ public:
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
         switch (arity_) {
-            case Arity::Count:
-                return {vgi::ArgSpec::constant_arg("count", 0, "int64", "Number of values")};
+            case Arity::Count: {
+                auto count = vgi::ArgSpec::constant_arg("count", 0, "int64", "Number of values");
+                count.ge = 0;
+                return {count};
+            }
             case Arity::Range:
                 return {vgi::ArgSpec::constant_arg("start", 0, "int64", "Start (inclusive)"),
                         vgi::ArgSpec::constant_arg("stop", 1, "int64", "Stop (exclusive)")};
             case Arity::Step:
                 break;
         }
+        auto step = vgi::ArgSpec::constant_arg("step", 2, "int64", "Step");
+        step.ge = 1;
         return {vgi::ArgSpec::constant_arg("start", 0, "int64", "Start (inclusive)"),
                 vgi::ArgSpec::constant_arg("stop", 1, "int64", "Stop (exclusive)"),
-                vgi::ArgSpec::constant_arg("step", 2, "int64", "Step")};
+                step};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {

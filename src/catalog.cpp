@@ -999,6 +999,24 @@ vgi_rpc::Result Dispatcher::catalog_copy_from_formats(const vgi_rpc::Request&) {
         }
         items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
     }
+    for (const auto& reader : copy_from_) {
+        const auto metadata = reader->metadata();
+        auto builder = wire::ResultBuilder(gen::CopyFromFormatInfoSchema());
+        builder.set_string("format_name", reader->format())
+            .set_string("handler", reader->handler_name())
+            .set_string("direction", "from")
+            .set_string("description", metadata.description)
+            .set_bool("ordered", false)
+            .set_binary("options",
+                        wire::encode_schema(build_arg_schema(reader->argument_specs())))
+            .set_string_map("tags", metadata.tags);
+        if (auto comment = reader->comment()) {
+            builder.set_string("comment", *comment);
+        } else {
+            builder.set_null("comment");
+        }
+        items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
+    }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_copy_from_formats"))
                         .set_binary_list("items", items)
                         .finish());

@@ -214,6 +214,17 @@ std::optional<std::map<std::string, std::string>> get_struct_fields(
     return fields;
 }
 
+std::optional<std::string> get_struct_binary(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field,
+    const std::string& child) {
+    if (!has_column(batch, field)) return std::nullopt;
+    auto structs = std::dynamic_pointer_cast<arrow::StructArray>(column(batch, field));
+    if (!structs || structs->length() == 0 || structs->IsNull(0)) return std::nullopt;
+    auto values = std::dynamic_pointer_cast<arrow::BinaryArray>(structs->GetFieldByName(child));
+    if (!values || values->length() == 0 || values->IsNull(0)) return std::nullopt;
+    return values->GetString(0);
+}
+
 std::vector<int64_t> get_int64_list(const std::shared_ptr<arrow::RecordBatch>& batch,
                                     const std::string& field) {
     std::vector<int64_t> items;

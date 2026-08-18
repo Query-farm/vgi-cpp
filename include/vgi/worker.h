@@ -12,6 +12,7 @@
 #include "vgi/table_function.h"
 #include "vgi/aggregate.h"
 #include "vgi/buffering.h"
+#include "vgi/copy_from.h"
 #include "vgi/copy_to.h"
 #include "vgi/table_in_out.h"
 
@@ -67,6 +68,11 @@ public:
     // A `COPY … TO (FORMAT …)` writer. Registers its handler as a buffering
     // function too, since that is the RPC path the engine drives it over.
     void register_copy_to(std::shared_ptr<CopyToFunction> writer);
+
+    // A `COPY … FROM (FORMAT …)` reader. Registers its handler as a table
+    // function too, since that is the RPC path the engine drives it over.
+    void register_copy_from(std::shared_ptr<CopyFromFunction> reader);
+
     void register_buffering_in(std::string catalog, std::string schema,
                                std::shared_ptr<TableBufferingFunction> fn);
 

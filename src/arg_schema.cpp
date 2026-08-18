@@ -3,6 +3,8 @@
 
 #include "arg_schema.h"
 
+#include <charconv>
+#include <cmath>
 #include <unordered_map>
 
 #include <arrow/util/key_value_metadata.h>
@@ -25,6 +27,34 @@ std::shared_ptr<arrow::DataType> arg_type_to_arrow(const std::string& name) {
     auto it = kByName.find(name);
     return it == kByName.end() ? arrow::null() : it->second;
 }
+
+namespace {
+
+// A whole bound loses its `.0`: the engine renders this text verbatim, and a
+// range of `[0.0, 10.0]` on an integer argument reads as a mistake.
+std::string format_bound(double value) {
+    if (std::isfinite(value) && value == std::floor(value)) {
+        return std::to_string(static_cast<int64_t>(value));
+    }
+    char digits[32];
+    const auto end = std::to_chars(digits, digits + sizeof(digits), value).ptr;
+    return std::string(digits, end);
+}
+
+// Interval notation from the four bounds: square brackets for the inclusive
+// ones, parentheses for the exclusive, and `-inf`/`+inf` for an open side.
+std::optional<std::string> format_range(const ArgSpec& spec) {
+    if (!spec.ge && !spec.le && !spec.gt && !spec.lt) return std::nullopt;
+    const std::string low = spec.gt   ? "(" + format_bound(*spec.gt)
+                            : spec.ge ? "[" + format_bound(*spec.ge)
+                                      : "(-inf";
+    const std::string high = spec.lt   ? format_bound(*spec.lt) + ")"
+                             : spec.le ? format_bound(*spec.le) + "]"
+                                       : "+inf)";
+    return low + ", " + high;
+}
+
+}  // namespace
 
 std::shared_ptr<arrow::Schema> build_arg_schema(const std::vector<ArgSpec>& specs) {
     std::vector<std::shared_ptr<arrow::Field>> fields;
@@ -72,6 +102,23 @@ std::shared_ptr<arrow::Schema> build_arg_schema(const std::vector<ArgSpec>& spec
         if (!spec.description.empty()) {
             keys.push_back("vgi_doc");
             values.push_back(spec.description);
+        }
+        // Constraint metadata, presence-only in the same way.
+        if (auto range = format_range(spec)) {
+            keys.push_back("vgi_range");
+            values.push_back(*range);
+        }
+        if (spec.choices) {
+            keys.push_back("vgi_choices");
+            values.push_back(*spec.choices);
+        }
+        if (spec.pattern) {
+            keys.push_back("vgi_pattern");
+            values.push_back(*spec.pattern);
+        }
+        if (spec.default_value) {
+            keys.push_back("vgi_default");
+            values.push_back(*spec.default_value);
         }
 
         auto field = arrow::field(spec.name, type, /*nullable=*/true);

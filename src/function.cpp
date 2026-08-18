@@ -55,6 +55,14 @@ ArgSpec ArgSpec::any_column(std::string name, int index, std::string description
     return column(std::move(name), index, "any", std::move(description));
 }
 
+ArgSpec& ArgSpec::with_range(std::optional<double> low, std::optional<double> high) {
+    // Inclusive, which is what every fixture that declares a range wants. The
+    // exclusive fields stay available for the cases that need them.
+    ge = low;
+    le = high;
+    return *this;
+}
+
 ArgSpec& ArgSpec::with_bound(TypeBound bound) {
     type_bound = std::move(bound);
     return *this;
