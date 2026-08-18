@@ -48,6 +48,12 @@ struct BindParams {
     std::shared_ptr<arrow::Schema> copy_from_schema;
     std::string catalog_name;
     std::string schema_name;
+    // The `AT (VERSION => …)` / `AT (TIMESTAMP => …)` clause, when the call
+    // site had one. A function-backed table that time-travels reads it here;
+    // a table whose versions the catalog declares never sees it, because the
+    // engine has already resolved which version's scan to call.
+    std::optional<std::string> at_unit;
+    std::optional<std::string> at_value;
 
     // The declared type of positional argument `index`, preferring the
     // argument list and falling back to the input schema.
@@ -95,6 +101,9 @@ struct ProcessParams {
     // belongs to it. A function holding state across calls — a buffering sink,
     // an aggregate — keys on this; a stateless one can ignore it.
     std::string execution_id;
+    // The AT clause this call site carried, as on `BindParams`.
+    std::optional<std::string> at_unit;
+    std::optional<std::string> at_value;
     // The predicates the engine pushed into this scan. Empty when none were,
     // or when the function did not declare `filter_pushdown`.
     PushdownFilters pushdown_filters;

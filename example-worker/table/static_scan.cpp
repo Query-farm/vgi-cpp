@@ -14,6 +14,7 @@
 // only ones that answer both a version and a filter in the same row.
 
 #include <algorithm>
+#include <cctype>
 #include <memory>
 #include <optional>
 #include <string>
@@ -424,8 +425,7 @@ vgi::FunctionMetadata tt_metadata(std::string description) {
 }
 
 // Function-backed: the catalog declares no versions, so the AT clause reaches
-// the scan itself. This SDK does not yet carry `at_unit`/`at_value` onto the
-// init request, so every read resolves to the current version.
+// the scan itself and this is the only arm that has to read it.
 class TtPushdownScan : public vgi::TableFunction {
 public:
     std::string name() const override { return "tt_pushdown_scan"; }
@@ -441,9 +441,27 @@ public:
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        const auto rows = tt_rows(kCurrentTtVersion, params.pushdown_filters.format());
+        const auto rows = tt_rows(requested_version(params), params.pushdown_filters.format());
         return std::make_unique<OneShot>(
             project(params.output_schema, rows, rows.front().second->length()));
+    }
+
+private:
+    // The version an AT clause asks for, or the current one when there is no
+    // clause. A timestamp resolves by year, matching the years the
+    // catalog-declared arm stamps on its versions — `2020` is v1's.
+    static int64_t requested_version(const vgi::ProcessParams& params) {
+        if (!params.at_unit || !params.at_value) return kCurrentTtVersion;
+        std::string unit = *params.at_unit;
+        for (auto& c : unit) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        try {
+            if (unit == "VERSION") return std::stoll(*params.at_value);
+            if (unit == "TIMESTAMP" && params.at_value->size() >= 4) {
+                return std::stoi(params.at_value->substr(0, 4)) <= 2020 ? 1 : kCurrentTtVersion;
+            }
+        } catch (const std::exception&) {
+        }
+        return kCurrentTtVersion;
     }
 };
 

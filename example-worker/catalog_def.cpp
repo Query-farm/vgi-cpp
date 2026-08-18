@@ -275,7 +275,11 @@ void declare_catalog(vgi::Worker& worker) {
          })},
     };
 
+    worker.catalog().comment = "Example VGI catalog for testing";
+    worker.catalog().tags = {{"source", "vgi-fixture-worker"}, {"version", "1"}};
+
     auto& data = worker.catalog().schema("data");
+    data.comment = "Example tables backed by functions";
 
     // The column is `value` while the scan emits `n`: the engine maps a
     // function-backed table's columns positionally, and the catalog's name is
@@ -413,6 +417,7 @@ void declare_catalog(vgi::Worker& worker) {
     // In `main`, not `data`: a view is looked up by the schema the user names,
     // and the suite names `main` for these two.
     auto& main = worker.catalog().schema("main");
+    main.comment = "Example functions for testing VGI";
     main.views.push_back(
         {"first_ten", "SELECT * FROM sequence(10)", "First 10 integers"});
     main.views.push_back({"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0",
@@ -438,6 +443,10 @@ void declare_catalog(vgi::Worker& worker) {
                            tagged("budget", arrow::float64(), {"default"}, {"0"})}),
             "Department reference table");
         departments.cardinality = 3;
+        departments.not_null = {0, 1};
+        departments.primary_key = {{0}};
+        departments.unique = {{1}};
+        departments.check = {"budget >= 0"};
         // Bounds wider than the three rows on purpose: they describe the table
         // the fixture stands in for, and `column_statistics.test` folds
         // `id > 100` to EMPTY_RESULT against them, not against the data.
@@ -463,6 +472,8 @@ void declare_catalog(vgi::Worker& worker) {
             }),
             "Product table with column defaults");
         products.cardinality = 3;
+        products.not_null = {0};
+        products.primary_key = {{0}};
         products.column_statistics = {
             stat("id", vgi::StatValue::integer(1), vgi::StatValue::integer(100), 100),
             string_stat("name", "Anvil", "Zebra Tape", 100, 30),
@@ -483,6 +494,10 @@ void declare_catalog(vgi::Worker& worker) {
                                             {"department_id", arrow::int64()}}),
                                    "Employee table with FK to departments");
         employees.cardinality = 5;
+        employees.not_null = {0, 1, 2};
+        employees.primary_key = {{0}};
+        employees.unique = {{2}};
+        employees.foreign_keys = {{{"department_id"}, "departments", {"id"}}};
         data.tables.push_back(std::move(employees));
     }
 
@@ -493,6 +508,11 @@ void declare_catalog(vgi::Worker& worker) {
                                            {"title", arrow::utf8()}}),
                                   "Projects with composite PK and FK to departments");
         projects.cardinality = 3;
+        // Composite, which is what this table is here for: a single-column key
+        // would not tell a reader whether the list-of-lists survived the wire.
+        projects.primary_key = {{0, 1}};
+        projects.not_null = {0, 1, 2};
+        projects.foreign_keys = {{{"department_id"}, "departments", {"id"}}};
         data.tables.push_back(std::move(projects));
     }
 
@@ -651,6 +671,9 @@ void declare_catalog(vgi::Worker& worker) {
                                               {"pushed_filters", arrow::utf8()}}),
                                      "Function-backed: prunes by filter AND time-travels "
                                      "(AT read at init).");
+        // Declares no versions: the function reads the AT clause itself at
+        // bind, and this is what stops the engine refusing the clause first.
+        pushdown_fn.supports_time_travel = true;
         data.tables.push_back(std::move(pushdown_fn));
     }
 
@@ -709,6 +732,13 @@ void declare_catalog(vgi::Worker& worker) {
         }
         constraints.columns = constraints.time_travel.back().columns;
         constraints.scan_arguments = constraints.time_travel.back().scan_arguments;
+        // The current version's constraints; an AT to an older one shows the
+        // older *columns* but these same constraints, which is what the wire
+        // carries.
+        constraints.not_null = {0, 1};
+        constraints.primary_key = {{0}};
+        constraints.unique = {{2}};
+        constraints.foreign_keys = {{{"department_id"}, "departments", {"id"}}};
         data.tables.push_back(std::move(constraints));
     }
 }

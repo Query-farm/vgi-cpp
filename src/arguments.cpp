@@ -102,6 +102,16 @@ std::shared_ptr<arrow::Array> Arguments::named(const std::string& name) const {
     return it == named_.end() ? nullptr : it->second;
 }
 
+bool Arguments::positional_is_null(size_t index) const {
+    auto array = positional(index);
+    return array && array->length() > 0 && array->IsNull(0);
+}
+
+bool Arguments::named_is_null(const std::string& name) const {
+    auto array = named(name);
+    return array && array->length() > 0 && array->IsNull(0);
+}
+
 std::shared_ptr<arrow::DataType> Arguments::positional_type(size_t index) const {
     if (index >= positional_fields_.size() || !positional_fields_[index]) return nullptr;
     return positional_fields_[index]->type();

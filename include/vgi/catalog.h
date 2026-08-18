@@ -56,6 +56,14 @@ struct TimeTravelVersion {
 // its scan function, and calls that. The columns declared here are what the
 // planner types the query against before any scan runs, so they have to match
 // what the scan actually emits.
+// A foreign key on a table, by column *name* rather than index — the wire
+// carries names here, and a name survives a schema that gains a column.
+struct ForeignKey {
+    std::vector<std::string> columns;
+    std::string referenced_table;
+    std::vector<std::string> referenced_columns;
+};
+
 struct CatalogTable {
     std::string name;
     std::shared_ptr<arrow::Schema> columns;
@@ -91,10 +99,30 @@ struct CatalogTable {
     // DuckDB extensions the branches need (`iceberg`, `parquet`).
     std::vector<std::string> required_extensions;
 
+    // Constraints, as DuckDB's catalog views report them. Columns are given
+    // by index into `columns`, except the foreign keys, whose wire form is by
+    // name.
+    //
+    // Declarative only: nothing here is enforced by the worker, and the engine
+    // does not enforce it on a VGI table either. It exists so a tool reading
+    // the catalog sees the same shape it would see for a local table.
+    std::vector<int32_t> not_null;
+    std::vector<std::vector<int32_t>> unique;
+    std::vector<std::vector<int32_t>> primary_key;
+    std::vector<std::string> check;
+    std::vector<ForeignKey> foreign_keys;
+
     // Per-column bounds for the optimizer. Empty means the table declines to
     // answer, which is different from answering with no columns: the engine
     // then falls back to asking the scan function for its own.
     std::vector<ColumnStatistics> column_statistics;
+
+    // Whether this table answers an AT clause without declaring versions.
+    //
+    // Needed for a function-backed table that reads the clause itself at bind:
+    // without it an AT against a table with an empty `time_travel` list is
+    // refused before the function ever sees it.
+    bool supports_time_travel = false;
 
     // Whether the scan function travels inside the table record.
     //
@@ -140,6 +168,8 @@ struct SecretTypeSpec {
 // A schema and everything declared in it.
 struct CatalogSchema {
     std::string name = "main";
+    std::optional<std::string> comment;
+    std::vector<std::pair<std::string, std::string>> tags;
     std::vector<CatalogTable> tables;
     std::vector<CatalogView> views;
 };

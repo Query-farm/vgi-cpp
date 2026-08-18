@@ -43,6 +43,15 @@ public:
 
     size_t positional_count() const noexcept { return positional_.size(); }
 
+    // Whether the call supplied `index`/`name` and left it SQL NULL.
+    //
+    // The typed accessors collapse "absent" and "present but null" into
+    // nullopt, which is what a function with a default wants. A bind-time
+    // check needs them apart: a missing argument takes the default, and an
+    // explicit NULL is a caller error.
+    bool positional_is_null(size_t index) const;
+    bool named_is_null(const std::string& name) const;
+
     // The declared type of positional argument `index`, which is what a bind
     // needs to decide a result type. Null when absent.
     std::shared_ptr<arrow::DataType> positional_type(size_t index) const;

@@ -161,6 +161,10 @@ public:
     ResultBuilder& set_string_list(const std::string& field,
                                    const std::vector<std::string>& values);
     // A `list<list<utf8>>` column.
+    ResultBuilder& set_int32_list(const std::string& field,
+                                  const std::vector<int32_t>& values);
+    ResultBuilder& set_int32_list_list(const std::string& field,
+                                       const std::vector<std::vector<int32_t>>& groups);
     ResultBuilder& set_string_list_list(
         const std::string& field, const std::vector<std::vector<std::string>>& groups);
     // The `required_secrets` column: a list of

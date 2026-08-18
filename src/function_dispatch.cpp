@@ -490,6 +490,20 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
                                        const Arguments& arguments) {
     for (size_t i = 0; i < specs.size(); ++i) {
         const auto& spec = specs[i];
+
+        // An explicit SQL NULL for a constant is a caller error, and one worth
+        // naming here: left to the function it becomes an absent value, which
+        // silently takes the default instead of failing.
+        const bool supplied_null = spec.index ? arguments.positional_is_null(i)
+                                              : arguments.named_is_null(spec.name);
+        // Named-only parameters are read as constants too, even though they
+        // carry no `vgi_const` marker; a column argument is exempt, since a
+        // column may legitimately be null in some rows.
+        if ((spec.constant || !spec.index) && supplied_null) {
+            throw std::invalid_argument("function '" + function_name + "' argument '" +
+                                        spec.name + "' cannot be NULL");
+        }
+
         if (!spec.ge && !spec.le && !spec.gt && !spec.lt) continue;
         // Only a constant can be checked here: a column's values are not known
         // until process(), and the engine re-checks nothing on our behalf.
@@ -546,6 +560,12 @@ BindParams Dispatcher::read_bind_request(
         Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
     params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
     params.catalog_name = catalog_.name;
+    // Empty strings mean "no clause" on this wire, which is not the same as a
+    // clause whose value happens to be empty.
+    params.at_unit = wire::get_optional_string(bind_call, "at_unit");
+    if (params.at_unit && params.at_unit->empty()) params.at_unit.reset();
+    params.at_value = wire::get_optional_string(bind_call, "at_value");
+    if (params.at_value && params.at_value->empty()) params.at_value.reset();
     params.secrets_resolved =
         wire::get_optional_bool(bind_call, "resolved_secrets_provided").value_or(false);
     // `copy_to` rides as a nested struct column rather than IPC bytes, unlike
@@ -784,6 +804,8 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.secrets = bind_params.secrets;
     params.catalog_name = catalog_.name;
     params.schema_name = bind_params.schema_name;
+    params.at_unit = bind_params.at_unit;
+    params.at_value = bind_params.at_value;
     params.storage = default_storage();
 
     // The engine may supply the execution id (it does for a follow-on worker,

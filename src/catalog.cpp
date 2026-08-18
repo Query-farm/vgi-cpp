@@ -364,13 +364,17 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      // discarded them all.
                      .set_bool("supports_column_statistics", true)
                      .set_string("global_function_prefix", "")
+                     .set_string_map("tags", catalog_.tags)
                      .set_optional_string("resolved_data_version", resolved_data)
                      .set_optional_string("resolved_implementation_version", resolved_impl)
                      .set_binary_list("settings", encode_settings())
-                     .set_binary_list("secret_types", encode_secret_types())
-                     .fill_defaults()
-                     .finish();
-    return envelope(batch);
+                     .set_binary_list("secret_types", encode_secret_types());
+    if (catalog_.comment) {
+        batch.set_string("comment", *catalog_.comment);
+    } else {
+        batch.set_null("comment");
+    }
+    return envelope(batch.fill_defaults().finish());
 }
 
 vgi_rpc::Result Dispatcher::catalog_version(const vgi_rpc::Request&) {
@@ -423,7 +427,7 @@ const TimeTravelVersion* resolve_version(const CatalogTable& table,
                                          const std::optional<std::string>& at_value) {
     const bool has_clause = at_unit && !at_unit->empty();
     if (table.time_travel.empty()) {
-        if (has_clause && table.branches.empty()) {
+        if (has_clause && table.branches.empty() && !table.supports_time_travel) {
             throw std::invalid_argument("this table does not support time travel");
         }
         return nullptr;
@@ -472,6 +476,57 @@ const TimeTravelVersion* resolve_version(const CatalogTable& table,
     throw std::invalid_argument("unsupported AT unit: " + unit);
 }
 
+namespace {
+
+// Constraint columns that exist in a schema of `column_count` fields.
+std::vector<int32_t> within(const std::vector<int32_t>& columns, int column_count) {
+    std::vector<int32_t> kept;
+    for (const auto column : columns) {
+        if (column >= 0 && column < column_count) kept.push_back(column);
+    }
+    return kept;
+}
+
+// The same, for a list of column groups. A group that loses any member is
+// dropped whole: a composite key missing a column is a different constraint,
+// not a narrower one.
+std::vector<std::vector<int32_t>> within(const std::vector<std::vector<int32_t>>& groups,
+                                         int column_count) {
+    std::vector<std::vector<int32_t>> kept;
+    for (const auto& group : groups) {
+        if (within(group, column_count).size() == group.size()) kept.push_back(group);
+    }
+    return kept;
+}
+
+// One IPC entry per foreign key. The referenced schema travels alongside the
+// table because the wire allows a cross-schema reference, even though every
+// fixture here stays inside one.
+std::vector<std::string> encode_foreign_keys(const CatalogTable& table,
+                                             const std::string& schema_name) {
+    static const auto schema = arrow::schema({
+        arrow::field("fk_columns", arrow::list(arrow::utf8()), /*nullable=*/true),
+        arrow::field("pk_columns", arrow::list(arrow::utf8()), /*nullable=*/true),
+        arrow::field("referenced_table", arrow::utf8(), /*nullable=*/true),
+        arrow::field("referenced_schema", arrow::utf8(), /*nullable=*/true),
+    });
+
+    std::vector<std::string> entries;
+    entries.reserve(table.foreign_keys.size());
+    for (const auto& key : table.foreign_keys) {
+        entries.push_back(wire::encode_ipc(
+            wire::ResultBuilder(schema)
+                .set_string_list("fk_columns", key.columns)
+                .set_string_list("pk_columns", key.referenced_columns)
+                .set_string("referenced_table", key.referenced_table)
+                .set_string("referenced_schema", schema_name)
+                .finish()));
+    }
+    return entries;
+}
+
+}  // namespace
+
 std::string Dispatcher::encode_table_info(const CatalogTable& table,
                                           const std::string& schema_name,
                                           const TimeTravelVersion* version) {
@@ -481,6 +536,13 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table,
             .set_binary("arguments", version ? version->scan_arguments : table.scan_arguments)
             .set_string_list("required_extensions", {})
             .finish();
+
+    // An older version has fewer columns, and the constraints are declared
+    // against the newest. One naming a column this version does not have is
+    // dropped rather than sent: the engine rejects an out-of-range index and
+    // the whole AT read fails.
+    const auto& shape = version ? version->columns : table.columns;
+    const int column_count = shape ? shape->num_fields() : 0;
 
     auto builder = wire::ResultBuilder(gen::TableInfoSchema());
     builder.set_string("name", table.name)
@@ -492,6 +554,11 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table,
         .set_bool("supports_update", false)
         .set_bool("supports_delete", false)
         .set_bool("supports_returning", false)
+        .set_int32_list("not_null_constraints", within(table.not_null, column_count))
+        .set_int32_list_list("unique_constraints", within(table.unique, column_count))
+        .set_int32_list_list("primary_key_constraints", within(table.primary_key, column_count))
+        .set_string_list("check_constraints", table.check)
+        .set_binary_list("foreign_key_constraints", encode_foreign_keys(table, schema_name))
         .set_bool("supports_column_statistics", !table.column_statistics.empty())
         .set_string_map("tags", table.tags)
         .set_string_list_list("required_filters", table.required_filters);
@@ -598,12 +665,17 @@ vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&) {
 vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request&) {
     std::vector<std::string> items;
     items.reserve(catalog_.schemas.size());
-    for (const auto& schema_name : catalog_.schema_names()) {
-        items.push_back(wire::encode_ipc(wire::ResultBuilder(gen::SchemaInfoSchema())
-                                             .set_string("name", schema_name)
-                                             .set_binary("attach_opaque_data", catalog_.name)
-                                             .fill_defaults()
-                                             .finish()));
+    for (const auto& schema : catalog_.schemas) {
+        auto builder = wire::ResultBuilder(gen::SchemaInfoSchema())
+                           .set_string("name", schema->name)
+                           .set_string_map("tags", schema->tags)
+                           .set_binary("attach_opaque_data", catalog_.name);
+        if (schema->comment) {
+            builder.set_string("comment", *schema->comment);
+        } else {
+            builder.set_null("comment");
+        }
+        items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
                                       .set_binary_list("items", items)

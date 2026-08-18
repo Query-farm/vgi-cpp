@@ -383,6 +383,37 @@ ResultBuilder& ResultBuilder::set_string_list(const std::string& field,
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_int32_list(const std::string& field,
+                                             const std::vector<int32_t>& values) {
+    auto items = std::make_shared<arrow::Int32Builder>();
+    arrow::ListBuilder list(arrow::default_memory_pool(), items);
+    check_ok(list.Append(), "opening list field '" + field + "'");
+    for (const auto value : values) {
+        check_ok(items->Append(value), "appending to '" + field + "'");
+    }
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(list.Finish(), "finishing list field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_int32_list_list(
+    const std::string& field, const std::vector<std::vector<int32_t>>& groups) {
+    auto items = std::make_shared<arrow::Int32Builder>();
+    auto inner = std::make_shared<arrow::ListBuilder>(arrow::default_memory_pool(), items);
+    arrow::ListBuilder outer(arrow::default_memory_pool(), inner);
+
+    check_ok(outer.Append(), "opening list-of-lists field '" + field + "'");
+    for (const auto& group : groups) {
+        check_ok(inner->Append(), "opening a group in '" + field + "'");
+        for (const auto value : group) {
+            check_ok(items->Append(value), "appending to '" + field + "'");
+        }
+    }
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(outer.Finish(), "finishing list-of-lists field '" + field + "'");
+    return *this;
+}
+
 ResultBuilder& ResultBuilder::set_string_list_list(
     const std::string& field, const std::vector<std::vector<std::string>>& groups) {
     auto items = std::make_shared<arrow::StringBuilder>();
