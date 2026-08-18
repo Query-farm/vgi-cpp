@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -14,6 +15,7 @@
 #include "vgi/catalog.h"
 #include "vgi/function.h"
 #include "vgi/table_function.h"
+#include "vgi/aggregate.h"
 #include "vgi/table_in_out.h"
 
 namespace vgi {
@@ -21,6 +23,9 @@ namespace vgi {
 // The `init` stream's header schema (`GlobalInitResponse`). Defined in
 // function_dispatch.cpp; registration needs it, and so does the handler.
 const std::shared_ptr<arrow::Schema>& global_init_response_schema();
+
+// A fresh execution id. Opaque to the engine, which only echoes it back.
+std::string next_execution_id();
 
 // Owns the function registries and the catalog identity, and turns them into
 // the RPC methods a VGI engine calls.
@@ -42,6 +47,9 @@ public:
     void register_table_in_out(std::shared_ptr<TableInOutFunction> fn);
     void register_table_in_out_in(std::string catalog, std::string schema,
                                   std::shared_ptr<TableInOutFunction> fn);
+    void register_aggregate(std::shared_ptr<AggregateFunction> fn);
+    void register_aggregate_in(std::string catalog, std::string schema,
+                               std::shared_ptr<AggregateFunction> fn);
 
     // Where a registered function is declared. Every registration has exactly
     // one; the default is the catalog's own name and `main`.
@@ -64,6 +72,11 @@ public:
     // than in a 5,000-line switch.
 
     vgi_rpc::Result bind(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_bind(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_update(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_combine(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_finalize(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_destructor(const vgi_rpc::Request& request);
     vgi_rpc::Stream init(const vgi_rpc::Request& request);
 
     vgi_rpc::Result catalog_attach(const vgi_rpc::Request& request);
@@ -76,6 +89,11 @@ public:
     vgi_rpc::Result catalog_schema_contents_indexes(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_copy_from_formats(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_version(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_catalogs(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_table_get(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_view_get(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_macro_get(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_index_get(const vgi_rpc::Request& request);
     void catalog_detach(const vgi_rpc::Request& request);
 
 private:
@@ -87,6 +105,8 @@ private:
                                                   const std::string& schema_name);
     static std::string encode_table_in_out_info(const TableInOutFunction& fn,
                                                 const std::string& schema_name);
+    static std::string encode_aggregate_info(const AggregateFunction& fn,
+                                             const std::string& schema_name);
 
     // Every registration under `name`, in registration order.
     //
@@ -106,6 +126,10 @@ private:
         const std::string& schema) const;
     std::shared_ptr<TableInOutFunction> find_table_in_out(const std::string& name,
                                                           const std::string& schema) const;
+    std::vector<std::shared_ptr<AggregateFunction>> aggregates_in_schema(
+        const std::string& schema) const;
+    std::shared_ptr<AggregateFunction> require_aggregate(const std::string& name,
+                                                         const std::string& schema) const;
 
     // The overload of `name` that matches `params`, or a clear error.
     //
@@ -131,6 +155,17 @@ private:
     std::vector<std::shared_ptr<TableInOutFunction>> table_in_outs_;
     std::vector<Scope> table_in_out_scopes_;
     std::unordered_map<std::string, std::vector<size_t>> table_in_out_by_name_;
+
+    std::vector<std::shared_ptr<AggregateFunction>> aggregates_;
+    std::vector<Scope> aggregate_scopes_;
+    std::unordered_map<std::string, std::vector<size_t>> aggregate_by_name_;
+
+    // execution id -> group id -> serialized state.
+    //
+    // Held here rather than in the function because an aggregate function is
+    // shared across concurrent aggregations, and each has its own groups. The
+    // engine mints the execution id at bind and echoes it on every later call.
+    std::unordered_map<std::string, std::map<int64_t, std::string>> aggregate_states_;
 };
 
 }  // namespace vgi

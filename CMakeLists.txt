@@ -54,6 +54,7 @@ add_library(vgi
     src/arguments.cpp
     src/numeric.cpp
     src/table_in_out.cpp
+    src/aggregate.cpp
 )
 add_library(vgi::vgi ALIAS vgi)
 

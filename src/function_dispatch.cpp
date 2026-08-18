@@ -41,6 +41,8 @@ const std::shared_ptr<arrow::Schema>& global_init_response_schema() {
 
 namespace {
 
+}  // namespace
+
 // Distinguishes one function execution from another. The engine echoes it on
 // follow-up calls; a worker that keeps per-execution state keys on it.
 std::string next_execution_id() {
@@ -48,6 +50,8 @@ std::string next_execution_id() {
     const uint64_t n = counter.fetch_add(1, std::memory_order_relaxed) + 1;
     return std::to_string(n);
 }
+
+namespace {
 
 // Feeds each input batch through a scalar function and emits exactly one
 // output batch, which is what an exchange stream promises its consumer.
@@ -125,6 +129,29 @@ private:
 };
 
 }  // namespace
+
+std::vector<std::shared_ptr<AggregateFunction>> Dispatcher::aggregates_in_schema(
+    const std::string& schema) const {
+    std::vector<std::shared_ptr<AggregateFunction>> found;
+    for (size_t i = 0; i < aggregates_.size(); ++i) {
+        if (aggregate_scopes_[i].schema == schema) found.push_back(aggregates_[i]);
+    }
+    return found;
+}
+
+std::shared_ptr<AggregateFunction> Dispatcher::require_aggregate(
+    const std::string& name, const std::string& schema) const {
+    auto it = aggregate_by_name_.find(name);
+    if (it == aggregate_by_name_.end()) {
+        throw std::invalid_argument("no aggregate function named '" + name + "'");
+    }
+    for (size_t index : it->second) {
+        if (schema.empty() || aggregate_scopes_[index].schema == schema) {
+            return aggregates_[index];
+        }
+    }
+    return aggregates_[it->second.front()];
+}
 
 std::vector<std::shared_ptr<TableInOutFunction>> Dispatcher::table_in_outs_in_schema(
     const std::string& schema) const {

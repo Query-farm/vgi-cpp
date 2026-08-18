@@ -23,6 +23,18 @@ namespace {
 
 namespace gen = ::duckdb::vgi::generated;
 
+std::shared_ptr<arrow::Schema> advertised_aggregate_schema(const AggregateFunction& fn) {
+    if (auto declared = fn.metadata().return_type) {
+        return arrow::schema({arrow::field("result", declared, /*nullable=*/true)});
+    }
+    try {
+        if (auto bound = fn.bind(BindParams{})) return bound;
+    } catch (const std::exception&) {
+        // bind needs an input schema it cannot have at registration time.
+    }
+    return build_scalar_output_schema(nullptr);
+}
+
 const char* stability_wire_value(Stability stability) {
     switch (stability) {
         case Stability::Volatile: return enums::stability::kVolatile;
@@ -93,6 +105,41 @@ vgi_rpc::Result Dispatcher::catalog_version(const vgi_rpc::Request&) {
 
 void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
     // Nothing is held per attachment yet. When something is, it is freed here.
+}
+
+vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
+    // One catalog: the one this worker serves. A MetaWorker serving several
+    // would list them all here.
+    auto info = wire::ResultBuilder(gen::CatalogInfoSchema())
+                    .set_string("name", catalog_.name)
+                    .fill_defaults()
+                    .finish();
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_catalogs"))
+                        .set_binary_list("items", {wire::encode_ipc(info)})
+                        .finish());
+}
+
+// A worker with no tables answers every table lookup with "not found", which
+// is an empty item list rather than an error.
+//
+// These have to be *answered*, not left unimplemented: the engine asks for a
+// table before it will consider a function of the same name, so a worker that
+// refuses the question fails every query against it — 52 tests in this suite,
+// none of which are about tables.
+vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request&) {
+    return empty_items("catalog_table_get");
+}
+
+vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request&) {
+    return empty_items("catalog_view_get");
+}
+
+vgi_rpc::Result Dispatcher::catalog_macro_get(const vgi_rpc::Request&) {
+    return empty_items("catalog_macro_get");
+}
+
+vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&) {
+    return empty_items("catalog_index_get");
 }
 
 vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request&) {
@@ -181,6 +228,36 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
             .finish());
 }
 
+std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
+                                              const std::string& schema_name) {
+    const auto metadata = fn.metadata();
+    return wire::encode_ipc(
+        wire::ResultBuilder(gen::FunctionInfoSchema())
+            .set_string("name", fn.name())
+            .set_string("schema_name", schema_name)
+            .set_enum("function_type", enums::function_type::kAggregate)
+            .set_binary("arguments", wire::encode_schema(build_arg_schema(fn.argument_specs())))
+            // An aggregate must advertise exactly one output field — the
+            // engine rejects a zero-field schema outright. A declared return
+            // type wins; otherwise ask bind with empty params, which answers
+            // for any aggregate whose type does not depend on its input. One
+            // that does throws, and the `vgi:any` marker defers the type.
+            .set_binary("output_schema", wire::encode_schema(advertised_aggregate_schema(fn)))
+            .set_enum("stability", stability_wire_value(metadata.stability))
+            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
+                                           ? enums::null_handling::kSpecial
+                                           : enums::null_handling::kDefault)
+            .set_string("description", metadata.description)
+            .set_examples("examples", metadata.examples)
+            .set_string_list("categories", metadata.categories)
+            .set_string_map("tags", metadata.tags)
+            .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
+            .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
+            .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
+            .fill_defaults()
+            .finish());
+}
+
 std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
                                              const std::string& schema_name) {
     const auto metadata = fn.metadata();
@@ -254,6 +331,11 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
         }
         for (const auto& fn : table_in_outs_in_schema(schema_name)) {
             items.push_back(encode_table_in_out_info(*fn, schema_name));
+        }
+    }
+    if (!filter || *filter == enums::function_type::kAggregate) {
+        for (const auto& fn : aggregates_in_schema(schema_name)) {
+            items.push_back(encode_aggregate_info(*fn, schema_name));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_functions"))

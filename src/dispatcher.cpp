@@ -48,6 +48,22 @@ void Dispatcher::register_table_in_out_in(std::string catalog, std::string schem
     table_in_outs_.push_back(std::move(fn));
 }
 
+void Dispatcher::register_aggregate(std::shared_ptr<AggregateFunction> fn) {
+    register_aggregate_in(catalog_.name, "main", std::move(fn));
+}
+
+void Dispatcher::register_aggregate_in(std::string catalog, std::string schema,
+                                       std::shared_ptr<AggregateFunction> fn) {
+    if (!fn) throw std::invalid_argument("register_aggregate: null function");
+    if (std::find(catalog_.schemas.begin(), catalog_.schemas.end(), schema) ==
+        catalog_.schemas.end()) {
+        catalog_.schemas.push_back(schema);
+    }
+    aggregate_by_name_[fn->name()].push_back(aggregates_.size());
+    aggregate_scopes_.push_back({std::move(catalog), std::move(schema)});
+    aggregates_.push_back(std::move(fn));
+}
+
 void Dispatcher::register_scalar_in(std::string catalog, std::string schema,
                                     std::shared_ptr<ScalarFunction> fn) {
     if (!fn) throw std::invalid_argument("register_scalar: null function");
@@ -103,8 +119,18 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
     // still registered — see the note above — but refuses when called.
     const std::unordered_map<std::string, UnaryHandler> unary = {
         {"bind", &Dispatcher::bind},
+        {"aggregate_bind", &Dispatcher::aggregate_bind},
+        {"aggregate_update", &Dispatcher::aggregate_update},
+        {"aggregate_combine", &Dispatcher::aggregate_combine},
+        {"aggregate_finalize", &Dispatcher::aggregate_finalize},
+        {"aggregate_destructor", &Dispatcher::aggregate_destructor},
         {"catalog_attach", &Dispatcher::catalog_attach},
         {"catalog_version", &Dispatcher::catalog_version},
+        {"catalog_catalogs", &Dispatcher::catalog_catalogs},
+        {"catalog_table_get", &Dispatcher::catalog_table_get},
+        {"catalog_view_get", &Dispatcher::catalog_view_get},
+        {"catalog_macro_get", &Dispatcher::catalog_macro_get},
+        {"catalog_index_get", &Dispatcher::catalog_index_get},
         {"catalog_schemas", &Dispatcher::catalog_schemas},
         {"catalog_schema_get", &Dispatcher::catalog_schema_get},
         {"catalog_schema_contents_functions", &Dispatcher::catalog_schema_contents_functions},

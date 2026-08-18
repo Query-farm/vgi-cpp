@@ -52,6 +52,15 @@ void Worker::register_table_in(std::string catalog, std::string schema,
     disp_->register_table_in(std::move(catalog), std::move(schema), std::move(fn));
 }
 
+void Worker::register_aggregate(std::shared_ptr<AggregateFunction> fn) {
+    disp_->register_aggregate(std::move(fn));
+}
+
+void Worker::register_aggregate_in(std::string catalog, std::string schema,
+                                   std::shared_ptr<AggregateFunction> fn) {
+    disp_->register_aggregate_in(std::move(catalog), std::move(schema), std::move(fn));
+}
+
 void Worker::register_table_in_out(std::shared_ptr<TableInOutFunction> fn) {
     disp_->register_table_in_out(std::move(fn));
 }
