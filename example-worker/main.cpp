@@ -64,6 +64,9 @@ int main(int argc, char** argv) {
     example::register_versioned(worker);
     example::register_static_scans(worker);
     example::register_window_aggregates(worker);
+    example::register_percentile(worker);
+    example::register_same_name_aggregates(worker);
+    example::register_nest_tensor(worker);
     example::register_rff(worker);
     example::register_more_cache(worker);
     example::register_partitioned(worker);

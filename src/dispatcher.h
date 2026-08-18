@@ -233,13 +233,6 @@ private:
     std::vector<Scope> buffering_scopes_;
     std::unordered_map<std::string, std::vector<size_t>> buffering_by_name_;
 
-    // execution id -> group id -> serialized state.
-    //
-    // Held here rather than in the function because an aggregate function is
-    // shared across concurrent aggregations, and each has its own groups. The
-    // engine mints the execution id at bind and echoes it on every later call.
-    std::unordered_map<std::string, std::map<int64_t, std::string>> aggregate_states_;
-
 };
 
 }  // namespace vgi

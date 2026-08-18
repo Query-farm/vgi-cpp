@@ -3,13 +3,14 @@
 
 // Aggregate fixtures beyond the three in basic.cpp, each probing one thing the
 // simple cases do not: a second value column, a result type that follows the
-// input, a result type chosen from a secret, varargs, and a string-valued
-// accumulation.
+// input, a result type chosen from a secret, varargs, a string-valued
+// accumulation, and publication into the engine's global function namespace.
 //
-// State is little-endian bytes here for the same reason as basic.cpp: it
-// crosses the wire between calls and may be rebuilt in another process, so the
-// byte layout is the contract rather than an implementation choice.
+// The numeric states are little-endian bytes for the same reason as basic.cpp:
+// state crosses the wire between calls and may be rebuilt in another process,
+// so its layout is the contract rather than an implementation choice.
 
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -46,6 +47,12 @@ double decode_f64(const std::string& bytes) {
     double value = 0;
     std::memcpy(&value, &bits, sizeof(value));
     return value;
+}
+
+// A running integer total, as decimal text. Only global_agg uses it, and its
+// state is one small number the byte encodings above would only obscure.
+int64_t decode_total(const std::string& state) {
+    return state.empty() ? 0 : std::strtoll(state.c_str(), nullptr, 10);
 }
 
 std::shared_ptr<arrow::Schema> result_schema(std::shared_ptr<arrow::DataType> type) {
@@ -206,7 +213,7 @@ public:
         if (!params.input_schema) {
             throw std::runtime_error("secret_typed_sum: result type deferred to bind");
         }
-        const auto use_ssl = params.secrets.field("vgi_example", "use_ssl");
+        const auto use_ssl = params.secrets.typed_field("vgi_example", "use_ssl");
         const bool as_double = use_ssl && (*use_ssl == "true" || *use_ssl == "1");
         return result_schema(as_double ? arrow::float64() : arrow::int64());
     }
@@ -337,6 +344,67 @@ public:
     }
 };
 
+// `global_agg(value)` — the aggregate half of the global-registration probes,
+// beside `global_scalar` in scalar/secrets.cpp.
+//
+// Deliberately not a reuse of vgi_sum: the example catalog is a cross-language
+// contract, and a probe that shares an implementation would force every other
+// worker to change a function it already ships.
+class GlobalAgg : public vgi::AggregateFunction {
+public:
+    std::string name() const override { return "global_agg"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        auto md = aggregate_metadata("Global-registration probe (aggregate)");
+        md.return_type = arrow::int64();
+        md.categories = {"test", "global"};
+        md.examples = {{"SELECT vgi_example_global_agg(v) FROM t",
+                        "Aggregate probe published into system.main", std::nullopt}};
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::column("value", 0, "int64", "Column to sum")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return result_schema(arrow::int64());
+    }
+
+    void update(std::map<int64_t, std::string>& states, const arrow::Int64Array& group_ids,
+                const std::vector<std::shared_ptr<arrow::Array>>& columns) const override {
+        if (columns.empty()) return;
+        auto values = std::static_pointer_cast<arrow::Int64Array>(
+            cast_to(columns[0], arrow::int64()));
+        for (int64_t i = 0; i < group_ids.length(); ++i) {
+            if (values->IsNull(i)) continue;
+            auto& state = states[group_ids.Value(i)];
+            state = std::to_string(decode_total(state) + values->Value(i));
+        }
+    }
+
+    std::string combine(const std::string& target, const std::string& source) const override {
+        return std::to_string(decode_total(target) + decode_total(source));
+    }
+
+    std::shared_ptr<arrow::RecordBatch> finalize(
+        const std::shared_ptr<arrow::Schema>& output_schema, const arrow::Int64Array&,
+        const std::vector<std::optional<std::string>>& states) const override {
+        arrow::Int64Builder out;
+        (void)out.Reserve(static_cast<int64_t>(states.size()));
+        for (const auto& state : states) {
+            if (state) {
+                (void)out.Append(decode_total(*state));
+            } else {
+                (void)out.AppendNull();
+            }
+        }
+        std::shared_ptr<arrow::Array> array;
+        (void)out.Finish(&array);
+        return arrow::RecordBatch::Make(output_schema, array->length(), {array});
+    }
+};
+
 }  // namespace
 
 void register_more_aggregates(vgi::Worker& worker) {
@@ -345,6 +413,7 @@ void register_more_aggregates(vgi::Worker& worker) {
     worker.register_aggregate(std::make_shared<SecretTypedSum>());
     worker.register_aggregate(std::make_shared<SumAll>());
     worker.register_aggregate(std::make_shared<ListAgg>());
+    worker.register_aggregate(std::make_shared<GlobalAgg>());
 }
 
 }  // namespace example

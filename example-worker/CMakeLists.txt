@@ -40,6 +40,9 @@ add_executable(vgi-example-worker
     aggregate/basic.cpp
     aggregate/more.cpp
     aggregate/window.cpp
+    aggregate/tensor.cpp
+    aggregate/same_name.cpp
+    aggregate/percentile.cpp
     buffering/buffer_input.cpp
     buffering/sum_all_columns.cpp
 )

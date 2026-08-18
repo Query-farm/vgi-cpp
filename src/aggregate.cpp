@@ -54,6 +54,10 @@ std::shared_ptr<arrow::Int64Array> int64_column(
     return typed;
 }
 
+std::string state_key(int64_t group_id) {
+    return "aggregate.state." + std::to_string(group_id);
+}
+
 std::string partition_key(int64_t partition_id) {
     return "window.partition." + std::to_string(partition_id);
 }
@@ -121,7 +125,6 @@ vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request) {
     // has to be unique across concurrent aggregations in one worker, which a
     // counter gives us — the engine treats it as opaque.
     auto execution_id = next_execution_id();
-    aggregate_states_[execution_id];  // create the (empty) state map
     // Stashed for finalize, which carries no arguments of its own.
     if (auto arguments = wire::get_optional_binary(dto, "arguments"); arguments) {
         default_storage()->kv_put(execution_id, "aggregate.arguments", *arguments);
@@ -150,7 +153,7 @@ vgi_rpc::Result Dispatcher::aggregate_update(const vgi_rpc::Request& request) {
     if (!batch) return empty_envelope();
     auto [group_ids, columns] = split_group_ids(batch);
 
-    auto& stored = aggregate_states_[execution_id];
+    auto* store = default_storage().get();
 
     // Pre-load only groups that *already* have state. Seeding a fresh group
     // here would give a group of all-NULLs a zero where SQL requires NULL —
@@ -160,13 +163,12 @@ vgi_rpc::Result Dispatcher::aggregate_update(const vgi_rpc::Request& request) {
     for (int64_t i = 0; i < group_ids->length(); ++i) {
         const int64_t id = group_ids->Value(i);
         if (states.count(id)) continue;
-        auto it = stored.find(id);
-        if (it != stored.end()) states.emplace(id, it->second);
+        if (auto held = store->kv_get(execution_id, state_key(id))) states.emplace(id, *held);
     }
 
     fn->update(states, *group_ids, columns);
 
-    for (auto& [id, state] : states) stored[id] = std::move(state);
+    for (auto& [id, state] : states) store->kv_put(execution_id, state_key(id), state);
     return empty_envelope();
 }
 
@@ -185,22 +187,18 @@ vgi_rpc::Result Dispatcher::aggregate_combine(const vgi_rpc::Request& request) {
     auto sources = int64_column(batch, "source_group_id", 0);
     auto targets = int64_column(batch, "target_group_id", 1);
 
-    auto& stored = aggregate_states_[execution_id];
+    auto* store = default_storage().get();
     for (int64_t i = 0; i < sources->length(); ++i) {
         const int64_t source_id = sources->Value(i);
         const int64_t target_id = targets->Value(i);
-        auto source = stored.find(source_id);
-        auto target = stored.find(target_id);
-
-        const bool has_source = source != stored.end();
-        const bool has_target = target != stored.end();
+        auto source = store->kv_get(execution_id, state_key(source_id));
         // Neither side has state — an all-NULL group under default null
         // handling. Leaving the target stateless is what makes it finalize to
         // NULL instead of a seeded zero.
-        if (!has_source && !has_target) continue;
-        if (!has_source) continue;  // target already holds the answer
-        stored[target_id] = has_target ? fn->combine(target->second, source->second)
-                                       : source->second;
+        if (!source) continue;  // target already holds the answer, if any
+        auto target = store->kv_get(execution_id, state_key(target_id));
+        store->kv_put(execution_id, state_key(target_id),
+                      target ? fn->combine(*target, *source) : *source);
     }
     return empty_envelope();
 }
@@ -229,13 +227,11 @@ vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request) 
         group_ids = std::static_pointer_cast<arrow::Int64Array>(array);
     }
 
-    auto& stored = aggregate_states_[execution_id];
+    auto* store = default_storage().get();
     std::vector<std::optional<std::string>> states;
     states.reserve(static_cast<size_t>(group_ids->length()));
     for (int64_t i = 0; i < group_ids->length(); ++i) {
-        auto it = stored.find(group_ids->Value(i));
-        states.push_back(it == stored.end() ? std::nullopt
-                                            : std::optional<std::string>(it->second));
+        states.push_back(store->kv_get(execution_id, state_key(group_ids->Value(i))));
     }
 
     // Bind-time arguments come from the stash, since a finalize request
@@ -494,7 +490,6 @@ vgi_rpc::Result Dispatcher::aggregate_destructor(const vgi_rpc::Request& request
         // behind forever, and in a pooled worker "forever" is the life of the
         // process. Both references ignore the group list here and clear the
         // execution outright.
-        aggregate_states_.erase(execution_id);
         default_storage()->clear(execution_id);
     } catch (const std::exception&) {
     }

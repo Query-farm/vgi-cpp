@@ -210,6 +210,26 @@ public:
     }
 };
 
+// `vgi_window_sum_batch(value) OVER (…)` — vgi_window_sum reached through the
+// engine's *batched* window call.
+//
+// Answers identically, which is the point: the engine may cover a run of
+// output rows with one `aggregate_window_batch` request instead of one
+// `aggregate_window` per row, and the two paths must not disagree. The
+// framework hands both shapes to the same `window`, so the only thing this
+// fixture adds is a second name for the engine to route down the batched path.
+class WindowSumBatch : public WindowSum {
+public:
+    std::string name() const override { return "vgi_window_sum_batch"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Windowed sum answered through the batched window call";
+        md.return_type = arrow::int64();
+        return md;
+    }
+};
+
 // `vgi_window_median(value) OVER (…)` — the median of each output row's
 // frames, over doubles.
 //
@@ -502,6 +522,7 @@ private:
 void register_window_aggregates(vgi::Worker& worker) {
     worker.register_aggregate(std::make_shared<StreamingSum>());
     worker.register_aggregate(std::make_shared<WindowSum>());
+    worker.register_aggregate(std::make_shared<WindowSumBatch>());
     worker.register_aggregate(std::make_shared<WindowMedian>());
     worker.register_aggregate(std::make_shared<WindowListagg>());
 }
