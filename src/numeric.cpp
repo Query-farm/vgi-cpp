@@ -168,11 +168,21 @@ std::shared_ptr<arrow::RecordBatch> double_first(
         // precision would either wrap or saturate; going wide first means the
         // narrowing cast is what fails, and it fails with the canonical
         // "does not fit in precision N" the fixtures assert on.
+        //
+        // 75 rather than decimal256's maximum of 76, because Arrow's `add`
+        // gives the sum one more digit than its operands: widening to 76 makes
+        // the *addition* fail with "precision out of range: 77" before the
+        // narrowing cast is ever reached. 75 still clears any decimal128
+        // input, whose precision caps at 38.
         const auto& capped = static_cast<const arrow::Decimal128Type&>(*type);
-        const auto wide = arrow::decimal256(76, capped.scale());
+        const auto wide = arrow::decimal256(75, capped.scale());
         auto widened = cast_or_throw(batch->column(0), wide);
         auto summed = add_arrays(widened, widened, "double");
-        auto narrowed = cast_or_throw(summed, type, /*safe=*/false);
+        // Checked, so an overflowing sum raises rather than wrapping. Arrow
+        // C++ spells this the opposite way from arrow-rs, where `safe: false`
+        // is the *checking* mode: here `safe` true is checked, and passing
+        // false silently produced a wrong answer for 5e37 doubled.
+        auto narrowed = cast_or_throw(summed, type, /*safe=*/true);
         return arrow::RecordBatch::Make(params.output_schema, narrowed->length(), {narrowed});
     }
 
