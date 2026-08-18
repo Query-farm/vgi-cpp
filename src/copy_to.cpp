@@ -36,6 +36,12 @@ public:
         return params.input_schema;
     }
 
+    FunctionMetadata metadata_with_secrets(const BindParams& params) const {
+        auto md = writer_->metadata();
+        md.required_secrets = writer_->secret_lookups(params);
+        return md;
+    }
+
     std::string process(const ProcessParams& params,
                         const std::shared_ptr<arrow::RecordBatch>& batch) override {
         if (batch && batch->num_rows() > 0) writer_->write(params, batch);

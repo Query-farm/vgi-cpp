@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -72,6 +73,7 @@ public:
     vgi::FunctionMetadata metadata() const override {
         vgi::FunctionMetadata md;
         md.description = description_;
+        md.tags = {{"category", "copy_to"}, {"stability", "test"}};
         return md;
     }
 
@@ -104,7 +106,10 @@ public:
                 const auto& values = static_cast<const arrow::StringArray&>(*text);
                 for (int64_t row = 0; row < values.length(); ++row) {
                     if (!values.IsNull(row) && values.GetString(row) == options.fail_on_value) {
-                        throw std::invalid_argument(format_ + ": encountered " +
+                        // The message must name the option: the test matches
+                        // on `fail_on_value`, which is also the only thing
+                        // that tells a user which knob caused the failure.
+                        throw std::invalid_argument(format_ + ": fail_on_value matched " +
                                                     options.fail_on_value);
                     }
                 }
@@ -121,7 +126,9 @@ public:
         if (path.empty()) throw std::runtime_error(format_ + ": no destination path");
 
         if (options.on_exists == "error" && std::filesystem::exists(path)) {
-            throw std::runtime_error(format_ + ": destination exists: " + path);
+            // "already exists" is the phrase the test matches on, and the
+            // one a user recognizes.
+            throw std::runtime_error(format_ + ": destination already exists: " + path);
         }
 
         auto shards = params.storage->scan(params.execution_id, kShardNamespace, "", 0,
@@ -211,9 +218,75 @@ private:
     bool ordered_;
 };
 
+// A writer that forwards a `CREATE SECRET` credential, so the destination-
+// scoped secret path is exercised end to end.
+class SecretLines : public vgi::CopyToFunction {
+public:
+    std::string format() const override { return "secret_lines_out"; }
+    std::string handler_name() const override { return "secret_lines_writer"; }
+
+    std::optional<std::string> comment() const override {
+        return "Writer that forwards a CREATE SECRET credential (test fixture)";
+    }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Write the resolved secret's api_key + row count to the destination";
+        md.tags = {{"category", "copy_to"}, {"stability", "test"}};
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::named("secret_type", "varchar",
+                                    "Secret type to fetch, scoped by the destination path")};
+    }
+
+    std::vector<vgi::SecretLookup> secret_lookups(
+        const vgi::BindParams& params) const override {
+        if (!params.copy_to_path) return {};
+        // Scoped to the destination: a cloud write wants the credential for
+        // the bucket it is writing to, not any credential of that type.
+        return {{secret_type(params.arguments), *params.copy_to_path, std::nullopt}};
+    }
+
+    void write(const vgi::ProcessParams& params,
+               const std::shared_ptr<arrow::RecordBatch>& batch) override {
+        params.storage->append(params.execution_id, kSecretShardNamespace, "",
+                               std::to_string(batch->num_rows()));
+    }
+
+    int64_t close(const vgi::ProcessParams& params) override {
+        const auto type = secret_type(params.arguments);
+        const auto api_key = params.secrets.field(type, "api_key").value_or("NONE");
+
+        int64_t rows = 0;
+        for (const auto& [id, value] : params.storage->scan(params.execution_id,
+                                                            kSecretShardNamespace, "", 0,
+                                                            SIZE_MAX)) {
+            (void)id;
+            rows += std::strtoll(value.c_str(), nullptr, 10);
+        }
+
+        const auto path = params.copy_to_path.value_or("");
+        if (path.empty()) throw std::runtime_error("secret_lines_out: no destination path");
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << api_key << "," << rows << '\n';
+        out.flush();
+        return rows;
+    }
+
+private:
+    static constexpr const char* kSecretShardNamespace = "copy_to_secret_shard";
+
+    static std::string secret_type(const vgi::Arguments& arguments) {
+        return arguments.named_string("secret_type").value_or("vgi_example");
+    }
+};
+
 }  // namespace
 
 void register_copy_to(vgi::Worker& worker) {
+    worker.register_copy_to(std::make_shared<SecretLines>());
     worker.register_copy_to(std::make_shared<ExampleLines>(
         "example_lines_out", "example_lines_writer", "Toy delimited-text writer for tests",
         "Write the COPY source to a delimited text file", /*ordered=*/false));

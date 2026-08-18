@@ -38,6 +38,12 @@ public:
     // become the option metadata the engine surfaces.
     virtual std::vector<ArgSpec> argument_specs() const = 0;
 
+    // Secrets this writer needs. Scoped to the COPY destination, which is why
+    // the bind params are the argument: a cloud write wants the credential
+    // that matches the bucket it is writing to, not any credential of that
+    // type.
+    virtual std::vector<SecretLookup> secret_lookups(const BindParams&) const { return {}; }
+
     // Whether rows must arrive in source order. Declaring it makes the engine
     // install a single-threaded sink, so one worker sees every batch in order;
     // leaving it false lets the sink shard across workers.

@@ -436,6 +436,11 @@ std::vector<SecretLookup> Dispatcher::required_secrets_of(const std::string& nam
                                                           const BindParams& params) const {
     if (params.secrets_resolved) return {};
     if (auto fn = find_buffering(name, params.schema_name)) {
+        // A COPY writer scopes its lookup to the destination path, which only
+        // the bind params carry — so ask it rather than reading a static list.
+        for (const auto& writer : copy_to_) {
+            if (writer->handler_name() == name) return writer->secret_lookups(params);
+        }
         return fn->metadata().required_secrets;
     }
     if (auto fn = find_table_in_out(name, params.schema_name)) {
