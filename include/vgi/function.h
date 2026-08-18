@@ -11,6 +11,7 @@
 #include <arrow/type.h>
 
 #include "vgi/arguments.h"
+#include "vgi/settings.h"
 #include "vgi/storage.h"
 #include "vgi/types.h"
 
@@ -26,6 +27,8 @@ struct BindParams {
     // Argument values known at bind: every constant argument, and the declared
     // type of every argument whether constant or not.
     Arguments arguments;
+    Settings settings;
+    Secrets secrets;
     std::string catalog_name;
     std::string schema_name;
 
@@ -43,6 +46,8 @@ struct BindParams {
 struct ProcessParams {
     std::shared_ptr<arrow::Schema> output_schema;
     Arguments arguments;
+    Settings settings;
+    Secrets secrets;
     std::string catalog_name;
     std::string schema_name;
     // The engine's id for this function execution, echoed on every call that

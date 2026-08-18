@@ -176,7 +176,10 @@ std::string Dispatcher::encode_view_info(const CatalogView& view,
     auto builder = wire::ResultBuilder(gen::ViewInfoSchema());
     builder.set_string("name", view.name)
         .set_string("schema_name", schema_name)
-        .set_string("sql", view.sql);
+        // `definition`, not `sql` — the latter is not a ViewInfo field, and
+        // ResultBuilder refuses an unknown one, so every view encode threw and
+        // took `SHOW TABLES` on the schema with it.
+        .set_string("definition", view.definition);
     if (view.comment) {
         builder.set_string("comment", *view.comment);
     } else {
@@ -259,6 +262,7 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
             .set_examples("examples", metadata.examples)
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
+            .set_string_list("required_settings", metadata.required_settings)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
@@ -286,6 +290,7 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
             .set_examples("examples", metadata.examples)
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
+            .set_string_list("required_settings", metadata.required_settings)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
@@ -311,6 +316,7 @@ std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
             .set_examples("examples", metadata.examples)
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
+            .set_string_list("required_settings", metadata.required_settings)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
@@ -341,6 +347,7 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
             .set_examples("examples", metadata.examples)
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
+            .set_string_list("required_settings", metadata.required_settings)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
@@ -373,6 +380,7 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
             .set_examples("examples", metadata.examples)
             .set_string_list("categories", metadata.categories)
             .set_string_map("tags", metadata.tags)
+            .set_string_list("required_settings", metadata.required_settings)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)

@@ -73,6 +73,8 @@ vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request) {
     BindParams params;
     params.input_schema = wire::get_schema(dto, "input_schema");
     params.arguments = Arguments::parse(wire::get_optional_binary(dto, "arguments").value_or(""));
+    params.settings = Settings::parse(wire::get_optional_binary(dto, "settings").value_or(""));
+    params.secrets = Secrets::parse(wire::get_optional_binary(dto, "secrets").value_or(""));
     params.catalog_name = catalog_.name;
     params.schema_name = schema_name;
 
@@ -209,27 +211,24 @@ vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request) 
 }
 
 vgi_rpc::Result Dispatcher::aggregate_destructor(const vgi_rpc::Request& request) {
-    auto dto = wire::get_ipc(request.batch(), "request");
-    if (!dto) return empty_envelope();
+    // The protocol requires this call not to raise, and *everything* below can
+    // — decoding the request, reading a field, decoding the group batch. The
+    // try has to wrap all of it, not just the erase, or a malformed request
+    // fails a query that has already produced its answer.
+    try {
+        auto dto = wire::get_ipc(request.batch(), "request");
+        if (!dto) return empty_envelope();
+        const auto execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
 
-    const auto execution_id = wire::get_binary(dto, "execution_id");
-    auto ids_batch = wire::decode_ipc(wire::get_binary(dto, "group_ids_batch"));
-
-    auto it = aggregate_states_.find(execution_id);
-    if (it == aggregate_states_.end()) return empty_envelope();
-
-    // An empty group list means the whole execution is done; otherwise only
-    // the named groups are released. The protocol says this must not raise, so
-    // a malformed batch drops the whole execution rather than failing.
-    if (ids_batch && ids_batch->num_columns() > 0) {
-        if (auto ids = std::dynamic_pointer_cast<arrow::Int64Array>(ids_batch->column(0))) {
-            if (ids->length() > 0) {
-                for (int64_t i = 0; i < ids->length(); ++i) it->second.erase(ids->Value(i));
-                return empty_envelope();
-            }
-        }
+        // The whole execution is released, whatever group ids were named.
+        //
+        // Releasing only the named groups leaves the execution's own map entry
+        // behind forever, and in a pooled worker "forever" is the life of the
+        // process. Both references ignore the group list here and clear the
+        // execution outright.
+        aggregate_states_.erase(execution_id);
+    } catch (const std::exception&) {
     }
-    aggregate_states_.erase(it);
     return empty_envelope();
 }
 

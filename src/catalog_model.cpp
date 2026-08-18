@@ -7,24 +7,30 @@
 
 namespace vgi {
 
+CatalogModel::CatalogModel() {
+    // `main` always exists; a worker that declares nothing still has one.
+    schemas.push_back(std::make_unique<CatalogSchema>());
+}
+
 CatalogSchema& CatalogModel::schema(const std::string& schema_name) {
-    auto it = std::find_if(schemas.begin(), schemas.end(),
-                           [&](const CatalogSchema& s) { return s.name == schema_name; });
-    if (it != schemas.end()) return *it;
-    schemas.push_back(CatalogSchema{schema_name, {}, {}});
-    return schemas.back();
+    for (auto& s : schemas) {
+        if (s->name == schema_name) return *s;
+    }
+    schemas.push_back(std::make_unique<CatalogSchema>(CatalogSchema{schema_name, {}, {}}));
+    return *schemas.back();
 }
 
 const CatalogSchema* CatalogModel::find_schema(const std::string& schema_name) const {
-    auto it = std::find_if(schemas.begin(), schemas.end(),
-                           [&](const CatalogSchema& s) { return s.name == schema_name; });
-    return it == schemas.end() ? nullptr : &*it;
+    for (const auto& s : schemas) {
+        if (s->name == schema_name) return s.get();
+    }
+    return nullptr;
 }
 
 std::vector<std::string> CatalogModel::schema_names() const {
     std::vector<std::string> names;
     names.reserve(schemas.size());
-    for (const auto& s : schemas) names.push_back(s.name);
+    for (const auto& s : schemas) names.push_back(s->name);
     return names;
 }
 

@@ -59,6 +59,7 @@ add_library(vgi
     src/storage.cpp
     src/cache_control.cpp
     src/catalog_model.cpp
+    src/settings.cpp
 )
 add_library(vgi::vgi ALIAS vgi)
 

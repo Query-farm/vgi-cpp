@@ -10,7 +10,11 @@
 // and output schemas are per-call and cannot be declared at registration time.
 
 #include <atomic>
+#include <chrono>
 #include <functional>
+#include <sstream>
+
+#include <unistd.h>
 #include <stdexcept>
 
 #include <arrow/record_batch.h>
@@ -52,10 +56,30 @@ namespace {
 
 // Distinguishes one function execution from another. The engine echoes it on
 // follow-up calls; a worker that keeps per-execution state keys on it.
+//
+// Unique across *processes*, not just within one. The cross-process store in
+// storage.cpp is rooted at a path shared by every worker of this uid and
+// scopes entries by execution id, so a per-process counter starting at zero
+// makes two concurrent queries alias the same directory — each then finalizes
+// over the other's partials and both return wrong numbers, with no error. A
+// killed worker's leftover state would likewise be replayed by the next query
+// to reach the same id.
+//
+// pid and start time together survive pid reuse; the counter separates
+// executions within one process. Both references do the same (Python mints a
+// uuid4, Rust pid+time+counter).
 std::string next_execution_id() {
+    static const std::string prefix = [] {
+        const auto now = std::chrono::steady_clock::now().time_since_epoch();
+        const auto wall = std::chrono::system_clock::now().time_since_epoch();
+        std::ostringstream out;
+        out << std::hex << static_cast<long>(::getpid()) << '-'
+            << std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count() << '-'
+            << std::chrono::duration_cast<std::chrono::nanoseconds>(now).count() << '-';
+        return out.str();
+    }();
     static std::atomic<uint64_t> counter{0};
-    const uint64_t n = counter.fetch_add(1, std::memory_order_relaxed) + 1;
-    return std::to_string(n);
+    return prefix + std::to_string(counter.fetch_add(1, std::memory_order_relaxed) + 1);
 }
 
 namespace {
@@ -203,7 +227,8 @@ std::shared_ptr<TableBufferingFunction> Dispatcher::find_buffering(
             return bufferings_[index];
         }
     }
-    return bufferings_[it->second.front()];
+    // No cross-schema fallback — see find_table.
+    return nullptr;
 }
 
 std::shared_ptr<TableBufferingFunction> Dispatcher::require_buffering(
@@ -224,15 +249,17 @@ std::vector<std::shared_ptr<AggregateFunction>> Dispatcher::aggregates_in_schema
 std::shared_ptr<AggregateFunction> Dispatcher::require_aggregate(
     const std::string& name, const std::string& schema) const {
     auto it = aggregate_by_name_.find(name);
-    if (it == aggregate_by_name_.end()) {
-        throw std::invalid_argument("no aggregate function named '" + name + "'");
-    }
-    for (size_t index : it->second) {
-        if (schema.empty() || aggregate_scopes_[index].schema == schema) {
-            return aggregates_[index];
+    if (it != aggregate_by_name_.end()) {
+        for (size_t index : it->second) {
+            if (schema.empty() || aggregate_scopes_[index].schema == schema) {
+                return aggregates_[index];
+            }
         }
     }
-    return aggregates_[it->second.front()];
+    // Naming the schema, because "no aggregate named x" when x exists in
+    // another schema sends the reader looking in the wrong place.
+    throw std::invalid_argument("no aggregate function named '" + name + "' in schema '" +
+                                schema + "'");
 }
 
 std::vector<std::shared_ptr<TableInOutFunction>> Dispatcher::table_in_outs_in_schema(
@@ -253,7 +280,8 @@ std::shared_ptr<TableInOutFunction> Dispatcher::find_table_in_out(
             return table_in_outs_[index];
         }
     }
-    return table_in_outs_[it->second.front()];
+    // No cross-schema fallback — see find_table.
+    return nullptr;
 }
 
 std::vector<std::shared_ptr<TableFunction>> Dispatcher::tables_in_schema(
@@ -276,14 +304,21 @@ std::shared_ptr<TableFunction> Dispatcher::find_table(const std::string& name,
     auto it = table_by_name_.find(name);
     if (it == table_by_name_.end()) return nullptr;
 
-    // Prefer the schema the call named; an unqualified call carries none.
+    // The named schema, and only it.
+    //
+    // Falling back to the first registration when no scope matches makes a
+    // table function declared in schema `a` answer a call in schema `main`,
+    // shadowing a scalar of the same name that should have served it. Since
+    // binds always carry a schema (defaulted to `main`), the fallback fired on
+    // every genuine mismatch rather than on the unqualified call it was
+    // written for.
     std::vector<std::shared_ptr<TableFunction>> candidates;
     for (size_t index : it->second) {
         if (schema.empty() || table_scopes_[index].schema == schema) {
             candidates.push_back(tables_[index]);
         }
     }
-    if (candidates.empty()) candidates.push_back(tables_[it->second.front()]);
+    if (candidates.empty()) return nullptr;
     if (candidates.size() == 1 || !params) return candidates.front();
 
     // Table functions overload exactly as scalars do — `repeat_value` is
@@ -394,6 +429,10 @@ BindParams Dispatcher::read_bind_request(
     params.input_schema = wire::get_schema(bind_call, "input_schema");
     params.arguments =
         Arguments::parse(wire::get_optional_binary(bind_call, "arguments").value_or(""));
+    params.settings =
+        Settings::parse(wire::get_optional_binary(bind_call, "settings").value_or(""));
+    params.secrets =
+        Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
     params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
     params.catalog_name = catalog_.name;
     return params;
@@ -406,10 +445,12 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
     const auto function_name = wire::get_string(bind_call, "function_name");
     const auto params = read_bind_request(bind_call);
 
-    // The engine does not say which registry a name lives in, so the worker
-    // decides. Tables are checked first: a name registered in both is a
-    // deliberate pairing (a COPY format's reader and writer share a name), and
-    // the scalar path cannot serve a scan.
+    // The request says which registry to use; consult it before guessing.
+    //
+    // Probing by name alone resolves a name registered in two kinds to
+    // whichever probe runs first, which is arbitrary. A COPY format's reader
+    // and writer deliberately share a name, so this is not hypothetical.
+    const auto declared_kind = wire::get_optional_enum(bind_call, "function_type");
     std::shared_ptr<arrow::Schema> output_schema;
     if (auto sink = find_buffering(function_name, params.schema_name)) {
         output_schema = sink->bind(params);
@@ -459,6 +500,8 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // Constant arguments were evaluated at bind and ride along on every call,
     // which is why a const parameter never appears in the input batch.
     params.arguments = bind_params.arguments;
+    params.settings = bind_params.settings;
+    params.secrets = bind_params.secrets;
     params.catalog_name = catalog_.name;
     params.schema_name = bind_params.schema_name;
     params.storage = default_storage();

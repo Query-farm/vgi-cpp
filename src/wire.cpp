@@ -48,6 +48,17 @@ std::shared_ptr<ArrayType> typed_column(const std::shared_ptr<arrow::RecordBatch
     return typed;
 }
 
+// An *optional* parameter may be absent as well as null.
+//
+// The protocol adds nullable columns additively — `schema_name` arrived in
+// 1.1.0 and spread to fifteen more requests in 1.2.0 — so a peer built against
+// an older surface simply does not send them. Treating absence as an error
+// makes every bind from such a peer fail, which is precisely the compatibility
+// the additive rule exists to provide. Both references tolerate it.
+bool has_column(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    return batch && batch->GetColumnByName(field) != nullptr;
+}
+
 }  // namespace
 
 std::shared_ptr<arrow::Array> column(const std::shared_ptr<arrow::RecordBatch>& batch,
@@ -74,6 +85,7 @@ std::string get_string(const std::shared_ptr<arrow::RecordBatch>& batch,
 
 std::optional<std::string> get_optional_string(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    if (!has_column(batch, field)) return std::nullopt;
     auto arr = typed_column<arrow::StringArray>(batch, field, "string");
     if (arr->IsNull(0)) return std::nullopt;
     return arr->GetString(0);
@@ -88,6 +100,7 @@ std::string get_binary(const std::shared_ptr<arrow::RecordBatch>& batch,
 
 std::optional<std::string> get_optional_binary(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    if (!has_column(batch, field)) return std::nullopt;
     auto arr = typed_column<arrow::BinaryArray>(batch, field, "binary");
     if (arr->IsNull(0)) return std::nullopt;
     return arr->GetString(0);
@@ -107,6 +120,7 @@ int64_t get_int64(const std::shared_ptr<arrow::RecordBatch>& batch, const std::s
 
 std::optional<int64_t> get_optional_int64(const std::shared_ptr<arrow::RecordBatch>& batch,
                                           const std::string& field) {
+    if (!has_column(batch, field)) return std::nullopt;
     auto arr = typed_column<arrow::Int64Array>(batch, field, "int64");
     if (arr->IsNull(0)) return std::nullopt;
     return arr->Value(0);
@@ -120,12 +134,19 @@ std::string get_enum(const std::shared_ptr<arrow::RecordBatch>& batch,
     if (!values) fail("param '" + field + "' is a dictionary of non-strings");
     const auto* indices = dynamic_cast<const arrow::Int16Array*>(arr->indices().get());
     if (!indices) fail("param '" + field + "' has non-int16 dictionary indices");
-    return values->GetString(indices->Value(0));
+    const auto index = indices->Value(0);
+    // Range-checked: an out-of-range index from a malformed stream would
+    // otherwise read past the dictionary.
+    if (index < 0 || index >= values->length()) {
+        fail("param '" + field + "' dictionary index " + std::to_string(index) +
+             " is out of range");
+    }
+    return values->GetString(index);
 }
 
 std::optional<std::string> get_optional_enum(
     const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
-    if (!batch || !batch->GetColumnByName(field)) return std::nullopt;
+    if (!has_column(batch, field)) return std::nullopt;
     auto arr = typed_column<arrow::DictionaryArray>(batch, field, "dictionary");
     if (arr->IsNull(0)) return std::nullopt;
     auto values = std::dynamic_pointer_cast<arrow::StringArray>(arr->dictionary());

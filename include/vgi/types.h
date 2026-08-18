@@ -122,6 +122,10 @@ struct FunctionMetadata {
     std::vector<std::string> categories;
     Stability stability = Stability::Consistent;
     NullHandling null_handling = NullHandling::Default;
+    // DuckDB settings this function reads. Declaring them is what makes the
+    // engine forward their values; a setting not declared here never arrives,
+    // however it was set.
+    std::vector<std::string> required_settings;
 };
 
 }  // namespace vgi

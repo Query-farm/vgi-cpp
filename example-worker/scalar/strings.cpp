@@ -37,14 +37,22 @@ std::string sha256_hex(const std::string& input) {
     return vgi_rpc::crypto::hex_encode(digest.data(), digest.size());
 }
 
-const arrow::StringArray& as_strings(const std::shared_ptr<arrow::Array>& array) {
-    return static_cast<const arrow::StringArray&>(*array);
+// Checked, and casting where it can.
+//
+// A `static_cast` here is a memory-safety bug, not a shortcut: DuckDB ships an
+// ENUM column as `dictionary<int16, utf8>` and a long string column as
+// `large_utf8`, and reading either through a StringArray& dereferences an
+// offsets pointer that does not exist on the object. Casting first turns both
+// into the string column the caller expects.
+std::shared_ptr<arrow::Array> as_strings(const std::shared_ptr<arrow::Array>& array) {
+    if (array->type()->id() == arrow::Type::STRING) return array;
+    return cast_to(array, arrow::utf8());
 }
 
 // Apply `fn` to every non-null string, producing a string column.
 template <typename Fn>
 std::shared_ptr<arrow::Array> map_strings(const std::shared_ptr<arrow::Array>& column, Fn fn) {
-    const auto& values = as_strings(column);
+    const auto& values = static_cast<const arrow::StringArray&>(*as_strings(column));
     arrow::StringBuilder out;
     (void)out.Reserve(values.length());
     for (int64_t i = 0; i < values.length(); ++i) {
@@ -241,10 +249,15 @@ public:
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        // The cast results are held, not just borrowed: a converted column is
+        // a fresh array, and taking a pointer into a temporary would dangle.
+        std::vector<std::shared_ptr<arrow::Array>> converted;
         std::vector<const arrow::StringArray*> columns;
+        converted.reserve(static_cast<size_t>(batch->num_columns()));
         columns.reserve(static_cast<size_t>(batch->num_columns()));
         for (int i = 0; i < batch->num_columns(); ++i) {
-            columns.push_back(&as_strings(batch->column(i)));
+            converted.push_back(as_strings(batch->column(i)));
+            columns.push_back(static_cast<const arrow::StringArray*>(converted.back().get()));
         }
 
         arrow::StringBuilder out;

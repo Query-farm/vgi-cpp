@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <stdexcept>
 #include <cstring>
 
 namespace vgi {
@@ -45,15 +46,28 @@ std::string read_file(const fs::path& path) {
 
 // Write through a temporary and rename, so a reader never observes a
 // half-written value. Rename is atomic within a filesystem.
+//
+// Write failures are raised, not swallowed: on a full disk the write fails
+// silently and the rename then installs a truncated value over a good one,
+// which is indistinguishable from a legitimately empty value at every reader.
 void write_file_atomically(const fs::path& path, const std::string& value) {
     const auto temporary = fs::path(path.string() + ".tmp." + std::to_string(::getpid()));
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out.write(value.data(), static_cast<std::streamsize>(value.size()));
+        out.flush();
+        if (!out) {
+            std::error_code ec;
+            fs::remove(temporary, ec);
+            throw std::runtime_error("vgi storage: cannot write " + temporary.string());
+        }
     }
     std::error_code ec;
     fs::rename(temporary, path, ec);
-    if (ec) fs::remove(temporary, ec);
+    if (ec) {
+        fs::remove(temporary, ec);
+        throw std::runtime_error("vgi storage: cannot publish " + path.string());
+    }
 }
 
 class FilesystemStorage : public FunctionStorage {
@@ -94,34 +108,33 @@ public:
         std::error_code ec;
         fs::create_directories(dir, ec);
 
-        // Claim the id with an exclusive create, then fill it.
+        // Two separate races, and they need different answers.
         //
-        // Checking existence and then writing is a race, and not a
-        // theoretical one: the engine runs several sink processes at once, so
-        // two of them pick the same "highest + 1" and the second silently
-        // overwrites the first's rows. O_EXCL is the only thing here that is
-        // atomic across processes.
-        for (int64_t id = highest_id(dir) + 1; id < highest_id(dir) + 4096; ++id) {
-            const auto path = dir / (pad(id) + ".entry");
-            const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+        // *Claiming* the id: checking existence and then writing is a race,
+        // and not a theoretical one — the engine runs several sink processes
+        // at once, so two of them pick the same "highest + 1" and the second
+        // overwrites the first's rows. An exclusive create is the only thing
+        // here atomic across processes, so a claim is an `O_CREAT|O_EXCL` on a
+        // *reservation* name.
+        //
+        // *Publishing* the entry: a claim marker is visible from the instant
+        // of open, so writing the payload into the claimed file would let a
+        // concurrent scan read an empty entry — which a reader cannot
+        // distinguish from end-of-log, and so silently truncates the replay.
+        // The payload therefore goes to a temporary and is renamed into the
+        // `.entry` name only once complete.
+        int64_t id = highest_id(dir) + 1;
+        const int64_t limit = id + kMaxClaimAttempts;
+        for (; id < limit; ++id) {
+            const auto reservation = dir / (pad(id) + ".claim");
+            const int fd = ::open(reservation.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
             if (fd < 0) {
                 if (errno == EEXIST) continue;  // another worker took this id
-                throw std::runtime_error("vgi storage: cannot create " + path.string() + ": " +
-                                         std::strerror(errno));
-            }
-            const char* data = value.data();
-            size_t remaining = value.size();
-            while (remaining > 0) {
-                const auto written = ::write(fd, data, remaining);
-                if (written < 0) {
-                    if (errno == EINTR) continue;
-                    ::close(fd);
-                    throw std::runtime_error("vgi storage: cannot write " + path.string());
-                }
-                data += written;
-                remaining -= static_cast<size_t>(written);
+                throw std::runtime_error("vgi storage: cannot claim " + reservation.string() +
+                                         ": " + std::strerror(errno));
             }
             ::close(fd);
+            write_file_atomically(dir / (pad(id) + ".entry"), value);
             return id;
         }
         throw std::runtime_error("vgi storage: could not claim a log id under " + dir.string());
@@ -131,6 +144,8 @@ public:
                                                      const std::string& ns,
                                                      const std::string& key, int64_t after_id,
                                                      size_t limit) override {
+        // Only `.entry` files are results; a `.claim` marker means an append
+        // is in flight and its payload is not there yet.
         std::vector<std::pair<int64_t, std::string>> entries;
         const auto dir = log_dir(scope, ns, key);
         std::error_code ec;
@@ -165,6 +180,11 @@ public:
 
         std::vector<fs::path> candidates;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
+            // Only unclaimed entries. Without the filter a `.claimed.<pid>`
+            // left by a crashed popper is picked up, re-claimed, and delivered
+            // a second time.
+            const auto name = entry.path().filename().string();
+            if (name.size() < 6 || name.compare(name.size() - 6, 6, ".entry") != 0) continue;
             candidates.push_back(entry.path());
         }
         std::sort(candidates.begin(), candidates.end());
@@ -200,6 +220,11 @@ private:
         return base_ / hex(scope) / ("log_" + hex(ns) + "__" + hex(key));
     }
 
+    // How many ids to try before giving up. Fixed at the start of the loop
+    // rather than recomputed: a moving bound derived from `highest_id` climbs
+    // as other processes append, so it would not be a bound at all.
+    static constexpr int64_t kMaxClaimAttempts = 4096;
+
     // Fixed width so lexical order matches numeric order, which is what lets
     // queue_pop sort paths as strings.
     static std::string pad(int64_t id) {
@@ -207,6 +232,8 @@ private:
         return std::string(20 - std::min<size_t>(20, digits.size()), '0') + digits;
     }
 
+    // Walks the directory, so callers must not put it in a loop condition —
+    // doing so made `append` quadratic in the number of entries.
     static int64_t highest_id(const fs::path& dir) {
         int64_t highest = 0;
         std::error_code ec;

@@ -46,7 +46,9 @@ struct CatalogTable {
 // A view: a name bound to SQL the engine expands.
 struct CatalogView {
     std::string name;
-    std::string sql;
+    // The SQL text. Called `definition` on the wire; named to match, since a
+    // mismatch here is rejected rather than ignored.
+    std::string definition;
     std::optional<std::string> comment;
 };
 
@@ -70,9 +72,17 @@ struct CatalogModel {
 
     // Schemas declared up front. Registering a function in a schema adds it
     // here too, so a worker with only functions never has to list them.
-    std::vector<CatalogSchema> schemas{CatalogSchema{}};
+    //
+    // Held indirectly so that `schema()` can hand out a reference that
+    // survives a later registration. A vector of values would reallocate, and
+    // the documented usage — take a schema, register more functions, then add
+    // tables to it — would dangle.
+    std::vector<std::unique_ptr<CatalogSchema>> schemas;
 
-    // The schema of that name, creating it if absent.
+    CatalogModel();
+
+    // The schema of that name, creating it if absent. The reference stays
+    // valid for the life of the model.
     CatalogSchema& schema(const std::string& schema_name);
     const CatalogSchema* find_schema(const std::string& schema_name) const;
 

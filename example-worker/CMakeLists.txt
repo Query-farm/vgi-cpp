@@ -13,6 +13,7 @@ add_executable(vgi-example-worker
     scalar/geo.cpp
     scalar/types.cpp
     scalar/same_name.cpp
+    scalar/settings.cpp
     table/sequence.cpp
     table/cache.cpp
     table/more.cpp
