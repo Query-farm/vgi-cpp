@@ -630,7 +630,30 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_indexes(const vgi_rpc::Reque
 }
 
 vgi_rpc::Result Dispatcher::catalog_copy_from_formats(const vgi_rpc::Request&) {
-    return empty_items("catalog_copy_from_formats");
+    // Both directions ride this one method — `direction` distinguishes them —
+    // which is why its name mentions only "from".
+    std::vector<std::string> items;
+    for (const auto& writer : copy_to_) {
+        const auto metadata = writer->metadata();
+        auto builder = wire::ResultBuilder(gen::CopyFromFormatInfoSchema());
+        builder.set_string("format_name", writer->format())
+            .set_string("handler", writer->handler_name())
+            .set_string("direction", "to")
+            .set_string("description", metadata.description)
+            .set_bool("ordered", writer->ordered())
+            .set_binary("options",
+                        wire::encode_schema(build_arg_schema(writer->argument_specs())))
+            .set_string_map("tags", metadata.tags);
+        if (auto comment = writer->comment()) {
+            builder.set_string("comment", *comment);
+        } else {
+            builder.set_null("comment");
+        }
+        items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
+    }
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_copy_from_formats"))
+                        .set_binary_list("items", items)
+                        .finish());
 }
 
 }  // namespace vgi

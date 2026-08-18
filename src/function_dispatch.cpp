@@ -463,6 +463,14 @@ BindParams Dispatcher::read_bind_request(
     params.catalog_name = catalog_.name;
     params.secrets_resolved =
         wire::get_optional_bool(bind_call, "resolved_secrets_provided").value_or(false);
+    // `copy_to` rides as a nested struct column rather than IPC bytes, unlike
+    // most of this request's compound fields.
+    if (auto copy_to = wire::get_struct_fields(bind_call, "copy_to")) {
+        auto format = copy_to->find("format");
+        auto path = copy_to->find("file_path");
+        if (format != copy_to->end()) params.copy_to_format = format->second;
+        if (path != copy_to->end()) params.copy_to_path = path->second;
+    }
     return params;
 }
 
@@ -544,6 +552,8 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // Constant arguments were evaluated at bind and ride along on every call,
     // which is why a const parameter never appears in the input batch.
     params.arguments = bind_params.arguments;
+    params.copy_to_format = bind_params.copy_to_format;
+    params.copy_to_path = bind_params.copy_to_path;
     params.settings = bind_params.settings;
     params.secrets = bind_params.secrets;
     params.catalog_name = catalog_.name;
@@ -586,6 +596,27 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // its stream has no input schema. A scalar function is an *exchange*: one
     // output batch per input batch.
     if (auto sink = find_buffering(function_name, params.schema_name)) {
+        // Stash the bind-time context for the buffering RPCs.
+        //
+        // `table_buffering_process` and `_combine` carry no arguments,
+        // settings or COPY destination of their own — those were settled at
+        // bind — and they may land on a worker that never ran it. Persisting
+        // them here, scoped by execution id, is the only channel between the
+        // two. Without it a COPY writer sees none of its options.
+        if (primary) {
+            const auto stash = [&](const char* key, const std::string& value) {
+                if (!value.empty()) params.storage->kv_put(execution_id, key, value);
+            };
+            stash("bind.arguments",
+                  wire::get_optional_binary(bind_call, "arguments").value_or(""));
+            stash("bind.settings",
+                  wire::get_optional_binary(bind_call, "settings").value_or(""));
+            stash("bind.secrets",
+                  wire::get_optional_binary(bind_call, "secrets").value_or(""));
+            stash("bind.copy_to_format", params.copy_to_format.value_or(""));
+            stash("bind.copy_to_path", params.copy_to_path.value_or(""));
+            stash("bind.schema", wire::encode_schema(output_schema));
+        }
         // Two shapes behind one name. The sink phase is header-only — the
         // engine ships batches through table_buffering_process, not through
         // this stream — while the finalize phase drains one state id as an

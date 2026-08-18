@@ -12,6 +12,7 @@
 #include "vgi/table_function.h"
 #include "vgi/aggregate.h"
 #include "vgi/buffering.h"
+#include "vgi/copy_to.h"
 #include "vgi/table_in_out.h"
 
 namespace vgi {
@@ -62,6 +63,10 @@ public:
                                std::shared_ptr<AggregateFunction> fn);
 
     void register_buffering(std::shared_ptr<TableBufferingFunction> fn);
+
+    // A `COPY … TO (FORMAT …)` writer. Registers its handler as a buffering
+    // function too, since that is the RPC path the engine drives it over.
+    void register_copy_to(std::shared_ptr<CopyToFunction> writer);
     void register_buffering_in(std::string catalog, std::string schema,
                                std::shared_ptr<TableBufferingFunction> fn);
 

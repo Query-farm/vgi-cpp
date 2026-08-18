@@ -12,6 +12,7 @@
 
 #include "dispatcher.h"
 #include "methods.h"
+#include "vgi/settings.h"
 #include "vgi/storage.h"
 
 #include "wire.h"
@@ -50,6 +51,20 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
     params.schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
     params.execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
     params.storage = default_storage();
+
+    // Reload what bind stashed. These calls carry no arguments, settings or
+    // COPY destination of their own, and may run on a worker that never bound.
+    const auto stashed = [&](const char* key) {
+        return params.storage->kv_get(params.execution_id, key).value_or("");
+    };
+    params.arguments = Arguments::parse(stashed("bind.arguments"));
+    params.settings = Settings::parse(stashed("bind.settings"));
+    params.secrets = Secrets::parse(stashed("bind.secrets"));
+    if (auto format = stashed("bind.copy_to_format"); !format.empty()) {
+        params.copy_to_format = format;
+    }
+    if (auto path = stashed("bind.copy_to_path"); !path.empty()) params.copy_to_path = path;
+    params.output_schema = wire::decode_schema(stashed("bind.schema"));
     // A buffering call carries no arguments or output schema of its own; both
     // were settled at bind and belong to the execution, not the batch.
     return params;

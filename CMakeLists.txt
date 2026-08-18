@@ -61,6 +61,7 @@ add_library(vgi
     src/catalog_model.cpp
     src/settings.cpp
     src/pushdown.cpp
+    src/copy_to.cpp
 )
 add_library(vgi::vgi ALIAS vgi)
 

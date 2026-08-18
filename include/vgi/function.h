@@ -33,6 +33,10 @@ struct BindParams {
     // Whether the engine has already resolved this function's secret lookups.
     // A bind that asks again once they are resolved would loop.
     bool secrets_resolved = false;
+    // The COPY destination, when this bind is part of a `COPY … TO`. A writer
+    // scopes its secret lookups to the path.
+    std::optional<std::string> copy_to_format;
+    std::optional<std::string> copy_to_path;
     std::string catalog_name;
     std::string schema_name;
 
@@ -61,6 +65,12 @@ struct ProcessParams {
     // The predicates the engine pushed into this scan. Empty when none were,
     // or when the function did not declare `filter_pushdown`.
     PushdownFilters pushdown_filters;
+    // The COPY destination, when this call is part of a `COPY … TO`.
+    //
+    // The path is not an option: it comes from the COPY statement itself, so a
+    // writer reads it here rather than from its declared arguments.
+    std::optional<std::string> copy_to_format;
+    std::optional<std::string> copy_to_path;
     // Cross-process state, scoped by `execution_id`. Set for every call.
     //
     // Needed rather than optional: the engine parallelizes a buffering sink

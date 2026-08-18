@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -78,6 +79,11 @@ std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes);
 // A `list<binary>` or `list<large_binary>` parameter, as its elements.
 std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatch>& batch,
                                         const std::string& field);
+
+// A struct parameter's fields, rendered as strings. Nullopt when the column is
+// absent or null.
+std::optional<std::map<std::string, std::string>> get_struct_fields(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
 
 // Read a dataclass parameter: the named binary column, decoded.
 std::shared_ptr<arrow::RecordBatch> get_ipc(

@@ -54,6 +54,10 @@ void Worker::register_table_in(std::string catalog, std::string schema,
     disp_->register_table_in(std::move(catalog), std::move(schema), std::move(fn));
 }
 
+void Worker::register_copy_to(std::shared_ptr<CopyToFunction> writer) {
+    disp_->register_copy_to(std::move(writer));
+}
+
 void Worker::register_buffering(std::shared_ptr<TableBufferingFunction> fn) {
     disp_->register_buffering(std::move(fn));
 }

@@ -21,6 +21,7 @@ add_executable(vgi-example-worker
     table/secrets.cpp
     table/series.cpp
     table/filters.cpp
+    copy_to/lines.cpp
     catalog_def.cpp
     table_in_out/echo.cpp
     aggregate/basic.cpp

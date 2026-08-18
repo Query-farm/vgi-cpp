@@ -17,6 +17,7 @@
 #include "vgi/table_function.h"
 #include "vgi/aggregate.h"
 #include "vgi/buffering.h"
+#include "vgi/copy_to.h"
 #include "vgi/table_in_out.h"
 
 namespace vgi {
@@ -53,6 +54,7 @@ public:
     void register_aggregate_in(std::string catalog, std::string schema,
                                std::shared_ptr<AggregateFunction> fn);
     void register_buffering(std::shared_ptr<TableBufferingFunction> fn);
+    void register_copy_to(std::shared_ptr<CopyToFunction> writer);
     void register_buffering_in(std::string catalog, std::string schema,
                                std::shared_ptr<TableBufferingFunction> fn);
 
@@ -191,6 +193,7 @@ private:
     std::vector<Scope> aggregate_scopes_;
     std::unordered_map<std::string, std::vector<size_t>> aggregate_by_name_;
 
+    std::vector<std::shared_ptr<CopyToFunction>> copy_to_;
     std::vector<std::shared_ptr<TableBufferingFunction>> bufferings_;
     std::vector<Scope> buffering_scopes_;
     std::unordered_map<std::string, std::vector<size_t>> buffering_by_name_;

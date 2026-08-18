@@ -184,6 +184,28 @@ std::shared_ptr<arrow::RecordBatch> decode_ipc(const std::string& bytes) {
     return batch;
 }
 
+std::optional<std::map<std::string, std::string>> get_struct_fields(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    if (!has_column(batch, field)) return std::nullopt;
+    auto structs = std::dynamic_pointer_cast<arrow::StructArray>(column(batch, field));
+    if (!structs || structs->length() == 0 || structs->IsNull(0)) return std::nullopt;
+
+    std::map<std::string, std::string> fields;
+    const auto& type = std::static_pointer_cast<arrow::StructType>(structs->type());
+    for (int i = 0; i < type->num_fields(); ++i) {
+        auto child = structs->field(i);
+        if (!child || child->IsNull(0)) continue;
+        if (child->type()->id() == arrow::Type::STRING) {
+            fields[type->field(i)->name()] =
+                static_cast<const arrow::StringArray&>(*child).GetString(0);
+            continue;
+        }
+        auto scalar = child->GetScalar(0);
+        if (scalar.ok()) fields[type->field(i)->name()] = scalar.ValueUnsafe()->ToString();
+    }
+    return fields;
+}
+
 std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatch>& batch,
                                          const std::string& field) {
     std::vector<std::string> items;

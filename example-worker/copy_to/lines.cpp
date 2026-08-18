@@ -1,0 +1,227 @@
+// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
+// SPDX-License-Identifier: Apache-2.0
+
+// A toy delimited-text `COPY … TO` writer.
+
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include <arrow/array.h>
+#include <arrow/io/memory.h>
+#include <arrow/ipc/reader.h>
+#include <arrow/ipc/writer.h>
+
+#include <vgi/worker.h>
+
+#include "scalar/util.h"
+
+namespace example {
+namespace {
+
+// Shards are appended here and read back at close.
+constexpr const char* kShardNamespace = "copy_to_shard";
+
+std::string encode_batch(const std::shared_ptr<arrow::RecordBatch>& batch) {
+    auto sink = arrow::io::BufferOutputStream::Create().ValueOrDie();
+    auto writer = arrow::ipc::MakeStreamWriter(sink, batch->schema()).ValueOrDie();
+    (void)writer->WriteRecordBatch(*batch);
+    (void)writer->Close();
+    return sink->Finish().ValueOrDie()->ToString();
+}
+
+std::shared_ptr<arrow::RecordBatch> decode_batch(const std::string& bytes) {
+    if (bytes.empty()) return nullptr;
+    auto buffer = arrow::Buffer::FromString(bytes);
+    auto source = std::make_shared<arrow::io::BufferReader>(buffer);
+    auto reader = arrow::ipc::RecordBatchStreamReader::Open(source);
+    if (!reader.ok()) return nullptr;
+    std::shared_ptr<arrow::RecordBatch> batch;
+    (void)reader.ValueUnsafe()->ReadNext(&batch);
+    return batch;
+}
+
+struct Options {
+    std::string null_string;
+    std::string delimiter = ",";
+    bool header = false;
+    int64_t header_repeat = 1;
+    std::string on_exists = "overwrite";
+    std::string fail_on_value;
+};
+
+class ExampleLines : public vgi::CopyToFunction {
+public:
+    ExampleLines(std::string format, std::string handler, std::string comment,
+                 std::string description, bool ordered)
+        : format_(std::move(format)),
+          handler_(std::move(handler)),
+          comment_(std::move(comment)),
+          description_(std::move(description)),
+          ordered_(ordered) {}
+
+    std::string format() const override { return format_; }
+    std::string handler_name() const override { return handler_; }
+    std::optional<std::string> comment() const override { return comment_; }
+    bool ordered() const override { return ordered_; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = description_;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        // Named, because COPY options are written `(FORMAT x, delimiter '|')`.
+        // The destination path is not among them: it comes from the COPY
+        // statement itself.
+        return {
+            vgi::ArgSpec::named("null_string", "varchar", "Token written for SQL NULL"),
+            vgi::ArgSpec::named("delimiter", "varchar", "Field separator"),
+            vgi::ArgSpec::named("header", "boolean", "Write a header row of column names"),
+            vgi::ArgSpec::named("header_repeat", "int64",
+                                "When header=true, write the header line this many times"),
+            vgi::ArgSpec::named("on_exists", "varchar",
+                                "Behavior when the destination file already exists"),
+            vgi::ArgSpec::named("fail_on_value", "varchar",
+                                "If non-empty, fail mid-write when a cell equals this value"),
+        };
+    }
+
+    void write(const vgi::ProcessParams& params,
+               const std::shared_ptr<arrow::RecordBatch>& batch) override {
+        // Validated on every batch, not only at close: a missing required
+        // option should surface on the first one, not after the whole COPY
+        // has run.
+        const auto options = parse_options(params.arguments);
+        if (!options.fail_on_value.empty()) {
+            for (int i = 0; i < batch->num_columns(); ++i) {
+                auto text = cast_to(batch->column(i), arrow::utf8());
+                const auto& values = static_cast<const arrow::StringArray&>(*text);
+                for (int64_t row = 0; row < values.length(); ++row) {
+                    if (!values.IsNull(row) && values.GetString(row) == options.fail_on_value) {
+                        throw std::invalid_argument(format_ + ": encountered " +
+                                                    options.fail_on_value);
+                    }
+                }
+            }
+        }
+        // Appended to execution-scoped storage rather than held: the sink runs
+        // in several processes and close runs in another.
+        params.storage->append(params.execution_id, kShardNamespace, "", encode_batch(batch));
+    }
+
+    int64_t close(const vgi::ProcessParams& params) override {
+        const auto options = parse_options(params.arguments);
+        const auto path = params.copy_to_path.value_or("");
+        if (path.empty()) throw std::runtime_error(format_ + ": no destination path");
+
+        if (options.on_exists == "error" && std::filesystem::exists(path)) {
+            throw std::runtime_error(format_ + ": destination exists: " + path);
+        }
+
+        auto shards = params.storage->scan(params.execution_id, kShardNamespace, "", 0,
+                                           SIZE_MAX);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) throw std::runtime_error(format_ + ": cannot open " + path);
+
+        int64_t written = 0;
+        bool wrote_header = false;
+        for (const auto& [id, bytes] : shards) {
+            (void)id;
+            auto batch = decode_batch(bytes);
+            if (!batch) continue;
+
+            if (options.header && !wrote_header) {
+                wrote_header = true;
+                for (int64_t repeat = 0; repeat < options.header_repeat; ++repeat) {
+                    for (int i = 0; i < batch->num_columns(); ++i) {
+                        if (i) out << options.delimiter;
+                        out << batch->schema()->field(i)->name();
+                    }
+                    out << '\n';
+                }
+            }
+
+            std::vector<std::shared_ptr<arrow::Array>> text;
+            text.reserve(static_cast<size_t>(batch->num_columns()));
+            for (int i = 0; i < batch->num_columns(); ++i) {
+                text.push_back(cast_to(batch->column(i), arrow::utf8()));
+            }
+            for (int64_t row = 0; row < batch->num_rows(); ++row) {
+                for (size_t i = 0; i < text.size(); ++i) {
+                    if (i) out << options.delimiter;
+                    const auto& values = static_cast<const arrow::StringArray&>(*text[i]);
+                    out << (values.IsNull(row) ? options.null_string : values.GetString(row));
+                }
+                out << '\n';
+                ++written;
+            }
+        }
+
+        // Headers still go out for an empty COPY: close is called even when
+        // nothing was written, and a header-only file is the right result.
+        if (options.header && !wrote_header) {
+            for (int64_t repeat = 0; repeat < options.header_repeat; ++repeat) out << '\n';
+        }
+        out.flush();
+        if (!out) throw std::runtime_error(format_ + ": write failed for " + path);
+        return written;
+    }
+
+private:
+    Options parse_options(const vgi::Arguments& arguments) const {
+        Options options;
+        auto null_string = arguments.named_string("null_string");
+        if (!null_string) {
+            throw std::invalid_argument(format_ + ": required option 'null_string' is missing");
+        }
+        options.null_string = *null_string;
+
+        options.delimiter = arguments.named_string("delimiter").value_or(",");
+        if (options.delimiter.empty()) {
+            throw std::invalid_argument(format_ + ": 'delimiter' must not be empty");
+        }
+        if (auto header = arguments.named("header")) {
+            auto values = cast_to(header, arrow::boolean());
+            options.header = !values->IsNull(0) &&
+                             static_cast<const arrow::BooleanArray&>(*values).Value(0);
+        }
+        options.header_repeat = arguments.named_int64("header_repeat").value_or(1);
+        if (options.header_repeat < 0 || options.header_repeat > 3) {
+            throw std::invalid_argument(format_ + ": 'header_repeat' must be between 0 and 3");
+        }
+        options.on_exists = arguments.named_string("on_exists").value_or("overwrite");
+        if (options.on_exists != "overwrite" && options.on_exists != "error") {
+            throw std::invalid_argument(format_ +
+                                        ": 'on_exists' must be one of ['overwrite', 'error']");
+        }
+        options.fail_on_value = arguments.named_string("fail_on_value").value_or("");
+        return options;
+    }
+
+    std::string format_;
+    std::string handler_;
+    std::string comment_;
+    std::string description_;
+    bool ordered_;
+};
+
+}  // namespace
+
+void register_copy_to(vgi::Worker& worker) {
+    worker.register_copy_to(std::make_shared<ExampleLines>(
+        "example_lines_out", "example_lines_writer", "Toy delimited-text writer for tests",
+        "Write the COPY source to a delimited text file", /*ordered=*/false));
+    worker.register_copy_to(std::make_shared<ExampleLines>(
+        "example_lines_ordered_out", "example_lines_ordered_writer",
+        "Toy delimited-text writer (ordered, single-thread sink)",
+        "Write the COPY source to a delimited file, preserving source order",
+        /*ordered=*/true));
+}
+
+}  // namespace example
