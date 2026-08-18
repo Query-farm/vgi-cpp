@@ -119,19 +119,84 @@ vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
                         .finish());
 }
 
-// A worker with no tables answers every table lookup with "not found", which
-// is an empty item list rather than an error.
+// A table's wire record.
 //
-// These have to be *answered*, not left unimplemented: the engine asks for a
-// table before it will consider a function of the same name, so a worker that
-// refuses the question fails every query against it — 52 tests in this suite,
-// none of which are about tables.
-vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request&) {
-    return empty_items("catalog_table_get");
+// `scan_function` and `scan_arguments` are what make a VGI table work: the
+// table is a name bound to a function, and this is the binding. Inlining the
+// scan here saves the engine a `catalog_table_scan_function_get` round trip
+// per query.
+std::string Dispatcher::encode_table_info(const CatalogTable& table,
+                                          const std::string& schema_name) {
+    auto scan = wire::ResultBuilder(gen::ScanFunctionResultSchema())
+                    .set_string("function_name", table.scan_function)
+                    .set_binary("arguments", table.scan_arguments)
+                    .set_string_list("required_extensions", {})
+                    .finish();
+
+    auto builder = wire::ResultBuilder(gen::TableInfoSchema());
+    builder.set_string("name", table.name)
+        .set_string("schema_name", schema_name)
+        .set_binary("columns", wire::encode_schema(table.columns))
+        .set_binary("scan_function", table.inline_scan ? wire::encode_ipc(scan) : std::string{})
+        .set_bool("supports_insert", false)
+        .set_bool("supports_update", false)
+        .set_bool("supports_delete", false)
+        .set_bool("supports_returning", false)
+        .set_bool("supports_column_statistics", false)
+        .set_int64("cardinality_estimate", table.cardinality.value_or(-1))
+        .set_int64("cardinality_max", table.cardinality.value_or(-1))
+        .set_string_map("tags", table.tags);
+    if (table.comment) {
+        builder.set_string("comment", *table.comment);
+    } else {
+        builder.set_null("comment");
+    }
+    return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request&) {
-    return empty_items("catalog_view_get");
+vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto name = wire::get_string(request.batch(), "name");
+
+    std::vector<std::string> items;
+    if (const auto* schema = catalog_.find_schema(schema_name)) {
+        for (const auto& table : schema->tables) {
+            if (table.name == name) items.push_back(encode_table_info(table, schema_name));
+        }
+    }
+    // Zero or one item; absence is how "no such table" is spelled, and the
+    // engine goes on to look for a function of that name.
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_table_get"))
+                        .set_binary_list("items", items)
+                        .finish());
+}
+
+std::string Dispatcher::encode_view_info(const CatalogView& view,
+                                         const std::string& schema_name) {
+    auto builder = wire::ResultBuilder(gen::ViewInfoSchema());
+    builder.set_string("name", view.name)
+        .set_string("schema_name", schema_name)
+        .set_string("sql", view.sql);
+    if (view.comment) {
+        builder.set_string("comment", *view.comment);
+    } else {
+        builder.set_null("comment");
+    }
+    return wire::encode_ipc(builder.fill_defaults().finish());
+}
+
+vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto name = wire::get_string(request.batch(), "name");
+    std::vector<std::string> items;
+    if (const auto* schema = catalog_.find_schema(schema_name)) {
+        for (const auto& view : schema->views) {
+            if (view.name == name) items.push_back(encode_view_info(view, schema_name));
+        }
+    }
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_view_get"))
+                        .set_binary_list("items", items)
+                        .finish());
 }
 
 vgi_rpc::Result Dispatcher::catalog_macro_get(const vgi_rpc::Request&) {
@@ -145,7 +210,7 @@ vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&) {
 vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request&) {
     std::vector<std::string> items;
     items.reserve(catalog_.schemas.size());
-    for (const auto& schema_name : catalog_.schemas) {
+    for (const auto& schema_name : catalog_.schema_names()) {
         items.push_back(wire::encode_ipc(wire::ResultBuilder(gen::SchemaInfoSchema())
                                              .set_string("name", schema_name)
                                              .set_binary("attach_opaque_data", catalog_.name)
@@ -160,7 +225,7 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request&) {
 vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) {
     const auto wanted = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    for (const auto& schema_name : catalog_.schemas) {
+    for (const auto& schema_name : catalog_.schema_names()) {
         if (schema_name != wanted) continue;
         items.push_back(wire::encode_ipc(wire::ResultBuilder(gen::SchemaInfoSchema())
                                              .set_string("name", schema_name)
@@ -376,12 +441,54 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
                         .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Request&) {
-    return empty_items("catalog_schema_contents_tables");
+vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "name");
+    std::vector<std::string> items;
+    if (const auto* schema = catalog_.find_schema(schema_name)) {
+        for (const auto& table : schema->tables) {
+            items.push_back(encode_table_info(table, schema_name));
+        }
+    }
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_tables"))
+                        .set_binary_list("items", items)
+                        .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request&) {
-    return empty_items("catalog_schema_contents_views");
+vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "name");
+    std::vector<std::string> items;
+    if (const auto* schema = catalog_.find_schema(schema_name)) {
+        for (const auto& view : schema->views) {
+            items.push_back(encode_view_info(view, schema_name));
+        }
+    }
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_views"))
+                        .set_binary_list("items", items)
+                        .finish());
+}
+
+vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Request& request) {
+    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto name = wire::get_string(request.batch(), "name");
+
+    const CatalogTable* found = nullptr;
+    if (const auto* schema = catalog_.find_schema(schema_name)) {
+        for (const auto& table : schema->tables) {
+            if (table.name == name) found = &table;
+        }
+    }
+    if (!found) throw std::invalid_argument("no table '" + schema_name + "." + name + "'");
+
+    // Returned as raw IPC bytes, not wrapped in an items list: this method's
+    // return type is `bytes`, so the payload *is* the ScanFunctionResult.
+    auto scan = wire::ResultBuilder(gen::ScanFunctionResultSchema())
+                    .set_string("function_name", found->scan_function)
+                    .set_binary("arguments", found->scan_arguments)
+                    .set_string_list("required_extensions", {})
+                    .finish();
+    return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
+                                      .set_binary("result", wire::encode_ipc(scan))
+                                      .finish());
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Request&) {

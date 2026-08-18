@@ -31,6 +31,9 @@ public:
     Worker& operator=(Worker&&) noexcept;
 
     void set_catalog(CatalogModel catalog);
+    // Mutable access, so a worker can declare tables and views after
+    // registering the functions that back them.
+    CatalogModel& catalog();
     void set_server_id(std::string id);
 
     // Register in the catalog's default schema (`main`).

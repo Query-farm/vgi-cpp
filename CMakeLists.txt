@@ -57,6 +57,8 @@ add_library(vgi
     src/aggregate.cpp
     src/buffering.cpp
     src/storage.cpp
+    src/cache_control.cpp
+    src/catalog_model.cpp
 )
 add_library(vgi::vgi ALIAS vgi)
 

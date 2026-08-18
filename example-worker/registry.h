@@ -25,5 +25,9 @@ void register_table_functions(vgi::Worker& worker);
 void register_table_in_out(vgi::Worker& worker);
 void register_aggregates(vgi::Worker& worker);
 void register_buffering(vgi::Worker& worker);
+void register_cache(vgi::Worker& worker);
+// Declares the catalog's tables and views. Runs after the function
+// registrations, since a table names the function that scans it.
+void declare_catalog(vgi::Worker& worker);
 
 }  // namespace example

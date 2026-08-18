@@ -38,6 +38,7 @@ class Dispatcher {
 public:
     void set_catalog(CatalogModel catalog) { catalog_ = std::move(catalog); }
     const CatalogModel& catalog() const noexcept { return catalog_; }
+    CatalogModel& catalog() noexcept { return catalog_; }
 
     void register_scalar(std::shared_ptr<ScalarFunction> fn);
     void register_scalar_in(std::string catalog, std::string schema,
@@ -98,6 +99,7 @@ public:
     vgi_rpc::Result catalog_version(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_catalogs(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_table_get(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_table_scan_function_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_view_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_macro_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_index_get(const vgi_rpc::Request& request);
@@ -116,6 +118,10 @@ private:
                                              const std::string& schema_name);
     static std::string encode_buffering_info(const TableBufferingFunction& fn,
                                              const std::string& schema_name);
+    static std::string encode_table_info(const CatalogTable& table,
+                                         const std::string& schema_name);
+    static std::string encode_view_info(const CatalogView& view,
+                                        const std::string& schema_name);
 
     // Every registration under `name`, in registration order.
     //

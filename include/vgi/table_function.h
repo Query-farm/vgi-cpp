@@ -11,6 +11,9 @@
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
+#include <map>
+
+#include "vgi/cache_control.h"
 #include "vgi/function.h"
 #include "vgi/types.h"
 
@@ -37,6 +40,14 @@ public:
 
     // The next batch, or null when the scan is exhausted.
     virtual std::shared_ptr<arrow::RecordBatch> next_batch() = 0;
+
+    // Wire metadata for the batch just returned. Called once after each
+    // `next_batch` that produced one.
+    //
+    // Separate from the batch because Arrow's RecordBatch carries schema
+    // metadata, not batch metadata, and the protocol needs the latter — a
+    // cache advertisement describes this batch, not this shape.
+    virtual std::map<std::string, std::string> last_metadata() const { return {}; }
 };
 
 // A function that generates rows without consuming any.

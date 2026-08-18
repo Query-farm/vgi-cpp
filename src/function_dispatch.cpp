@@ -13,6 +13,7 @@
 #include <stdexcept>
 
 #include <arrow/record_batch.h>
+#include <arrow/util/key_value_metadata.h>
 #include <vgi_rpc/request.h>
 #include <vgi_rpc/result.h>
 #include <vgi_rpc/stream.h>
@@ -109,7 +110,20 @@ public:
             out.finish();
             return;
         }
-        out.emit_batch(batch);
+        const auto metadata = producer_->last_metadata();
+        if (metadata.empty()) {
+            out.emit_batch(batch);
+            return;
+        }
+        std::vector<std::string> keys;
+        std::vector<std::string> values;
+        keys.reserve(metadata.size());
+        values.reserve(metadata.size());
+        for (const auto& [key, value] : metadata) {
+            keys.push_back(key);
+            values.push_back(value);
+        }
+        out.emit_batch(batch, arrow::key_value_metadata(keys, values));
     }
 
 private:
