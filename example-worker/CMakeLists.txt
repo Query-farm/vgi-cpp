@@ -31,6 +31,7 @@ add_executable(vgi-example-worker
     table_in_out/blended.cpp
     aggregate/basic.cpp
     aggregate/more.cpp
+    aggregate/window.cpp
     buffering/buffer_input.cpp
     buffering/sum_all_columns.cpp
 )

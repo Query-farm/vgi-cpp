@@ -44,6 +44,7 @@ void register_generators(vgi::Worker& worker);
 void register_secret_scalars(vgi::Worker& worker);
 void register_blended(vgi::Worker& worker);
 void register_versioned(vgi::Worker& worker);
+void register_window_aggregates(vgi::Worker& worker);
 std::vector<vgi::TimeTravelVersion> versioned_data_versions();
 // Declares the catalog's tables and views. Runs after the function
 // registrations, since a table names the function that scans it.

@@ -587,6 +587,9 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
                                             : metadata.partition_kind.c_str())
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)
+            // Declared, or the engine never sends a window request at all and
+            // an aggregate that implements `window` is simply never asked.
+            .set_bool("supports_window", fn.supports_window())
             .fill_defaults()
             .finish());
 }

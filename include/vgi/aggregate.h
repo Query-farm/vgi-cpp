@@ -8,11 +8,14 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <arrow/array.h>
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
+
+#include "vgi/arguments.h"
 
 #include "vgi/function.h"
 #include "vgi/types.h"
@@ -63,6 +66,50 @@ public:
         const std::shared_ptr<arrow::Schema>& output_schema,
         const arrow::Int64Array& group_ids,
         const std::vector<std::optional<std::string>>& states) const = 0;
+
+    // Like `finalize`, with the bind-time arguments in hand.
+    //
+    // Needed by an aggregate whose *result* depends on a constant argument —
+    // a percentile's fraction, say — which the group states cannot carry
+    // because they are folded before it is known. The default ignores them, so
+    // an aggregate that does not care overrides only `finalize`.
+    virtual std::shared_ptr<arrow::RecordBatch> finalize_with_arguments(
+        const std::shared_ptr<arrow::Schema>& output_schema,
+        const arrow::Int64Array& group_ids,
+        const std::vector<std::optional<std::string>>& states,
+        const Arguments& arguments) const {
+        (void)arguments;
+        return finalize(output_schema, group_ids, states);
+    }
+
+    // ── Windowed aggregation ─────────────────────────────────────────────
+    //
+    // A different shape from grouped aggregation: the engine ships a whole
+    // partition once, then asks for one value per output row over a list of
+    // sub-frames within it. Only an aggregate declaring `supports_window`
+    // is asked, and the default refuses rather than returning something wrong.
+
+    virtual bool supports_window() const { return false; }
+
+    // Evaluate the aggregate over `frames` of `partition`, one value per
+    // entry. Each frame is a half-open [begin, end) row range.
+    //
+    // `filter_mask`, when non-empty, is one flag per partition row from a
+    // `FILTER (WHERE …)` clause. It cannot be applied by pre-filtering the
+    // partition, because frame bounds index the *original* rows — so an
+    // implementation must skip masked-out rows as it walks each frame.
+    // Ignoring it makes a filtered window silently aggregate everything.
+    virtual std::shared_ptr<arrow::Array> window(
+        const std::shared_ptr<arrow::RecordBatch>& partition,
+        const std::shared_ptr<arrow::Schema>& output_schema,
+        const std::vector<std::vector<std::pair<int64_t, int64_t>>>& frames,
+        const std::vector<bool>& filter_mask) const {
+        (void)partition;
+        (void)output_schema;
+        (void)frames;
+        (void)filter_mask;
+        throw std::runtime_error("window() not supported by this aggregate");
+    }
 };
 
 }  // namespace vgi

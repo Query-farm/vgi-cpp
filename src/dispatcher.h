@@ -84,6 +84,10 @@ public:
     vgi_rpc::Result aggregate_combine(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_finalize(const vgi_rpc::Request& request);
     vgi_rpc::Result aggregate_destructor(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_window_init(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_window(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_window_batch(const vgi_rpc::Request& request);
+    vgi_rpc::Result aggregate_window_destructor(const vgi_rpc::Request& request);
     vgi_rpc::Result table_buffering_process(const vgi_rpc::Request& request);
     vgi_rpc::Result table_buffering_combine(const vgi_rpc::Request& request);
     vgi_rpc::Result table_buffering_destructor(const vgi_rpc::Request& request);
@@ -163,6 +167,7 @@ private:
     std::shared_ptr<TableBufferingFunction> require_buffering(const std::string& name,
                                                               const std::string& schema) const;
     ProcessParams buffering_params(const std::shared_ptr<arrow::RecordBatch>& dto) const;
+    vgi_rpc::Result window_result(const std::shared_ptr<arrow::RecordBatch>& dto, bool batched);
 
     // The overload of `name` that matches `params`, or a clear error.
     //
@@ -206,6 +211,7 @@ private:
     // shared across concurrent aggregations, and each has its own groups. The
     // engine mints the execution id at bind and echoes it on every later call.
     std::unordered_map<std::string, std::map<int64_t, std::string>> aggregate_states_;
+
 };
 
 }  // namespace vgi
