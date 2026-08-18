@@ -143,7 +143,8 @@ private:
     // One `SchemaInfo` entry, with the object counts the engine treats as a
     // hard guarantee: a declared zero lets it skip both the bulk listing and
     // every per-name lookup for that kind.
-    std::string encode_schema_info(const CatalogSchema& schema) const;
+    std::string encode_schema_info(const CatalogSchema& schema,
+                                   const CatalogSchema* contents) const;
     static std::string encode_macro_info(const CatalogMacro& macro,
                                          const std::string& schema_name);
     static std::string encode_view_info(const CatalogView& view,

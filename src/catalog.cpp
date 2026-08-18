@@ -660,6 +660,20 @@ vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request& request) {
 // parameter. `arguments_schema` is one nullable field per parameter *in
 // declaration order* — order is the positional call order — typed from the
 // default where there is one, carrying the description as `vgi_doc`.
+// The wire spells a kind either bare (`scalar`) or suffixed
+// (`scalar_function`); both mean the same thing.
+static std::optional<std::string> normalize_function_type(const std::string& type) {
+    if (type.empty()) return std::nullopt;
+    std::string lower = type;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    static constexpr std::string_view kSuffix = "_function";
+    if (lower.size() > kSuffix.size() &&
+        lower.compare(lower.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0) {
+        lower.resize(lower.size() - kSuffix.size());
+    }
+    return lower;
+}
+
 std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
                                           const std::string& schema_name) {
     std::string defaults;
@@ -733,7 +747,13 @@ vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&) {
     return empty_items("catalog_index_get");
 }
 
-std::string Dispatcher::encode_schema_info(const CatalogSchema& schema) const {
+std::string Dispatcher::encode_schema_info(const CatalogSchema& schema,
+                                           const CatalogSchema* contents) const {
+    // `contents` is what this attachment will actually be shown, which is not
+    // `schema` for a catalog whose table set varies by resolved data version:
+    // counting the declared (empty) schema would promise zero tables and the
+    // engine would never ask for them.
+    if (!contents) contents = &schema;
     // The engine reads a zero as a promise, not an estimate: it then skips
     // both the bulk `catalog_schema_contents_*` call and every per-name lookup
     // for that kind. Undercounting therefore hides objects rather than costing
@@ -748,9 +768,9 @@ std::string Dispatcher::encode_schema_info(const CatalogSchema& schema) const {
                        .set_binary("attach_opaque_data", catalog_.name)
                        .set_int64_map(
                            "estimated_object_count",
-                           {{"view", static_cast<int64_t>(schema.views.size())},
-                            {"macro", static_cast<int64_t>(schema.macros.size())},
-                            {"table", static_cast<int64_t>(schema.tables.size())},
+                           {{"view", static_cast<int64_t>(contents->views.size())},
+                            {"macro", static_cast<int64_t>(contents->macros.size())},
+                            {"table", static_cast<int64_t>(contents->tables.size())},
                             {"scalar_function", size(scalars_in_schema(schema.name))},
                             {"aggregate_function", size(aggregates_in_schema(schema.name))},
                             // Every kind the engine registers as a table
@@ -769,10 +789,12 @@ std::string Dispatcher::encode_schema_info(const CatalogSchema& schema) const {
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request&) {
+vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
     std::vector<std::string> items;
     items.reserve(catalog_.schemas.size());
-    for (const auto& schema : catalog_.schemas) items.push_back(encode_schema_info(*schema));
+    for (const auto& schema : catalog_.schemas) {
+        items.push_back(encode_schema_info(*schema, schema_for(request, schema->name)));
+    }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
                                       .set_binary_list("items", items)
                                       .finish());
@@ -782,7 +804,8 @@ vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) 
     const auto wanted = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
     for (const auto& schema : catalog_.schemas) {
-        if (schema->name == wanted) items.push_back(encode_schema_info(*schema));
+        if (schema->name != wanted) continue;
+        items.push_back(encode_schema_info(*schema, schema_for(request, wanted)));
     }
     // Zero or one item; the engine reads absence as "no such schema".
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_get"))
@@ -980,18 +1003,6 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
 // error that says nothing about the enum.
 //
 // Empty means no filter.
-static std::optional<std::string> normalize_function_type(const std::string& type) {
-    if (type.empty()) return std::nullopt;
-    std::string lower = type;
-    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    static constexpr std::string_view kSuffix = "_function";
-    if (lower.size() > kSuffix.size() &&
-        lower.compare(lower.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0) {
-        lower.resize(lower.size() - kSuffix.size());
-    }
-    return lower;
-}
-
 vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "name");
     const auto filter = normalize_function_type(wire::get_enum(request.batch(), "type"));
@@ -1145,10 +1156,20 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Request& request) {
     const auto schema_name = wire::get_string(request.batch(), "name");
+    // The engine scans the two macro kinds in separate calls, and the kind it
+    // wants is in `type`. Answering with all of them on a kind-scoped request
+    // registers every macro twice, once per call.
+    const auto filter = normalize_function_type(
+        wire::get_optional_enum(request.batch(), "type").value_or(""));
+
     std::vector<std::string> items;
     if (const auto* schema = schema_for(request, schema_name)) {
         for (const auto& macro : schema->macros) {
-            items.push_back(encode_macro_info(macro, schema_name));
+            // The kind arrives either bare or as `scalar_macro`/`table_macro`.
+            const bool wanted =
+                !filter || (macro.table_macro ? *filter == "table" || *filter == "table_macro"
+                                              : *filter == "scalar" || *filter == "scalar_macro");
+            if (wanted) items.push_back(encode_macro_info(macro, schema_name));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_macros"))

@@ -525,8 +525,10 @@ void declare_catalog(vgi::Worker& worker) {
         {"first_ten", "SELECT * FROM sequence(10)", "First 10 integers"});
     main.views.push_back({"even_numbers", "SELECT * FROM sequence(100) WHERE n % 2 = 0",
                           "Even numbers from 0 to 98"});
+    // Over the `numbers` table rather than over `sequence` directly: what it
+    // probes is that a view can name another catalog object.
     data.views.push_back(
-        {"small_numbers", "SELECT * FROM sequence(5)", std::nullopt});
+        {"small_numbers", "SELECT * FROM numbers WHERE value < 10", std::nullopt});
 
     data.tables.push_back(
         backed_by("cache_projection", "cache_projection",
