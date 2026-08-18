@@ -81,23 +81,88 @@ private:
 
 }  // namespace
 
-const ScalarFunction* Dispatcher::find_scalar(const std::string& name) const {
+std::vector<std::shared_ptr<ScalarFunction>> Dispatcher::scalars_named(
+    const std::string& name) const {
+    std::vector<std::shared_ptr<ScalarFunction>> found;
     auto it = scalar_by_name_.find(name);
-    return it == scalar_by_name_.end() ? nullptr : scalars_[it->second].get();
+    if (it == scalar_by_name_.end()) return found;
+    found.reserve(it->second.size());
+    for (size_t index : it->second) found.push_back(scalars_[index]);
+    return found;
 }
 
-std::shared_ptr<ScalarFunction> Dispatcher::require_scalar(const std::string& name) const {
-    auto it = scalar_by_name_.find(name);
-    if (it == scalar_by_name_.end()) {
+std::shared_ptr<ScalarFunction> Dispatcher::resolve_scalar(const std::string& name,
+                                                           const BindParams& params) const {
+    auto candidates = scalars_named(name);
+    if (candidates.empty()) {
         throw std::invalid_argument("no scalar function named '" + name + "'");
     }
-    return scalars_[it->second];
+    if (candidates.size() == 1) return candidates.front();
+
+    // Score each overload by how many declared argument types the engine's
+    // resolved types match exactly. The engine has already narrowed to
+    // something callable, so this only has to break the remaining tie — and a
+    // polymorphic parameter matches anything, which is what makes `any_mixed`
+    // lose to a concrete overload rather than shadow it.
+    std::shared_ptr<ScalarFunction> best;
+    int best_score = -1;
+    for (const auto& candidate : candidates) {
+        const auto specs = candidate->argument_specs();
+        int score = 0;
+        bool viable = true;
+        for (size_t i = 0; i < specs.size(); ++i) {
+            const auto declared = specs[i].arrow_type;
+            auto actual = params.input_type(i);
+            if (!declared || declared->id() == arrow::Type::NA) continue;  // polymorphic
+            if (!actual) continue;
+            if (declared->Equals(*actual)) {
+                ++score;
+            } else {
+                viable = false;
+                break;
+            }
+        }
+        if (viable && score > best_score) {
+            best_score = score;
+            best = candidate;
+        }
+    }
+    // Nothing matched exactly: fall back to the first registration rather than
+    // failing, since the engine would not have called us if the call site were
+    // uncallable, and its own resolution is authoritative.
+    return best ? best : candidates.front();
+}
+
+// Enforce each argument's declared type bound against the type the engine
+// resolved.
+//
+// The check exists so the error names the function and argument. Without it a
+// bound violation surfaces from inside process() as an Arrow cast failure,
+// which mentions neither, and the user is left guessing which of several
+// arguments was wrong.
+void Dispatcher::check_type_bounds(const ScalarFunction& fn, const BindParams& params) {
+    const auto specs = fn.argument_specs();
+    for (size_t i = 0; i < specs.size(); ++i) {
+        const auto& spec = specs[i];
+        if (!spec.type_bound || !spec.type_bound->accepts) continue;
+        auto type = params.input_type(i);
+        // No resolved type means the engine did not supply one — nothing to
+        // check against, and refusing here would reject a legitimate call.
+        if (!type) continue;
+        if (!spec.type_bound->accepts(*type)) {
+            throw std::invalid_argument("function '" + fn.name() + "' argument '" + spec.name +
+                                        "' requires " + spec.type_bound->name + ", got " +
+                                        type->ToString());
+        }
+    }
 }
 
 BindParams Dispatcher::read_bind_request(
     const std::shared_ptr<arrow::RecordBatch>& bind_call) const {
     BindParams params;
     params.input_schema = wire::get_schema(bind_call, "input_schema");
+    params.arguments =
+        Arguments::parse(wire::get_optional_binary(bind_call, "arguments").value_or(""));
     params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
     params.catalog_name = catalog_.name;
     return params;
@@ -108,9 +173,10 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
     if (!bind_call) throw std::runtime_error("bind: empty request");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    auto fn = require_scalar(function_name);
-
-    auto output_schema = fn->bind(read_bind_request(bind_call));
+    const auto params = read_bind_request(bind_call);
+    auto fn = resolve_scalar(function_name, params);
+    check_type_bounds(*fn, params);
+    auto output_schema = fn->bind(params);
     if (!output_schema) {
         throw std::runtime_error("function '" + function_name + "' bound to no schema");
     }
@@ -136,7 +202,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     if (!bind_call) throw std::runtime_error("init: request carries no bind_call");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    auto fn = require_scalar(function_name);
+    auto fn = resolve_scalar(function_name, read_bind_request(bind_call));
 
     // The engine sends back the schema bind settled on rather than making the
     // worker re-derive it, so a function whose bind is expensive pays once.
@@ -145,6 +211,10 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
 
     ProcessParams params;
     params.output_schema = output_schema;
+    // Constant arguments were evaluated at bind and ride along on every call,
+    // which is why a const parameter never appears in the input batch.
+    params.arguments =
+        Arguments::parse(wire::get_optional_binary(bind_call, "arguments").value_or(""));
     params.catalog_name = catalog_.name;
     params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
 

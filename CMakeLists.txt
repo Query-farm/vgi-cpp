@@ -46,6 +46,8 @@ add_library(vgi
     src/catalog.cpp
     src/arg_schema.cpp
     src/function_dispatch.cpp
+    src/arguments.cpp
+    src/numeric.cpp
 )
 add_library(vgi::vgi ALIAS vgi)
 

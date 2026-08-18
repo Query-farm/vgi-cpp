@@ -1,0 +1,24 @@
+// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
+// SPDX-License-Identifier: Apache-2.0
+
+// Registration entry points, one per fixture group.
+//
+// Grouped rather than registered from main() so each file owns the functions
+// it defines and main() stays a list of groups — the same shape as the Rust
+// example worker's module-per-group `register` functions.
+
+#pragma once
+
+namespace vgi {
+class Worker;
+}
+
+namespace example {
+
+void register_arithmetic(vgi::Worker& worker);
+void register_strings(vgi::Worker& worker);
+void register_seeded(vgi::Worker& worker);
+void register_geo(vgi::Worker& worker);
+void register_types(vgi::Worker& worker);
+
+}  // namespace example

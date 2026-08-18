@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <arrow/type.h>
@@ -43,6 +44,67 @@ struct ArgSpec {
                                 std::string description = "");
     static ArgSpec named(std::string name, std::string type,
                          std::string description = "");
+    // A polymorphic column: the engine resolves its type at the call site and
+    // reports it to bind. Declared as `any` with a null placeholder type.
+    static ArgSpec any_column(std::string name, int index,
+                              std::string description = "");
+
+    // A named predicate the resolved type must satisfy, checked at bind.
+    //
+    // Without it a function like `double(x)` accepts `double('text')` and
+    // fails somewhere inside process() with a cast error that names neither
+    // the function nor the argument.
+    struct TypeBound {
+        std::string name;
+        bool (*accepts)(const arrow::DataType&) = nullptr;
+    };
+    std::optional<TypeBound> type_bound;
+
+    ArgSpec& with_bound(TypeBound bound);
+    // Mark the parameter variadic: it stands for one or more arguments of its
+    // type rather than exactly one.
+    ArgSpec& with_varargs();
+
+    // A constant argument whose Arrow type is given directly, for the cases
+    // the VGI type names cannot express — a struct, or a specific integer
+    // width the coarser names would collapse.
+    static ArgSpec constant_typed(std::string name, int index,
+                                  std::shared_ptr<arrow::DataType> type,
+                                  std::string description = "");
+    // A column argument with an exact Arrow type. Distinct from the named
+    // forms above because overload resolution happens on the exact type: two
+    // overloads that differ only by integer width need this, not "int64".
+    static ArgSpec column_typed(std::string name, int index,
+                                std::shared_ptr<arrow::DataType> type,
+                                std::string description = "");
+};
+
+// A worked example, surfaced by the engine's function-documentation views.
+struct FunctionExample {
+    std::string sql;
+    std::string description;
+    std::optional<std::string> expected_output;
+};
+
+// How a function treats NULL arguments.
+enum class NullHandling {
+    // The engine short-circuits: a row with any NULL argument yields NULL
+    // without the function being called.
+    Default,
+    // The function is called for every row and decides for itself. Needed by
+    // anything that gives NULL a meaning, e.g. coalesce-like behaviour.
+    Special,
+};
+
+// Whether the engine may reuse a result.
+enum class Stability {
+    // Same arguments, same answer, always. The engine may fold or cache.
+    Consistent,
+    // Re-evaluated per row; nothing may be reused. Random and clock-reading
+    // functions need this or the engine will call once and repeat the answer.
+    Volatile,
+    // Fixed for the duration of one query, free to differ between queries.
+    ConsistentWithinQuery,
 };
 
 // Everything the engine shows a user about a function, plus the return type
@@ -51,8 +113,11 @@ struct ArgSpec {
 struct FunctionMetadata {
     std::string description;
     std::shared_ptr<arrow::DataType> return_type;  // null = decided at bind
-    std::vector<std::string> tags;
-    bool volatile_ = false;
+    std::vector<std::pair<std::string, std::string>> tags;
+    std::vector<FunctionExample> examples;
+    std::vector<std::string> categories;
+    Stability stability = Stability::Consistent;
+    NullHandling null_handling = NullHandling::Default;
 };
 
 }  // namespace vgi

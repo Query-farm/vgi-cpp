@@ -13,14 +13,10 @@ namespace vgi {
 
 void Dispatcher::register_scalar(std::shared_ptr<ScalarFunction> fn) {
     if (!fn) throw std::invalid_argument("register_scalar: null function");
-    const auto name = fn->name();
-    // A duplicate is a programming error, not a runtime condition: the engine
-    // resolves by name, so a second registration would silently shadow the
-    // first at some later, much less obvious point.
-    if (scalar_by_name_.count(name)) {
-        throw std::invalid_argument("scalar function already registered: " + name);
-    }
-    scalar_by_name_.emplace(name, scalars_.size());
+    // Repeating a name is not an error but an overload: the fixtures register
+    // `type_info` five times, one per argument type, and the engine picks by
+    // the call site's types. Each registration is advertised separately.
+    scalar_by_name_[fn->name()].push_back(scalars_.size());
     scalars_.push_back(std::move(fn));
 }
 

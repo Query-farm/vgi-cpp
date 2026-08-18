@@ -10,6 +10,7 @@
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
+#include "vgi/arguments.h"
 #include "vgi/types.h"
 
 namespace vgi {
@@ -18,12 +19,21 @@ namespace vgi {
 // values of any constant arguments.  A function that returns a fixed type can
 // ignore all of it.
 struct BindParams {
+    // The types of the columns the call site will ship. A function whose
+    // result type follows its input reads it here.
     std::shared_ptr<arrow::Schema> input_schema;
-    // One row: the constant arguments, in ArgSpec order.  Null when the
-    // function declares none.
-    std::shared_ptr<arrow::RecordBatch> constants;
+    // Argument values known at bind: every constant argument, and the declared
+    // type of every argument whether constant or not.
+    Arguments arguments;
     std::string catalog_name;
     std::string schema_name;
+
+    // The declared type of positional argument `index`, preferring the
+    // argument list and falling back to the input schema.
+    //
+    // Both are needed: a constant argument never appears in the input schema,
+    // and a column argument's field in the argument list may be a placeholder.
+    std::shared_ptr<arrow::DataType> input_type(size_t index) const;
 };
 
 // What a bind produced, handed back to every process() call for that
@@ -31,6 +41,7 @@ struct BindParams {
 // serve many batches without re-deciding its output shape.
 struct ProcessParams {
     std::shared_ptr<arrow::Schema> output_schema;
+    Arguments arguments;
     std::string catalog_name;
     std::string schema_name;
 };

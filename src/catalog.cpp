@@ -23,6 +23,16 @@ namespace {
 
 namespace gen = ::duckdb::vgi::generated;
 
+const char* stability_wire_value(Stability stability) {
+    switch (stability) {
+        case Stability::Volatile: return enums::stability::kVolatile;
+        case Stability::ConsistentWithinQuery:
+            return enums::stability::kConsistentWithinQuery;
+        case Stability::Consistent: break;
+    }
+    return enums::stability::kConsistent;
+}
+
 // Wrap a payload batch in the `{result: binary}` envelope every non-void
 // method answers with.  The engine unwraps it and validates the inner schema
 // against its own generated copy, so a drifted payload is caught there rather
@@ -134,10 +144,14 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
             .set_enum("function_type", enums::function_type::kScalar)
             .set_binary("arguments", wire::encode_schema(arguments))
             .set_binary("output_schema", wire::encode_schema(output))
-            .set_enum("stability", metadata.volatile_ ? enums::stability::kVolatile
-                                                      : enums::stability::kConsistent)
-            .set_enum("null_handling", enums::null_handling::kDefault)
+            .set_enum("stability", stability_wire_value(metadata.stability))
+            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
+                                           ? enums::null_handling::kSpecial
+                                           : enums::null_handling::kDefault)
             .set_string("description", metadata.description)
+            .set_examples("examples", metadata.examples)
+            .set_string_list("categories", metadata.categories)
+            .set_string_map("tags", metadata.tags)
             .set_enum("partition_kind", enums::partition_kind::kNotPartitioned)
             .set_enum("order_dependent", enums::order_dependence::kNotOrderDependent)
             .set_enum("distinct_dependent", enums::distinct_dependence::kNotDistinctDependent)

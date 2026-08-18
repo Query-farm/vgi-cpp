@@ -5,12 +5,19 @@
   "dependencies": [
     {
       "name": "arrow",
-      "default-features": false
+      "default-features": false,
+      "features": [
+        "compute"
+      ]
     },
     "nlohmann-json",
     {
       "name": "cpp-httplib",
-      "features": ["zstd", "zlib", "brotli"]
+      "features": [
+        "zstd",
+        "zlib",
+        "brotli"
+      ]
     },
     "catch2"
   ]

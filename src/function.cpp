@@ -26,6 +26,36 @@ ArgSpec ArgSpec::constant_arg(std::string name, int index, std::string type,
     return s;
 }
 
+ArgSpec& ArgSpec::with_varargs() {
+    varargs = true;
+    return *this;
+}
+
+ArgSpec ArgSpec::constant_typed(std::string name, int index,
+                                std::shared_ptr<arrow::DataType> type,
+                                std::string description) {
+    ArgSpec spec = constant_arg(std::move(name), index, "", std::move(description));
+    spec.arrow_type = std::move(type);
+    return spec;
+}
+
+ArgSpec ArgSpec::column_typed(std::string name, int index,
+                              std::shared_ptr<arrow::DataType> type,
+                              std::string description) {
+    ArgSpec spec = column(std::move(name), index, "", std::move(description));
+    spec.arrow_type = std::move(type);
+    return spec;
+}
+
+ArgSpec ArgSpec::any_column(std::string name, int index, std::string description) {
+    return column(std::move(name), index, "any", std::move(description));
+}
+
+ArgSpec& ArgSpec::with_bound(TypeBound bound) {
+    type_bound = std::move(bound);
+    return *this;
+}
+
 ArgSpec ArgSpec::named(std::string name, std::string type, std::string description) {
     ArgSpec s;
     s.name = std::move(name);
@@ -33,6 +63,19 @@ ArgSpec ArgSpec::named(std::string name, std::string type, std::string descripti
     s.description = std::move(description);
     s.required = false;
     return s;
+}
+
+std::shared_ptr<arrow::DataType> BindParams::input_type(size_t index) const {
+    if (auto type = arguments.positional_type(index)) {
+        // A polymorphic parameter is advertised as null and resolved by the
+        // engine to the call site's real type, which arrives in the input
+        // schema rather than here.
+        if (type->id() != arrow::Type::NA) return type;
+    }
+    if (input_schema && static_cast<int>(index) < input_schema->num_fields()) {
+        return input_schema->field(static_cast<int>(index))->type();
+    }
+    return nullptr;
 }
 
 std::shared_ptr<arrow::Schema> ScalarFunction::bind(const BindParams&) const {

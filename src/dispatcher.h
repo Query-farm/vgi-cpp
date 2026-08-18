@@ -71,16 +71,28 @@ private:
     static std::string encode_function_info(const ScalarFunction& fn,
                                             const std::string& schema_name);
 
-    const ScalarFunction* find_scalar(const std::string& name) const;
-    // Resolution failure is a user-visible error — the engine advertised this
-    // function from our own discovery answer, so being unable to find it now
-    // means the two disagree.
-    std::shared_ptr<ScalarFunction> require_scalar(const std::string& name) const;
+    // Every registration under `name`, in registration order.
+    //
+    // A name is not a key: `type_info` is registered five times, once per
+    // argument type, and the engine chooses between them at the call site.
+    // Resolution therefore happens at bind, against the types the engine
+    // resolved, not at lookup.
+    std::vector<std::shared_ptr<ScalarFunction>> scalars_named(const std::string& name) const;
+
+    // The overload of `name` that matches `params`, or a clear error.
+    //
+    // Failing here is a user-visible error: the engine advertised this
+    // function from our own discovery answer, so being unable to resolve it
+    // means the two disagree about what was advertised.
+    std::shared_ptr<ScalarFunction> resolve_scalar(const std::string& name,
+                                                   const BindParams& params) const;
+    static void check_type_bounds(const ScalarFunction& fn, const BindParams& params);
     BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
 
     CatalogModel catalog_;
     std::vector<std::shared_ptr<ScalarFunction>> scalars_;
-    std::unordered_map<std::string, size_t> scalar_by_name_;
+    // name -> indices into scalars_, in registration order.
+    std::unordered_map<std::string, std::vector<size_t>> scalar_by_name_;
 };
 
 }  // namespace vgi

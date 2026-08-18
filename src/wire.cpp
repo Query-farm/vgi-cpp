@@ -9,6 +9,7 @@
 #include <arrow/array.h>
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_nested.h>
+#include <arrow/array/builder_base.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/array/builder_dict.h>
 #include <arrow/io/memory.h>
@@ -239,6 +240,51 @@ ResultBuilder& ResultBuilder::set_binary_list(const std::string& field,
     }
     arrays_[static_cast<size_t>(field_index(field))] =
         unwrap(b.Finish(), "finishing list result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_string_list(const std::string& field,
+                                              const std::vector<std::string>& values) {
+    auto values_builder = std::make_shared<arrow::StringBuilder>();
+    arrow::ListBuilder b(arrow::default_memory_pool(), values_builder);
+    check_ok(b.Append(), "opening list result field '" + field + "'");
+    for (const auto& v : values) {
+        check_ok(values_builder->Append(v), "appending to list result field '" + field + "'");
+    }
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(b.Finish(), "finishing list result field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_examples(const std::string& field,
+                                           const std::vector<FunctionExample>& examples) {
+    const int index = field_index(field);
+    // Build against the schema's own struct type rather than a locally
+    // declared one: field order and nullability are the generator's to decide.
+    const auto& list_type = schema_->field(index)->type();
+    std::unique_ptr<arrow::ArrayBuilder> raw;
+    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), list_type, &raw),
+             "building examples field '" + field + "'");
+    auto* list = dynamic_cast<arrow::ListBuilder*>(raw.get());
+    if (!list) fail("result field '" + field + "' is not a list");
+    auto* entry = dynamic_cast<arrow::StructBuilder*>(list->value_builder());
+    if (!entry) fail("result field '" + field + "' is not a list of structs");
+
+    check_ok(list->Append(), "opening examples field '" + field + "'");
+    for (const auto& example : examples) {
+        check_ok(entry->Append(), "opening an example struct");
+        auto* sql = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(0));
+        auto* description = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(1));
+        auto* expected = dynamic_cast<arrow::StringBuilder*>(entry->field_builder(2));
+        if (!sql || !description || !expected) fail("unexpected example struct layout");
+        check_ok(sql->Append(example.sql), "appending example sql");
+        check_ok(description->Append(example.description), "appending example description");
+        check_ok(example.expected_output ? expected->Append(*example.expected_output)
+                                         : expected->AppendNull(),
+                 "appending example expected_output");
+    }
+    arrays_[static_cast<size_t>(index)] =
+        unwrap(list->Finish(), "finishing examples field '" + field + "'");
     return *this;
 }
 

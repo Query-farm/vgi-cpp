@@ -32,6 +32,8 @@
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
+#include "vgi/types.h"
+
 namespace vgi::wire {
 
 // ── Reading params ────────────────────────────────────────────────────────
@@ -121,6 +123,11 @@ public:
                                    const std::vector<std::string>& values);
     // A map<utf8, utf8> column.  Arrow spells map entries key/value (not
     // keys/values), which is what the canonical Python protocol emits.
+    ResultBuilder& set_string_list(const std::string& field,
+                                   const std::vector<std::string>& values);
+    // The `examples` column: a list of {sql, description, expected_output}.
+    ResultBuilder& set_examples(const std::string& field,
+                                const std::vector<FunctionExample>& examples);
     ResultBuilder& set_string_map(
         const std::string& field,
         const std::vector<std::pair<std::string, std::string>>& entries);
