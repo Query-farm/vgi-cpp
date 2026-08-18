@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <arrow/array.h>
+#include <arrow/array/util.h>
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/buffer_builder.h>
@@ -354,6 +355,15 @@ std::shared_ptr<arrow::DataType> unnest_result_type(
 
 std::shared_ptr<arrow::Array> take_indices(const std::shared_ptr<arrow::Array>& values,
                                            const std::shared_ptr<arrow::Array>& indices) {
+    // Short-circuited rather than handed to `Take`: gathering nothing walks
+    // into Arrow's gather kernel with a zero-length source and index, whose
+    // data pointers are null, and it asserts on them. Release builds compile
+    // the assert out; a debug or sanitizer build aborts the worker.
+    if (indices->length() == 0) {
+        auto empty = arrow::MakeArrayOfNull(values->type(), 0);
+        if (!empty.ok()) tensor_error("gather failed: " + empty.status().ToString());
+        return empty.MoveValueUnsafe();
+    }
     auto taken = arrow::compute::Take(*values, *indices);
     if (!taken.ok()) tensor_error("gather failed: " + taken.status().ToString());
     return taken.MoveValueUnsafe();
