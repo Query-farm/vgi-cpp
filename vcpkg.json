@@ -16,7 +16,8 @@
       "features": [
         "zstd",
         "zlib",
-        "brotli"
+        "brotli",
+        "openssl"
       ]
     },
     "catch2"
