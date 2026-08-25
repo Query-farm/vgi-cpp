@@ -1,6 +1,7 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include "vgi/arguments.h"
 
+#include <algorithm>
 #include <charconv>
 
 #include <arrow/compute/cast.h>

@@ -341,7 +341,7 @@ private:
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
             const auto name = entry.path().filename().string();
-            highest = std::max(highest, std::strtoll(name.c_str(), nullptr, 10));
+            highest = std::max(highest, static_cast<int64_t>(std::strtoll(name.c_str(), nullptr, 10)));
         }
         return highest;
     }

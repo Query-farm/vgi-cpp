@@ -3,6 +3,7 @@
 #include "split_token.h"
 
 #include <cstring>
+#include <stdexcept>
 
 #include <vgi_rpc/crypto.h>
 
