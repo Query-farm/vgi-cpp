@@ -41,8 +41,11 @@ one binary is routed into several catalogs by wrapper scripts and the
 
 ## Protocol code is generated, not written
 
-The Arrow schemas, constants and protocol version in `src/generated/` come
-from generators in `vgi-python`. **Never hand-edit them.** Regenerate with:
+The Arrow schemas, constants and protocol version in `include/vgi/generated/`
+come from generators in `vgi-python`. **Never hand-edit them.** They are
+public headers (part of the `vgi::vgi` target's install interface): a client
+SDK links against them to build requests and parse responses without
+depending on any worker-side symbol — see `vgi-sqlite`. Regenerate with:
 
 ```bash
 scripts/regenerate_protocol.sh
@@ -67,7 +70,10 @@ Two things to know:
 requests — a worker parses requests and builds responses — and it
 `#include`s a DuckDB header this repo does not have, so it could never have
 compiled. It was dropped. Read it in `~/Development/vgi` if you need it as
-reference for field layout.
+reference for field layout. `~/Development/vgi-sqlite` (a client SDK, built
+against `vgi::vgi` for these same schemas) generates its own copy directly
+from `vgi-python` rather than vendoring one from here — see its
+`scripts/regenerate_protocol.sh`.
 
 ## The protocol surface
 
@@ -120,8 +126,8 @@ clang-format, Google style with 4-space indent and a 100-column limit — the
 two deviations this codebase already had by hand. The script pins the major
 version, because clang-format's output changes between releases and two
 contributors on different versions reformat each other's files on every
-commit. `src/generated/` is excluded; formatting it only guarantees the next
-regeneration produces a diff.
+commit. `include/vgi/generated/` is excluded; formatting it only guarantees
+the next regeneration produces a diff.
 
 ## Testing philosophy
 

@@ -38,7 +38,7 @@ CF="$(find_clang_format)" || {
 # definition, and formatting them only guarantees the next regeneration
 # produces a diff.
 mapfile -t FILES < <(cd "$ROOT" && git ls-files '*.cpp' '*.h' '*.hpp' \
-  | grep -v '^src/generated/' | grep -v '^vcpkg/')
+  | grep -v '^include/vgi/generated/' | grep -v '^vcpkg/')
 
 if [[ "${1:-}" == "--check" ]]; then
   failed=0

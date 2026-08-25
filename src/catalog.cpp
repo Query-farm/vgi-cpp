@@ -25,7 +25,7 @@
 #include "arg_schema.h"
 #include "dispatcher.h"
 #include "enums.h"
-#include "generated/vgi_protocol_schemas.hpp"
+#include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "methods.h"
 #include "wire.h"
 

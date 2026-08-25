@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Regenerate the protocol headers under src/generated/ from vgi-python.
+# Regenerate the protocol headers under include/vgi/generated/ from vgi-python.
+#
+# These headers are public (installed with the rest of include/vgi/): a
+# client SDK (e.g. vgi-sqlite) links vgi::vgi purely to get at these request
+# and result schemas, without needing any worker-side symbol.
 #
 # The headers are generated into `vgi::generated`, not the `duckdb::vgi::
 # generated` the generators default to: VGI is a wire protocol, not a DuckDB
@@ -21,9 +25,9 @@ NS="${VGI_CPP_NAMESPACE:-vgi::generated}"
 
 run() { (cd "$VGI_PYTHON" && uv run --project . python -m "$1" --namespace "$NS"); }
 
-run vgi.codegen.cpp_schemas          > "$ROOT/src/generated/vgi_protocol_schemas.hpp"
-run vgi.codegen.cpp_constants        > "$ROOT/src/generated/vgi_protocol_constants.hpp"
-run vgi.codegen.cpp_protocol_version > "$ROOT/src/generated/vgi_protocol_version.hpp"
+run vgi.codegen.cpp_schemas          > "$ROOT/include/vgi/generated/vgi_protocol_schemas.hpp"
+run vgi.codegen.cpp_constants        > "$ROOT/include/vgi/generated/vgi_protocol_constants.hpp"
+run vgi.codegen.cpp_protocol_version > "$ROOT/include/vgi/generated/vgi_protocol_version.hpp"
 
 # Rewrite the provenance banner. Two reasons, both real:
 #
@@ -36,7 +40,7 @@ run vgi.codegen.cpp_protocol_version > "$ROOT/src/generated/vgi_protocol_version
 #     (-Wcomment) and swallows the next line. Clang does not, so it only shows
 #     up on the Linux CI legs.
 for f in vgi_protocol_schemas.hpp vgi_protocol_constants.hpp vgi_protocol_version.hpp; do
-    python3 - "$ROOT/src/generated/$f" <<'PY'
+    python3 - "$ROOT/include/vgi/generated/$f" <<'PY'
 import re, sys
 p = sys.argv[1]
 src = open(p).read()
@@ -47,4 +51,4 @@ PY
 done
 
 echo "regenerated into namespace $NS"
-grep -h "VGI_PROTOCOL_VERSION = " "$ROOT/src/generated/vgi_protocol_version.hpp"
+grep -h "VGI_PROTOCOL_VERSION = " "$ROOT/include/vgi/generated/vgi_protocol_version.hpp"

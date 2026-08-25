@@ -11,7 +11,7 @@
 #include <vgi_rpc/server.h>
 
 #include "dispatcher.h"
-#include "generated/vgi_protocol_version.hpp"
+#include "vgi/generated/vgi_protocol_version.hpp"
 
 namespace vgi {
 

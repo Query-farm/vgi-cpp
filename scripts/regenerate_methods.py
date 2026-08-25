@@ -10,8 +10,9 @@ as a schema mismatch deep in dispatch:
   * `~/Development/vgi-python/vgi/protocol.py` — the `VgiProtocol` class, which
     is the protocol's definition. Its return annotation decides how a method
     answers (void / result / bytes / stream).
-  * `src/generated/vgi_protocol_schemas.hpp` — the params and result schemas,
-    themselves generated from the same Protocol by `vgi.codegen.cpp_schemas`.
+  * `include/vgi/generated/vgi_protocol_schemas.hpp` — the params and result
+    schemas, themselves generated from the same Protocol by
+    `vgi.codegen.cpp_schemas`.
 
 Run after regenerating the headers:
 
@@ -29,7 +30,7 @@ VGI_PYTHON = pathlib.Path.home() / "Development" / "vgi-python"
 
 
 def main() -> None:
-    header = (ROOT / "src/generated/vgi_protocol_schemas.hpp").read_text()
+    header = (ROOT / "include/vgi/generated/vgi_protocol_schemas.hpp").read_text()
     entries = re.findall(
         r"// Origin: method '([a-z_]+)' (params|result)\n"
         r"inline const std::shared_ptr<arrow::Schema> &(\w+)\(\)",
@@ -72,7 +73,7 @@ def main() -> None:
         "",
         "#include <stdexcept>",
         "",
-        '#include "generated/vgi_protocol_schemas.hpp"',
+        '#include "vgi/generated/vgi_protocol_schemas.hpp"',
         "",
         "namespace vgi {",
         "namespace {",

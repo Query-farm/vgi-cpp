@@ -8,7 +8,7 @@
 
 #include <stdexcept>
 
-#include "generated/vgi_protocol_schemas.hpp"
+#include "vgi/generated/vgi_protocol_schemas.hpp"
 
 namespace vgi {
 namespace {
