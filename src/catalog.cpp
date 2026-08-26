@@ -1227,7 +1227,7 @@ Dispatcher::Attachment Dispatcher::attachment_of(
     attachment.alias = fields[2];
     attachment.id = fields[3];
     if (!fields[4].empty()) {
-        attachment.options = wire::decode_ipc(arrow::util::base64_decode(fields[4]).ValueOrDie());
+        attachment.options = wire::decode_ipc(arrow::util::base64_decode(fields[4]));
     }
     return attachment;
 }
