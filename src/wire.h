@@ -112,6 +112,26 @@ std::string encode_schema(const std::shared_ptr<arrow::Schema>& schema);
 // null for empty input, which is how an absent optional schema travels.
 std::shared_ptr<arrow::Schema> decode_schema(const std::string& bytes);
 
+// arrow::util::base64_decode(std::string_view), unwrapped to a plain
+// std::string regardless of which Arrow version this build resolves.
+//
+// Its return type has flipped between a plain std::string and an
+// arrow::Result<std::string> across Arrow releases (confirmed both ways in
+// practice, not just in changelogs: a from-scratch macOS/vcpkg build
+// resolved Arrow 23.0.1, plain string; the same day's from-scratch
+// Linux/vcpkg build on a different machine resolved Arrow 25.0.1,
+// Result-wrapped) — and this repo's vcpkg.json has no builtin-baseline
+// pin, so which one a fresh `vcpkg install` resolves isn't even
+// consistent across builds of the SAME commit, let alone across Arrow
+// releases in a single direction. Two prior fixes each hardcoded one
+// specific signature and broke the other environment (see git history on
+// the two call sites this replaces) - this wrapper is written to compile
+// against either at once (SFINAE via `if constexpr` in a real template,
+// not a plain function - a non-template `if constexpr` still requires
+// both branches to type-check), so it doesn't matter which one vcpkg
+// hands this build.
+std::string base64_decode(const std::string& s);
+
 // Read a schema-valued parameter: the named binary column, decoded.
 std::shared_ptr<arrow::Schema> get_schema(const std::shared_ptr<arrow::RecordBatch>& batch,
                                           const std::string& field);

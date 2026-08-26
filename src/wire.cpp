@@ -3,6 +3,8 @@
 
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 #include <arrow/array.h>
 #include <arrow/array/builder_binary.h>
@@ -15,6 +17,7 @@
 #include <arrow/ipc/writer.h>
 #include <arrow/result.h>
 #include <arrow/status.h>
+#include <arrow/util/base64.h>
 
 namespace vgi::wire {
 namespace {
@@ -315,6 +318,27 @@ std::shared_ptr<arrow::Schema> get_schema(const std::shared_ptr<arrow::RecordBat
     if (!bytes) return nullptr;
     return decode_schema(*bytes);
 }
+
+namespace {
+// A real template (not just an `if constexpr` inside a plain function) is
+// required for this to actually compile against either
+// arrow::util::base64_decode signature - see base64_decode's own comment
+// in wire.h. In a non-template function, `if constexpr`'s discarded
+// branch still has to type-check (it's the whole ARGUMENT that's
+// dependent, not the condition, that lets the compiler skip checking the
+// untaken branch); here, T is genuinely deduced per call, so only the
+// branch matching T's actual type is ever instantiated.
+template <typename T>
+std::string unwrap_base64(T&& value) {
+    if constexpr (std::is_same_v<std::decay_t<T>, std::string>) {
+        return std::forward<T>(value);
+    } else {
+        return std::forward<T>(value).ValueOrDie();
+    }
+}
+}  // namespace
+
+std::string base64_decode(const std::string& s) { return unwrap_base64(arrow::util::base64_decode(s)); }
 
 std::string encode_schema(const std::shared_ptr<arrow::Schema>& schema) {
     auto sink = unwrap(arrow::io::BufferOutputStream::Create(), "allocating a schema sink");

@@ -323,7 +323,7 @@ public:
         // to the static predicates rather than keep stale dynamic ones.
         dynamic_filters_.reset();
         if (auto encoded = metadata_value(input.custom_metadata, keys::kDynamicFilters)) {
-            auto decoded = arrow::util::base64_decode(*encoded);
+            auto decoded = wire::base64_decode(*encoded);
             dynamic_filters_ = PushdownFilters::parse(decoded);
             if (producer_) producer_->on_dynamic_filters(*dynamic_filters_);
         }
