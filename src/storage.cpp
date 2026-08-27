@@ -12,12 +12,11 @@
 #include <sstream>
 #include <system_error>
 
-#include <fcntl.h>
-#include <unistd.h>
-
 #include <cerrno>
 #include <stdexcept>
 #include <cstring>
+
+#include "portable.h"
 
 namespace vgi {
 namespace {
@@ -52,7 +51,8 @@ std::string read_file(const fs::path& path) {
 // silently and the rename then installs a truncated value over a good one,
 // which is indistinguishable from a legitimately empty value at every reader.
 void write_file_atomically(const fs::path& path, const std::string& value) {
-    const auto temporary = fs::path(path.string() + ".tmp." + std::to_string(::getpid()));
+    const auto temporary =
+        fs::path(path.string() + ".tmp." + std::to_string(vgi::portable::current_process_id()));
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out.write(value.data(), static_cast<std::streamsize>(value.size()));
@@ -74,8 +74,7 @@ void write_file_atomically(const fs::path& path, const std::string& value) {
 class FilesystemStorage : public FunctionStorage {
 public:
     FilesystemStorage() {
-        base_ = fs::temp_directory_path() /
-                ("vgi-cpp-worker-" + std::to_string(static_cast<long>(::getuid())));
+        base_ = fs::temp_directory_path() / ("vgi-cpp-worker-" + vgi::portable::current_user_tag());
         std::error_code ec;
         fs::create_directories(base_, ec);
         // 0700: buffered state can hold query data, and $TMPDIR may be shared.
@@ -191,8 +190,8 @@ public:
                 // Claim by renaming: exactly one racing popper's rename
                 // succeeds, which is what makes this safe across processes
                 // without a lock.
-                const auto claimed =
-                    fs::path(path.string() + ".claimed." + std::to_string(::getpid()));
+                const auto claimed = fs::path(
+                    path.string() + ".claimed." + std::to_string(vgi::portable::current_process_id()));
                 fs::rename(path, claimed, ec);
                 if (ec) {
                     ec.clear();
@@ -296,13 +295,9 @@ private:
         const int64_t limit = from + kMaxClaimAttempts;
         for (int64_t id = from; id < limit; ++id) {
             const auto reservation = dir / (pad(id) + ".claim");
-            const int fd = ::open(reservation.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-            if (fd < 0) {
-                if (errno == EEXIST) continue;  // another worker took this id
-                throw std::runtime_error("vgi storage: cannot claim " + reservation.string() +
-                                         ": " + std::strerror(errno));
+            if (!vgi::portable::TryClaimFile(reservation.string(), "vgi storage")) {
+                continue;  // another worker took this id
             }
-            ::close(fd);
             write_file_atomically(dir / (pad(id) + ".entry"), value);
             // Dropped once the payload is there, so the marker means exactly
             // one thing to a reader: this id is reserved and its entry has not

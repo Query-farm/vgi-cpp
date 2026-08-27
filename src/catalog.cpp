@@ -16,8 +16,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
-#include <unistd.h>
 #include <tuple>
+
+#include "portable.h"
 
 #include <arrow/array/util.h>
 #include <arrow/compute/api.h>
@@ -528,7 +529,7 @@ vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
     // transactions that collided on an id would read each other's state
     // through the shared store.
     static std::atomic<uint64_t> counter{0};
-    const auto id = std::to_string(static_cast<uint64_t>(::getpid())) + '-' +
+    const auto id = std::to_string(static_cast<uint64_t>(vgi::portable::current_process_id())) + '-' +
                     std::to_string(counter.fetch_add(1)) + '-' +
                     std::to_string(static_cast<uint64_t>(
                         std::chrono::steady_clock::now().time_since_epoch().count()));

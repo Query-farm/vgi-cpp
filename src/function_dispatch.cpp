@@ -13,11 +13,12 @@
 #include <regex>
 #include <sstream>
 
-#include <unistd.h>
 #include <stdexcept>
 
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
+
+#include "portable.h"
 #include <arrow/record_batch.h>
 #include <nlohmann/json.hpp>
 #include <arrow/array/util.h>
@@ -75,7 +76,7 @@ std::string next_execution_id() {
         const auto now = std::chrono::steady_clock::now().time_since_epoch();
         const auto wall = std::chrono::system_clock::now().time_since_epoch();
         std::ostringstream out;
-        out << std::hex << static_cast<long>(::getpid()) << '-'
+        out << std::hex << static_cast<long>(vgi::portable::current_process_id()) << '-'
             << std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count() << '-'
             << std::chrono::duration_cast<std::chrono::nanoseconds>(now).count() << '-';
         return out.str();
