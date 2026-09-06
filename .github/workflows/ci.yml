@@ -62,7 +62,7 @@ jobs:
       - name: Clone and bootstrap vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg.git
-          git -C vcpkg checkout 05442024c3fda64320bd25d2251cc9807b84fb6f
+          git -C vcpkg checkout 2d32fae67c755b665794a0650f5d268979d7807f
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
           echo "VCPKG_ROOT=$(pwd)/vcpkg" >> $GITHUB_ENV
 
