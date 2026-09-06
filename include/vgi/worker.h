@@ -22,7 +22,9 @@ class Dispatcher;
 //
 // `run()` parses argv and serves until the engine disconnects — stdio by
 // default, `--unix <path>` for the pooled launcher, `--http` for a standalone
-// server.  It does not return.
+// server, or `--iroh-raw-upstream <port> --iroh-issuer <namespace>` behind
+// `vgi-iroh-bridge`. `--http --iroh-issuer ...` enables the same trusted
+// bridge identity boundary for HTTP-over-Iroh. It does not return.
 class Worker {
 public:
     Worker();
