@@ -529,8 +529,8 @@ vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
     // transactions that collided on an id would read each other's state
     // through the shared store.
     static std::atomic<uint64_t> counter{0};
-    const auto id = std::to_string(static_cast<uint64_t>(vgi::portable::current_process_id())) + '-' +
-                    std::to_string(counter.fetch_add(1)) + '-' +
+    const auto id = std::to_string(static_cast<uint64_t>(vgi::portable::current_process_id())) +
+                    '-' + std::to_string(counter.fetch_add(1)) + '-' +
                     std::to_string(static_cast<uint64_t>(
                         std::chrono::steady_clock::now().time_since_epoch().count()));
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_transaction_begin"))

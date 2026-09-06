@@ -43,12 +43,12 @@ std::string current_user_tag() {
 bool TryClaimFile(const std::string& path, const std::string& context) {
 #if defined(_WIN32)
     HANDLE h = ::CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD err = ::GetLastError();
         if (err == ERROR_FILE_EXISTS) return false;
         throw std::runtime_error(context + ": cannot claim " + path + ": Windows error " +
-                                  std::to_string(err));
+                                 std::to_string(err));
     }
     ::CloseHandle(h);
     return true;
