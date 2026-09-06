@@ -8,6 +8,9 @@
 #include <vector>
 
 #include <arrow/compute/initialize.h>
+#include <vgi_rpc/http_config.h>
+#include <vgi_rpc/identity.h>
+#include <vgi_rpc/iroh_identity.h>
 #include <vgi_rpc/server.h>
 
 #include "dispatcher.h"
@@ -19,6 +22,31 @@ namespace {
 // The generated headers carry the namespace of their original consumer, the
 // DuckDB extension.  Alias rather than post-process generated output.
 namespace gen = ::vgi::generated;
+
+std::pair<std::string, int> parse_tcp_bind(const std::string& value,
+                                           const char* flag) {
+    std::string host = "127.0.0.1";
+    std::string port_text = value;
+    const auto split = value.rfind(':');
+    if (split != std::string::npos) {
+        host = value.substr(0, split);
+        port_text = value.substr(split + 1);
+        if (host.empty()) host = "127.0.0.1";
+        if (host.size() >= 2 && host.front() == '[' && host.back() == ']') {
+            host = host.substr(1, host.size() - 2);
+        }
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(port_text.c_str(), &end, 10);
+    if (end == port_text.c_str() || *end != '\0' || parsed < 0 || parsed > 65535) {
+        throw std::invalid_argument(std::string(flag) + " needs [HOST:]PORT in 0..65535");
+    }
+    return {host, static_cast<int>(parsed)};
+}
+
+bool is_loopback_bind(const std::string& host) {
+    return host == "127.0.0.1" || host == "::1" || host == "localhost";
+}
 }  // namespace
 
 Worker::Worker() : disp_(std::make_unique<Dispatcher>()) {}
@@ -132,6 +160,45 @@ void Worker::run(int argc, char** argv) {
         std::fprintf(stderr, "vgi worker: %s\n", message.c_str());
         std::exit(2);
     };
+    std::string iroh_upstream;
+    std::string iroh_issuer;
+    std::vector<std::string> iroh_trusted_proxies;
+    bool iroh_observe = false;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--iroh-raw-upstream") {
+            if (i + 1 >= args.size()) refuse("--iroh-raw-upstream needs [HOST:]PORT");
+            iroh_upstream = args[++i];
+        } else if (args[i] == "--iroh-issuer") {
+            if (i + 1 >= args.size()) refuse("--iroh-issuer needs a value");
+            iroh_issuer = args[++i];
+        } else if (args[i] == "--iroh-trusted-proxy") {
+            if (i + 1 >= args.size()) refuse("--iroh-trusted-proxy needs an exact IP address");
+            iroh_trusted_proxies.push_back(args[++i]);
+        } else if (args[i] == "--iroh-observe") {
+            iroh_observe = true;
+        }
+    }
+    if (!iroh_upstream.empty()) {
+        if (iroh_issuer.empty()) refuse("--iroh-raw-upstream requires --iroh-issuer");
+        if (iroh_trusted_proxies.empty()) iroh_trusted_proxies.push_back("127.0.0.1");
+        try {
+            const auto [host, port] = parse_tcp_bind(iroh_upstream, "--iroh-raw-upstream");
+            if (!is_loopback_bind(host)) {
+                refuse("--iroh-raw-upstream must bind loopback; expose only the Iroh bridge");
+            }
+            vgi_rpc::TcpServerOptions options;
+            options.proxy_protocol_v2_required = true;
+            options.trusted_proxy_addresses = std::move(iroh_trusted_proxies);
+            options.iroh_proxy_issuer = std::move(iroh_issuer);
+            options.peer_authentication_policy = iroh_observe
+                                                     ? vgi_rpc::observe_peer_identity
+                                                     : vgi_rpc::peer_identity_primary("iroh");
+            server->serve_tcp(host, port, options);
+        } catch (const std::exception& error) {
+            refuse(error.what());
+        }
+        std::exit(0);
+    }
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--unix") {
             if (i + 1 >= args.size()) refuse("--unix needs a socket path");
@@ -149,7 +216,21 @@ void Worker::run(int argc, char** argv) {
                 }
                 port = static_cast<int>(parsed);
             }
-            server->serve_http("127.0.0.1", port);
+            if (iroh_issuer.empty()) {
+                server->serve_http("127.0.0.1", port);
+            } else {
+                if (iroh_trusted_proxies.empty()) iroh_trusted_proxies.push_back("127.0.0.1");
+                vgi_rpc::HttpConfig config;
+                config.host = "127.0.0.1";
+                config.port = port;
+                config.peer_identity_providers.push_back(
+                    vgi_rpc::iroh_forwarded_header_provider(
+                        {std::move(iroh_issuer), std::move(iroh_trusted_proxies)}));
+                config.peer_authentication_policy = iroh_observe
+                                                        ? vgi_rpc::observe_peer_identity
+                                                        : vgi_rpc::peer_identity_primary("iroh");
+                server->serve_http(config);
+            }
             std::exit(0);
         }
     }
