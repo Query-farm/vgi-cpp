@@ -190,8 +190,8 @@ public:
                 // Claim by renaming: exactly one racing popper's rename
                 // succeeds, which is what makes this safe across processes
                 // without a lock.
-                const auto claimed = fs::path(
-                    path.string() + ".claimed." + std::to_string(vgi::portable::current_process_id()));
+                const auto claimed = fs::path(path.string() + ".claimed." +
+                                              std::to_string(vgi::portable::current_process_id()));
                 fs::rename(path, claimed, ec);
                 if (ec) {
                     ec.clear();
@@ -336,7 +336,8 @@ private:
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
             const auto name = entry.path().filename().string();
-            highest = std::max(highest, static_cast<int64_t>(std::strtoll(name.c_str(), nullptr, 10)));
+            highest =
+                std::max(highest, static_cast<int64_t>(std::strtoll(name.c_str(), nullptr, 10)));
         }
         return highest;
     }

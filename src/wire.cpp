@@ -338,7 +338,9 @@ std::string unwrap_base64(T&& value) {
 }
 }  // namespace
 
-std::string base64_decode(const std::string& s) { return unwrap_base64(arrow::util::base64_decode(s)); }
+std::string base64_decode(const std::string& s) {
+    return unwrap_base64(arrow::util::base64_decode(s));
+}
 
 std::string encode_schema(const std::shared_ptr<arrow::Schema>& schema) {
     auto sink = unwrap(arrow::io::BufferOutputStream::Create(), "allocating a schema sink");
