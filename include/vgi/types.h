@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <arrow/type.h>
+#include <arrow/record_batch.h>
 
 namespace vgi {
 
@@ -184,6 +185,10 @@ struct FunctionMetadata {
     std::vector<std::pair<std::string, std::string>> tags;
     std::vector<FunctionExample> examples;
     std::vector<std::string> categories;
+    // Authoritative typed defaults: one row and only defaulted parameters, in
+    // signature order. A present null cell is an explicit NULL default.
+    // vgi_default field metadata remains a legacy discovery aid.
+    std::shared_ptr<arrow::RecordBatch> parameter_default_values;
     Stability stability = Stability::Consistent;
     NullHandling null_handling = NullHandling::Default;
     // Secrets this function needs resolved before it runs.

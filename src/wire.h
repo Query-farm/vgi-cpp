@@ -82,6 +82,11 @@ std::vector<int64_t> get_int64_list(const std::shared_ptr<arrow::RecordBatch>& b
 std::vector<std::string> get_string_list(const std::shared_ptr<arrow::RecordBatch>& batch,
                                          const std::string& field);
 
+// A nullable `list<nullable string>` parameter. A missing/null outer value is
+// nullopt; null list elements are preserved.
+std::optional<std::vector<std::optional<std::string>>> get_optional_string_list(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field);
+
 // A schema path. Missing/null/empty preserves the historic default of `main`
 // for optional function-call fields.
 SchemaPath get_schema_path(const std::shared_ptr<arrow::RecordBatch>& batch,

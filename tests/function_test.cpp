@@ -1,6 +1,7 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include <catch2/catch_test_macros.hpp>
 
+#include <arrow/builder.h>
 #include <arrow/type.h>
 
 #include "vgi/function.h"
@@ -89,6 +90,12 @@ TEST_CASE("protocol v2 named schemas use path lists", "[protocol]") {
     REQUIRE(capabilities->GetFieldByName("catalogs")->type()->id() == arrow::Type::LIST);
     REQUIRE(capabilities->GetFieldByName("can_stream")->type()->id() == arrow::Type::BOOL);
     REQUIRE(capabilities->GetFieldByName("filter_encodings")->type()->id() == arrow::Type::LIST);
+
+    const auto function_info = vgi::generated::FunctionInfoSchema();
+    REQUIRE(function_info->GetFieldByName("parameter_default_values")->nullable());
+    REQUIRE(vgi::generated::BindRequestSchema()->GetFieldByName("argument_names")->nullable());
+    REQUIRE(
+        vgi::generated::AggregateBindRequestSchema()->GetFieldByName("argument_names")->nullable());
 }
 
 TEST_CASE("wire schema paths round trip every component", "[wire]") {
@@ -98,4 +105,25 @@ TEST_CASE("wire schema paths round trip every component", "[wire]") {
     const auto batch =
         vgi::wire::ResultBuilder(schema).set_string_list("schema_path", nested).finish();
     REQUIRE(vgi::wire::get_schema_path(batch) == nested);
+}
+
+TEST_CASE("wire argument names preserve unnamed varargs", "[wire]") {
+    auto values = std::make_shared<arrow::StringBuilder>();
+    arrow::ListBuilder builder(arrow::default_memory_pool(), values);
+    REQUIRE(builder.Append().ok());
+    REQUIRE(values->Append("left").ok());
+    REQUIRE(values->AppendNull().ok());
+    REQUIRE(values->Append("scale").ok());
+    std::shared_ptr<arrow::Array> names;
+    REQUIRE(builder.Finish(&names).ok());
+
+    const auto schema = arrow::schema(
+        {arrow::field("argument_names", arrow::list(arrow::utf8()), /*nullable=*/true)});
+    const auto batch = arrow::RecordBatch::Make(schema, 1, {names});
+    const auto decoded = vgi::wire::get_optional_string_list(batch, "argument_names");
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->size() == 3);
+    REQUIRE(decoded->at(0) == "left");
+    REQUIRE_FALSE(decoded->at(1).has_value());
+    REQUIRE(decoded->at(2) == "scale");
 }
