@@ -336,7 +336,7 @@ std::vector<std::string> Dispatcher::encode_secret_types(const CatalogModel& mod
 }
 
 const CatalogSchema* Dispatcher::schema_for(const vgi_rpc::Request& request,
-                                            const std::string& name) const {
+                                            const SchemaPath& path) const {
     const auto attachment = attachment_of(request);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
@@ -347,12 +347,12 @@ const CatalogSchema* Dispatcher::schema_for(const vgi_rpc::Request& request,
         const auto version = model->version_schemas.find(attachment.data_version);
         if (version != model->version_schemas.end()) {
             for (const auto& schema : version->second) {
-                if (schema.name == name) return &schema;
+                if (schema.path == path) return &schema;
             }
             return nullptr;
         }
     }
-    return model->find_schema(name);
+    return model->find_schema(path);
 }
 
 std::vector<std::string> Dispatcher::encode_global_functions(const CatalogModel& model) const {
@@ -362,33 +362,33 @@ std::vector<std::string> Dispatcher::encode_global_functions(const CatalogModel&
     std::vector<std::string> items;
     items.reserve(model.global_functions.size());
     for (const auto& name : model.global_functions) {
-        if (auto fn = find_buffering(name, {model.name, "main"})) {
-            items.push_back(encode_buffering_info(*fn, "main"));
+        if (auto fn = find_buffering(name, {model.name, SchemaPath{"main"}})) {
+            items.push_back(encode_buffering_info(*fn, SchemaPath{"main"}));
             continue;
         }
-        if (auto transform = find_table_in_out(name, {model.name, "main"})) {
-            items.push_back(encode_table_in_out_info(*transform, "main"));
+        if (auto transform = find_table_in_out(name, {model.name, SchemaPath{"main"}})) {
+            items.push_back(encode_table_in_out_info(*transform, SchemaPath{"main"}));
             continue;
         }
-        if (auto table = find_table(name, {model.name, "main"})) {
-            items.push_back(encode_table_function_info(*table, "main"));
+        if (auto table = find_table(name, {model.name, SchemaPath{"main"}})) {
+            items.push_back(encode_table_function_info(*table, SchemaPath{"main"}));
             continue;
         }
-        const auto aggregates = aggregates_in_schema({model.name, "main"});
+        const auto aggregates = aggregates_in_schema({model.name, SchemaPath{"main"}});
         const auto aggregate = std::find_if(aggregates.begin(), aggregates.end(),
                                             [&](const auto& fn) { return fn->name() == name; });
         if (aggregate != aggregates.end()) {
-            items.push_back(encode_aggregate_info(**aggregate, "main"));
+            items.push_back(encode_aggregate_info(**aggregate, SchemaPath{"main"}));
             continue;
         }
         // An overload set publishes under one name, so the first registration
         // is the one the engine is told about.
-        const auto scalars = scalars_named(name, {model.name, "main"});
+        const auto scalars = scalars_named(name, {model.name, SchemaPath{"main"}});
         if (scalars.empty()) {
             throw std::invalid_argument("catalog publishes '" + name +
                                         "' globally but no function of that name is registered");
         }
-        items.push_back(encode_function_info(*scalars.front(), "main"));
+        items.push_back(encode_function_info(*scalars.front(), SchemaPath{"main"}));
     }
     return items;
 }
@@ -722,23 +722,17 @@ std::vector<std::vector<int32_t>> reseat(const std::vector<std::vector<int32_t>>
 // table because the wire allows a cross-schema reference, even though every
 // fixture here stays inside one.
 std::vector<std::string> encode_foreign_keys(const CatalogTable& table,
-                                             const std::string& schema_name) {
-    static const auto schema = arrow::schema({
-        arrow::field("fk_columns", arrow::list(arrow::utf8()), /*nullable=*/true),
-        arrow::field("pk_columns", arrow::list(arrow::utf8()), /*nullable=*/true),
-        arrow::field("referenced_table", arrow::utf8(), /*nullable=*/true),
-        arrow::field("referenced_schema", arrow::utf8(), /*nullable=*/true),
-    });
-
+                                             const SchemaPath& schema_path) {
     std::vector<std::string> entries;
     entries.reserve(table.foreign_keys.size());
     for (const auto& key : table.foreign_keys) {
         entries.push_back(
-            wire::encode_ipc(wire::ResultBuilder(schema)
+            wire::encode_ipc(wire::ResultBuilder(gen::ForeignKeyInfoSchema())
                                  .set_string_list("fk_columns", key.columns)
                                  .set_string_list("pk_columns", key.referenced_columns)
                                  .set_string("referenced_table", key.referenced_table)
-                                 .set_string("referenced_schema", schema_name)
+                                 .set_string_list("referenced_schema_path",
+                                                  key.referenced_schema_path.value_or(schema_path))
                                  .finish()));
     }
     return entries;
@@ -752,13 +746,14 @@ std::vector<std::string> encode_foreign_keys(const CatalogTable& table,
 // table is a name bound to a function, and this is the binding. Inlining the
 // scan here saves the engine a `catalog_table_scan_function_get` round trip
 // per query.
-std::string Dispatcher::encode_table_info(const CatalogTable& table, const std::string& schema_name,
+std::string Dispatcher::encode_table_info(const CatalogTable& table, const SchemaPath& schema_path,
                                           const TimeTravelVersion* version) {
     auto scan =
         wire::ResultBuilder(gen::ScanFunctionResultSchema())
             .set_string("function_name", version ? version->scan_function : table.scan_function)
             .set_binary("arguments", version ? version->scan_arguments : table.scan_arguments)
             .set_string_list("required_extensions", {})
+            .set_string_list("schema_path", schema_path)
             .finish();
 
     // Constraints are declared against `table.columns`; this read may be
@@ -767,7 +762,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const std::
 
     auto builder = wire::ResultBuilder(gen::TableInfoSchema());
     builder.set_string("name", table.name)
-        .set_string("schema_name", schema_name)
+        .set_string_list("schema_path", schema_path)
         .set_binary("columns", wire::encode_schema(shape))
         .set_binary("scan_function", table.inline_scan ? wire::encode_ipc(scan) : std::string{})
         .set_bool("supports_insert", false)
@@ -779,7 +774,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const std::
         .set_int32_list_list("primary_key_constraints",
                              reseat(table.primary_key, table.columns, shape))
         .set_string_list("check_constraints", table.check)
-        .set_binary_list("foreign_key_constraints", encode_foreign_keys(table, schema_name))
+        .set_binary_list("foreign_key_constraints", encode_foreign_keys(table, schema_path))
         .set_bool("supports_column_statistics", !table.column_statistics.empty())
         .set_string_map("tags", table.tags)
         .set_string_list_list("required_filters", table.required_filters);
@@ -801,14 +796,14 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const std::
 }
 
 vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
 
     // A Binary method: the bytes are the statistics batch, and a null is "this
     // table declares none" — which sends the engine on to the scan function.
     wire::ResultBuilder result(envelope_schema());
     const CatalogTable* found = nullptr;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& table : schema->tables) {
             if (table.name == name) found = &table;
         }
@@ -822,18 +817,18 @@ vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(const vgi_rpc::R
 }
 
 vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
 
     const auto at_unit = wire::get_optional_string(request.batch(), "at_unit");
     const auto at_value = wire::get_optional_string(request.batch(), "at_value");
 
     std::vector<std::string> items;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& table : schema->tables) {
             if (table.name != name) continue;
             items.push_back(
-                encode_table_info(table, schema_name, resolve_version(table, at_unit, at_value)));
+                encode_table_info(table, schema_path, resolve_version(table, at_unit, at_value)));
         }
     }
     // Zero or one item; absence is how "no such table" is spelled, and the
@@ -843,10 +838,10 @@ vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
                         .finish());
 }
 
-std::string Dispatcher::encode_view_info(const CatalogView& view, const std::string& schema_name) {
+std::string Dispatcher::encode_view_info(const CatalogView& view, const SchemaPath& schema_path) {
     auto builder = wire::ResultBuilder(gen::ViewInfoSchema());
     builder.set_string("name", view.name)
-        .set_string("schema_name", schema_name)
+        .set_string_list("schema_path", schema_path)
         // `definition`, not `sql` — the latter is not a ViewInfo field, and
         // ResultBuilder refuses an unknown one, so every view encode threw and
         // took `SHOW TABLES` on the schema with it.
@@ -862,12 +857,12 @@ std::string Dispatcher::encode_view_info(const CatalogView& view, const std::str
 }
 
 vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& view : schema->views) {
-            if (view.name == name) items.push_back(encode_view_info(view, schema_name));
+            if (view.name == name) items.push_back(encode_view_info(view, schema_path));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_view_get"))
@@ -907,7 +902,7 @@ static std::optional<std::string> normalize_function_type(const std::string& typ
 // declaration order* — order is the positional call order — typed from the
 // default where there is one, carrying the description as `vgi_doc`.
 std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
-                                          const std::string& schema_name) {
+                                          const SchemaPath& schema_path) {
     std::string defaults;
     if (!macro.defaults.empty()) {
         arrow::FieldVector fields;
@@ -945,7 +940,7 @@ std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
 
     auto builder = wire::ResultBuilder(gen::MacroInfoSchema());
     builder.set_string("name", macro.name)
-        .set_string("schema_name", schema_name)
+        .set_string_list("schema_path", schema_path)
         .set_enum("macro_type", macro.table_macro ? "table" : "scalar")
         .set_string_list("parameters", macro.parameters)
         .set_binary("parameter_default_values", defaults)
@@ -960,12 +955,12 @@ std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
 }
 
 vgi_rpc::Result Dispatcher::catalog_macro_get(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& macro : schema->macros) {
-            if (macro.name == name) items.push_back(encode_macro_info(macro, schema_name));
+            if (macro.name == name) items.push_back(encode_macro_info(macro, schema_path));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_macro_get"))
@@ -995,7 +990,7 @@ std::string Dispatcher::encode_schema_info(const std::string& owner, const std::
 
     auto builder =
         wire::ResultBuilder(gen::SchemaInfoSchema())
-            .set_string("name", schema.name)
+            .set_string_list("path", schema.path)
             .set_string_map("tags", schema.tags)
             // The sealed handle, not the bare catalog name: this
             // field is what a client would send back, and only the
@@ -1007,14 +1002,14 @@ std::string Dispatcher::encode_schema_info(const std::string& owner, const std::
                 {{"view", static_cast<int64_t>(contents->views.size())},
                  {"macro", static_cast<int64_t>(contents->macros.size())},
                  {"table", static_cast<int64_t>(contents->tables.size())},
-                 {"scalar_function", size(scalars_in_schema({owner, schema.name}))},
-                 {"aggregate_function", size(aggregates_in_schema({owner, schema.name}))},
+                 {"scalar_function", size(scalars_in_schema({owner, schema.path}))},
+                 {"aggregate_function", size(aggregates_in_schema({owner, schema.path}))},
                  // Every kind the engine registers as a table
                  // function, which is three of ours: a table-in-out
                  // and a buffering sink are table functions to it.
-                 {"table_function", size(tables_in_schema({owner, schema.name})) +
-                                        size(table_in_outs_in_schema({owner, schema.name})) +
-                                        size(bufferings_in_schema({owner, schema.name}))},
+                 {"table_function", size(tables_in_schema({owner, schema.path})) +
+                                        size(table_in_outs_in_schema({owner, schema.path})) +
+                                        size(bufferings_in_schema({owner, schema.path}))},
                  {"index", 0}});
     if (schema.comment) {
         builder.set_string("comment", *schema.comment);
@@ -1036,7 +1031,7 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
         items.push_back(encode_schema_info(attachment.catalog, owner, *schema,
-                                           schema_for(request, schema->name)));
+                                           schema_for(request, schema->path)));
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
                         .set_binary_list("items", items)
@@ -1044,14 +1039,14 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) {
-    const auto wanted = wire::get_string(request.batch(), "name");
+    const auto wanted = wire::get_schema_path(request.batch(), "path");
     std::vector<std::string> items;
     const auto attachment = attachment_of(request);
     const auto owner = seal_attachment(attachment);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
-        if (schema->name != wanted) continue;
+        if (schema->path != wanted) continue;
         items.push_back(
             encode_schema_info(attachment.catalog, owner, *schema, schema_for(request, wanted)));
     }
@@ -1072,12 +1067,12 @@ vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) 
 // Returns the builder so each caller appends the fields that are genuinely
 // its own, then `fill_defaults().finish()`.
 wire::ResultBuilder Dispatcher::common_function_info(
-    const std::string& name, const std::string& schema_name, const char* function_type,
+    const std::string& name, const SchemaPath& schema_path, const char* function_type,
     const std::vector<ArgSpec>& specs, const std::shared_ptr<arrow::Schema>& output_schema,
     const FunctionMetadata& metadata) {
     return wire::ResultBuilder(gen::FunctionInfoSchema())
         .set_string("name", name)
-        .set_string("schema_name", schema_name)
+        .set_string_list("schema_path", schema_path)
         .set_enum("function_type", function_type)
         .set_binary("arguments", wire::encode_schema(build_arg_schema(specs)))
         .set_binary("output_schema", wire::encode_schema(output_schema))
@@ -1105,11 +1100,11 @@ wire::ResultBuilder Dispatcher::common_function_info(
 }
 
 std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
-                                                   const std::string& schema_name) {
+                                                   const SchemaPath& schema_path) {
     const auto metadata = fn.metadata();
     // A table function's output schema is settled at bind, so nothing useful
     // can be advertised here; an empty schema is how that is spelled.
-    auto builder = common_function_info(fn.name(), schema_name, enums::function_type::kTable,
+    auto builder = common_function_info(fn.name(), schema_path, enums::function_type::kTable,
                                         fn.argument_specs(), arrow::schema({}), metadata);
     builder.set_bool("late_materialization", metadata.late_materialization)
         .set_bool("supports_batch_index", metadata.supports_batch_index)
@@ -1127,11 +1122,11 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
 }
 
 std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
-                                                 const std::string& schema_name) {
+                                                 const SchemaPath& schema_path) {
     const auto metadata = fn.metadata();
     // The engine sees a table-in-out as a table function that happens to take
     // a table argument, so it is advertised as one.
-    return wire::encode_ipc(common_function_info(fn.name(), schema_name,
+    return wire::encode_ipc(common_function_info(fn.name(), schema_path,
                                                  enums::function_type::kTable, fn.argument_specs(),
                                                  arrow::schema({}), metadata)
                                 .set_bool("has_finalize", fn.has_finish())
@@ -1140,10 +1135,10 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
 }
 
 std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
-                                              const std::string& schema_name) {
+                                              const SchemaPath& schema_path) {
     const auto metadata = fn.metadata();
     return wire::encode_ipc(
-        common_function_info(fn.name(), schema_name, enums::function_type::kTableBuffering,
+        common_function_info(fn.name(), schema_path, enums::function_type::kTableBuffering,
                              fn.argument_specs(), arrow::schema({}), metadata)
             .set_bool("requires_input_batch_index", metadata.requires_input_batch_index)
             .set_bool("sink_order_dependent", metadata.sink_order_dependent)
@@ -1158,7 +1153,7 @@ std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
 }
 
 std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
-                                              const std::string& schema_name) {
+                                              const SchemaPath& schema_path) {
     const auto metadata = fn.metadata();
     // An aggregate must advertise exactly one output field — the engine
     // rejects a zero-field schema outright. A declared return type wins;
@@ -1166,7 +1161,7 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
     // whose type does not depend on its input. One that does throws, and the
     // `vgi:any` marker defers the type.
     return wire::encode_ipc(
-        common_function_info(fn.name(), schema_name, enums::function_type::kAggregate,
+        common_function_info(fn.name(), schema_path, enums::function_type::kAggregate,
                              fn.argument_specs(), advertised_aggregate_schema(fn), metadata)
             // Declared, or the engine never sends a window request at all and
             // an aggregate that implements `window` is simply never asked.
@@ -1177,12 +1172,12 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
 }
 
 std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
-                                             const std::string& schema_name) {
+                                             const SchemaPath& schema_path) {
     const auto metadata = fn.metadata();
     // Both are IPC-serialized *schemas*, not batches: a parameter list is
     // carried as fields plus metadata, and the output schema is what lets the
     // engine type the call site before any bind happens.
-    return wire::encode_ipc(common_function_info(fn.name(), schema_name,
+    return wire::encode_ipc(common_function_info(fn.name(), schema_path,
                                                  enums::function_type::kScalar, fn.argument_specs(),
                                                  build_scalar_output_schema(metadata.return_type),
                                                  metadata)
@@ -1244,7 +1239,7 @@ bool Dispatcher::advertised_to(const Scope& scope, const vgi_rpc::Request& reque
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "name");
+    const auto schema_path = wire::get_schema_path(request.batch(), "path");
     const auto filter = normalize_function_type(wire::get_enum(request.batch(), "type"));
 
     std::vector<std::string> items;
@@ -1258,27 +1253,27 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
     const auto shown = [&](const std::string& name) { return !hidden(name); };
     if (!filter || *filter == enums::function_type::kScalar) {
         for (size_t i = 0; i < scalars_.size(); ++i) {
-            if (scalar_scopes_[i].schema != schema_name || !mine(scalar_scopes_[i]) ||
+            if (scalar_scopes_[i].schema_path != schema_path || !mine(scalar_scopes_[i]) ||
                 !shown(scalars_[i]->name())) {
                 continue;
             }
-            items.push_back(encode_function_info(*scalars_[i], schema_name));
+            items.push_back(encode_function_info(*scalars_[i], schema_path));
         }
     }
     if (!filter || *filter == enums::function_type::kTable) {
         for (size_t i = 0; i < tables_.size(); ++i) {
-            if (table_scopes_[i].schema != schema_name || !mine(table_scopes_[i]) ||
+            if (table_scopes_[i].schema_path != schema_path || !mine(table_scopes_[i]) ||
                 !shown(tables_[i]->name())) {
                 continue;
             }
-            items.push_back(encode_table_function_info(*tables_[i], schema_name));
+            items.push_back(encode_table_function_info(*tables_[i], schema_path));
         }
         for (size_t i = 0; i < table_in_outs_.size(); ++i) {
-            if (table_in_out_scopes_[i].schema != schema_name || !mine(table_in_out_scopes_[i]) ||
-                !shown(table_in_outs_[i]->name())) {
+            if (table_in_out_scopes_[i].schema_path != schema_path ||
+                !mine(table_in_out_scopes_[i]) || !shown(table_in_outs_[i]->name())) {
                 continue;
             }
-            items.push_back(encode_table_in_out_info(*table_in_outs_[i], schema_name));
+            items.push_back(encode_table_in_out_info(*table_in_outs_[i], schema_path));
         }
         // Buffering functions are advertised under the *table* filter, not a
         // filter of their own. The engine only ever asks for scalar, table or
@@ -1286,20 +1281,20 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
         // something the engine knows to ask for — so listing them under their
         // own name means they are never returned and never resolve.
         for (size_t i = 0; i < bufferings_.size(); ++i) {
-            if (buffering_scopes_[i].schema != schema_name || !mine(buffering_scopes_[i]) ||
+            if (buffering_scopes_[i].schema_path != schema_path || !mine(buffering_scopes_[i]) ||
                 !shown(bufferings_[i]->name())) {
                 continue;
             }
-            items.push_back(encode_buffering_info(*bufferings_[i], schema_name));
+            items.push_back(encode_buffering_info(*bufferings_[i], schema_path));
         }
     }
     if (!filter || *filter == enums::function_type::kAggregate) {
         for (size_t i = 0; i < aggregates_.size(); ++i) {
-            if (aggregate_scopes_[i].schema != schema_name || !mine(aggregate_scopes_[i]) ||
+            if (aggregate_scopes_[i].schema_path != schema_path || !mine(aggregate_scopes_[i]) ||
                 !shown(aggregates_[i]->name())) {
                 continue;
             }
-            items.push_back(encode_aggregate_info(*aggregates_[i], schema_name));
+            items.push_back(encode_aggregate_info(*aggregates_[i], schema_path));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_functions"))
@@ -1308,16 +1303,16 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "name");
+    const auto schema_path = wire::get_schema_path(request.batch(), "path");
     std::vector<std::string> items;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& table : schema->tables) {
             // Resolved with no AT clause, which is the newest version — the
             // same record `catalog_table_get` answers with for an unqualified
             // read. Describing the table two ways depending on which discovery
             // call the engine chose is how a table gets typed against one
             // shape and scanned against another.
-            items.push_back(encode_table_info(table, schema_name, resolve_version(table, {}, {})));
+            items.push_back(encode_table_info(table, schema_path, resolve_version(table, {}, {})));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_tables"))
@@ -1326,11 +1321,11 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Reques
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "name");
+    const auto schema_path = wire::get_schema_path(request.batch(), "path");
     std::vector<std::string> items;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& view : schema->views) {
-            items.push_back(encode_view_info(view, schema_name));
+            items.push_back(encode_view_info(view, schema_path));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_views"))
@@ -1339,16 +1334,18 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request
 }
 
 vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
 
     const CatalogTable* found = nullptr;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& table : schema->tables) {
             if (table.name == name) found = &table;
         }
     }
-    if (!found) throw std::invalid_argument("no table '" + schema_name + "." + name + "'");
+    if (!found)
+        throw std::invalid_argument("no table '" + schema_path_string(schema_path) + "." + name +
+                                    "'");
 
     const auto* version =
         resolve_version(*found, wire::get_optional_string(request.batch(), "at_unit"),
@@ -1361,6 +1358,7 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Reque
             .set_string("function_name", version ? version->scan_function : found->scan_function)
             .set_binary("arguments", version ? version->scan_arguments : found->scan_arguments)
             .set_string_list("required_extensions", {})
+            .set_string_list("schema_path", schema_path)
             .finish();
     return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
                                       .set_binary("result", wire::encode_ipc(scan))
@@ -1368,16 +1366,18 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Reque
 }
 
 vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "schema_name");
+    const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
 
     const CatalogTable* found = nullptr;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& table : schema->tables) {
             if (table.name == name) found = &table;
         }
     }
-    if (!found) throw std::invalid_argument("no table '" + schema_name + "." + name + "'");
+    if (!found)
+        throw std::invalid_argument("no table '" + schema_path_string(schema_path) + "." + name +
+                                    "'");
 
     // A single-branch table still honours the AT clause through this call —
     // the engine does not fall back to `catalog_table_scan_function_get` for
@@ -1399,6 +1399,7 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
                             version ? version->scan_function : found->scan_function)
                 .set_binary("arguments", version ? version->scan_arguments : found->scan_arguments)
                 .set_bool("writable", false)
+                .set_string_list("schema_path", schema_path)
                 .fill_defaults()
                 .finish();
         branches.push_back(wire::encode_ipc(branch));
@@ -1417,8 +1418,28 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
             };
             optional("branch_filter", source.branch_filter);
             optional("source_catalog", source.source_catalog);
-            optional("source_schema", source.source_schema);
+            if (source.source_schema_path) {
+                builder.set_string_list("source_schema_path", *source.source_schema_path);
+            } else {
+                builder.set_null("source_schema_path");
+            }
+            if (source.schema_path) {
+                builder.set_string_list("schema_path", *source.schema_path);
+            } else {
+                builder.set_null("schema_path");
+            }
             optional("source_table", source.source_table);
+            optional("format_name", source.format_name);
+            if (source.format_locations) {
+                builder.set_string_list("format_locations", *source.format_locations);
+            } else {
+                builder.set_null("format_locations");
+            }
+            if (source.format_options) {
+                builder.set_binary("format_options", *source.format_options);
+            } else {
+                builder.set_null("format_options");
+            }
             branches.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
         }
     }
@@ -1433,7 +1454,7 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Request& request) {
-    const auto schema_name = wire::get_string(request.batch(), "name");
+    const auto schema_path = wire::get_schema_path(request.batch(), "path");
     // The engine scans the two macro kinds in separate calls, and the kind it
     // wants is in `type`. Answering with all of them on a kind-scoped request
     // registers every macro twice, once per call.
@@ -1441,13 +1462,13 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Reques
         normalize_function_type(wire::get_optional_enum(request.batch(), "type").value_or(""));
 
     std::vector<std::string> items;
-    if (const auto* schema = schema_for(request, schema_name)) {
+    if (const auto* schema = schema_for(request, schema_path)) {
         for (const auto& macro : schema->macros) {
             // The kind arrives either bare or as `scalar_macro`/`table_macro`.
             const bool wanted =
                 !filter || (macro.table_macro ? *filter == "table" || *filter == "table_macro"
                                               : *filter == "scalar" || *filter == "scalar_macro");
-            if (wanted) items.push_back(encode_macro_info(macro, schema_name));
+            if (wanted) items.push_back(encode_macro_info(macro, schema_path));
         }
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_macros"))

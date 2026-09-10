@@ -29,6 +29,8 @@
 #include <optional>
 #include <string>
 
+#include "vgi/types.h"
+
 namespace vgi::split_token {
 
 inline constexpr uint8_t kFormatVersion = 1;
@@ -38,7 +40,7 @@ inline constexpr size_t kHeaderLen = 4 + kFingerprintLen;
 
 // The 16-byte binding check for a bind call: which function, in which schema,
 // with which arguments and settings.
-std::string bind_fingerprint(const std::string& schema_name, const std::string& function_name,
+std::string bind_fingerprint(const SchemaPath& schema_path, const std::string& function_name,
                              const std::string& arguments, const std::string& settings);
 
 // Stamp a payload into a token.

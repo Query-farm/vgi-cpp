@@ -30,12 +30,12 @@ void put_u16_le(std::string& out, uint16_t v) {
 
 }  // namespace
 
-std::string bind_fingerprint(const std::string& schema_name, const std::string& function_name,
+std::string bind_fingerprint(const SchemaPath& schema_path, const std::string& function_name,
                              const std::string& arguments, const std::string& settings) {
     vgi_rpc::crypto::Sha256 h;
     h.update(std::string(kAadPrefix));
     h.update_byte(0);
-    feed(h, "schema_name", schema_name);
+    for (const auto& component : schema_path) feed(h, "schema_path", component);
     feed(h, "function_name", function_name);
     feed(h, "arguments", arguments);
     feed(h, "settings", settings);

@@ -64,17 +64,25 @@ public:
     // it if the catalog does not list it.
     void register_scalar_in(std::string catalog, std::string schema,
                             std::shared_ptr<ScalarFunction> fn);
+    void register_scalar_in(std::string catalog, SchemaPath schema_path,
+                            std::shared_ptr<ScalarFunction> fn);
 
     void register_table(std::shared_ptr<TableFunction> fn);
     void register_table_in(std::string catalog, std::string schema,
+                           std::shared_ptr<TableFunction> fn);
+    void register_table_in(std::string catalog, SchemaPath schema_path,
                            std::shared_ptr<TableFunction> fn);
 
     void register_table_in_out(std::shared_ptr<TableInOutFunction> fn);
     void register_table_in_out_in(std::string catalog, std::string schema,
                                   std::shared_ptr<TableInOutFunction> fn);
+    void register_table_in_out_in(std::string catalog, SchemaPath schema_path,
+                                  std::shared_ptr<TableInOutFunction> fn);
 
     void register_aggregate(std::shared_ptr<AggregateFunction> fn);
     void register_aggregate_in(std::string catalog, std::string schema,
+                               std::shared_ptr<AggregateFunction> fn);
+    void register_aggregate_in(std::string catalog, SchemaPath schema_path,
                                std::shared_ptr<AggregateFunction> fn);
 
     void register_buffering(std::shared_ptr<TableBufferingFunction> fn);
@@ -88,6 +96,8 @@ public:
     void register_copy_from(std::shared_ptr<CopyFromFunction> reader);
 
     void register_buffering_in(std::string catalog, std::string schema,
+                               std::shared_ptr<TableBufferingFunction> fn);
+    void register_buffering_in(std::string catalog, SchemaPath schema_path,
                                std::shared_ptr<TableBufferingFunction> fn);
 
     // Serve, selecting the transport from argv.  Never returns.

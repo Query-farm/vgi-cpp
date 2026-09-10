@@ -10,30 +10,30 @@ CatalogModel::CatalogModel() {
     schemas.push_back(std::make_unique<CatalogSchema>());
 }
 
-CatalogSchema& CatalogModel::schema(const std::string& schema_name) {
+CatalogSchema& CatalogModel::schema(const SchemaPath& schema_path) {
     for (auto& s : schemas) {
-        if (s->name == schema_name) return *s;
+        if (s->path == schema_path) return *s;
     }
     // Named, not brace-positional: this list has grown twice, and a positional
     // one silently stops initializing whatever was appended.
     auto created = std::make_unique<CatalogSchema>();
-    created->name = schema_name;
+    created->path = schema_path;
     schemas.push_back(std::move(created));
     return *schemas.back();
 }
 
-const CatalogSchema* CatalogModel::find_schema(const std::string& schema_name) const {
+const CatalogSchema* CatalogModel::find_schema(const SchemaPath& schema_path) const {
     for (const auto& s : schemas) {
-        if (s->name == schema_name) return s.get();
+        if (s->path == schema_path) return s.get();
     }
     return nullptr;
 }
 
-std::vector<std::string> CatalogModel::schema_names() const {
-    std::vector<std::string> names;
-    names.reserve(schemas.size());
-    for (const auto& s : schemas) names.push_back(s->name);
-    return names;
+std::vector<SchemaPath> CatalogModel::schema_paths() const {
+    std::vector<SchemaPath> paths;
+    paths.reserve(schemas.size());
+    for (const auto& s : schemas) paths.push_back(s->path);
+    return paths;
 }
 
 }  // namespace vgi

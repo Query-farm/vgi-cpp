@@ -46,7 +46,7 @@ struct BindParams {
     std::optional<std::string> copy_from_path;
     std::shared_ptr<arrow::Schema> copy_from_schema;
     std::string catalog_name;
-    std::string schema_name;
+    SchemaPath schema_path;
     // The options this attachment was made with, as a one-row batch: the
     // declared defaults with whatever the ATTACH statement overrode. Null when
     // the catalog declares none.
@@ -111,7 +111,7 @@ struct ProcessParams {
     Settings settings;
     Secrets secrets;
     std::string catalog_name;
-    std::string schema_name;
+    SchemaPath schema_path;
     // The options this attachment was made with, as on `BindParams`.
     std::shared_ptr<arrow::RecordBatch> attach_options;
     // A fresh identifier per ATTACH, as on `BindParams`.

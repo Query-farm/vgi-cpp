@@ -52,7 +52,7 @@ std::shared_ptr<ArrayType> typed_column(const std::shared_ptr<arrow::RecordBatch
 
 // An *optional* parameter may be absent as well as null.
 //
-// The protocol adds nullable columns additively — `schema_name` arrived in
+// The protocol adds nullable columns additively — `schema_path` arrived in
 // 1.1.0 and spread to fifteen more requests in 1.2.0 — so a peer built against
 // an older surface simply does not send them. Treating absence as an error
 // makes every bind from such a peer fail, which is precisely the compatibility
@@ -245,6 +245,36 @@ std::vector<int64_t> get_int64_list(const std::shared_ptr<arrow::RecordBatch>& b
         if (!values->IsNull(i)) items.push_back(values->Value(i));
     }
     return items;
+}
+
+std::vector<std::string> get_string_list(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                         const std::string& field) {
+    std::vector<std::string> items;
+    if (!has_column(batch, field)) return items;
+    auto list = std::dynamic_pointer_cast<arrow::ListArray>(column(batch, field));
+    if (!list) fail("param '" + field + "' is not a list");
+    if (list->length() == 0 || list->IsNull(0)) return items;
+    auto values = std::dynamic_pointer_cast<arrow::StringArray>(list->values());
+    if (!values) fail("param '" + field + "' is not a list of strings");
+    for (int64_t i = list->value_offset(0); i < list->value_offset(1); ++i) {
+        if (values->IsNull(i)) fail("param '" + field + "' contains a null path component");
+        items.push_back(values->GetString(i));
+    }
+    return items;
+}
+
+SchemaPath get_schema_path(const std::shared_ptr<arrow::RecordBatch>& batch,
+                           const std::string& field) {
+    if (!has_column(batch, field)) return {"main"};
+    auto list = std::dynamic_pointer_cast<arrow::ListArray>(column(batch, field));
+    if (!list) fail("param '" + field + "' is not a list");
+    if (list->length() == 0 || list->IsNull(0)) return {"main"};
+    auto path = get_string_list(batch, field);
+    if (path.empty()) fail("param '" + field + "' is an empty schema path");
+    for (const auto& component : path) {
+        if (component.empty()) fail("param '" + field + "' contains an empty path component");
+    }
+    return path;
 }
 
 std::vector<std::string> get_binary_list(const std::shared_ptr<arrow::RecordBatch>& batch,

@@ -20,12 +20,17 @@ void Dispatcher::register_table(std::shared_ptr<TableFunction> fn) {
 
 void Dispatcher::register_table_in(std::string catalog, std::string schema,
                                    std::shared_ptr<TableFunction> fn) {
+    register_table_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Dispatcher::register_table_in(std::string catalog, SchemaPath schema_path,
+                                   std::shared_ptr<TableFunction> fn) {
     if (!fn) throw std::invalid_argument("register_table: null function");
     // Declaring a function in a schema creates both the schema and, when the
     // name is one this worker has not served before, the catalog.
-    this->catalog(catalog).schema(schema);
+    this->catalog(catalog).schema(schema_path);
     table_by_name_[fn->name()].push_back(tables_.size());
-    table_scopes_.push_back({std::move(catalog), std::move(schema)});
+    table_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     tables_.push_back(std::move(fn));
 }
 
@@ -35,12 +40,17 @@ void Dispatcher::register_table_in_out(std::shared_ptr<TableInOutFunction> fn) {
 
 void Dispatcher::register_table_in_out_in(std::string catalog, std::string schema,
                                           std::shared_ptr<TableInOutFunction> fn) {
+    register_table_in_out_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Dispatcher::register_table_in_out_in(std::string catalog, SchemaPath schema_path,
+                                          std::shared_ptr<TableInOutFunction> fn) {
     if (!fn) throw std::invalid_argument("register_table_in_out: null function");
     // Declaring a function in a schema creates both the schema and, when the
     // name is one this worker has not served before, the catalog.
-    this->catalog(catalog).schema(schema);
+    this->catalog(catalog).schema(schema_path);
     table_in_out_by_name_[fn->name()].push_back(table_in_outs_.size());
-    table_in_out_scopes_.push_back({std::move(catalog), std::move(schema)});
+    table_in_out_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     table_in_outs_.push_back(std::move(fn));
 }
 
@@ -50,12 +60,17 @@ void Dispatcher::register_buffering(std::shared_ptr<TableBufferingFunction> fn) 
 
 void Dispatcher::register_buffering_in(std::string catalog, std::string schema,
                                        std::shared_ptr<TableBufferingFunction> fn) {
+    register_buffering_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Dispatcher::register_buffering_in(std::string catalog, SchemaPath schema_path,
+                                       std::shared_ptr<TableBufferingFunction> fn) {
     if (!fn) throw std::invalid_argument("register_buffering: null function");
     // Declaring a function in a schema creates both the schema and, when the
     // name is one this worker has not served before, the catalog.
-    this->catalog(catalog).schema(schema);
+    this->catalog(catalog).schema(schema_path);
     buffering_by_name_[fn->name()].push_back(bufferings_.size());
-    buffering_scopes_.push_back({std::move(catalog), std::move(schema)});
+    buffering_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     bufferings_.push_back(std::move(fn));
 }
 
@@ -65,28 +80,38 @@ void Dispatcher::register_aggregate(std::shared_ptr<AggregateFunction> fn) {
 
 void Dispatcher::register_aggregate_in(std::string catalog, std::string schema,
                                        std::shared_ptr<AggregateFunction> fn) {
+    register_aggregate_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Dispatcher::register_aggregate_in(std::string catalog, SchemaPath schema_path,
+                                       std::shared_ptr<AggregateFunction> fn) {
     if (!fn) throw std::invalid_argument("register_aggregate: null function");
     // Declaring a function in a schema creates both the schema and, when the
     // name is one this worker has not served before, the catalog.
-    this->catalog(catalog).schema(schema);
+    this->catalog(catalog).schema(schema_path);
     aggregate_by_name_[fn->name()].push_back(aggregates_.size());
-    aggregate_scopes_.push_back({std::move(catalog), std::move(schema)});
+    aggregate_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     aggregates_.push_back(std::move(fn));
 }
 
 void Dispatcher::register_scalar_in(std::string catalog, std::string schema,
+                                    std::shared_ptr<ScalarFunction> fn) {
+    register_scalar_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Dispatcher::register_scalar_in(std::string catalog, SchemaPath schema_path,
                                     std::shared_ptr<ScalarFunction> fn) {
     if (!fn) throw std::invalid_argument("register_scalar: null function");
     // Declaring a function in a schema creates it: a worker should not have to
     // list the schema separately and keep the two in step.
     // Declaring a function in a schema creates both the schema and, when the
     // name is one this worker has not served before, the catalog.
-    this->catalog(catalog).schema(schema);
+    this->catalog(catalog).schema(schema_path);
     // Repeating a name is not an error but an overload: the fixtures register
     // `type_info` five times, one per argument type, and the engine picks by
     // the call site's types. Each registration is advertised separately.
     scalar_by_name_[fn->name()].push_back(scalars_.size());
-    scalar_scopes_.push_back({std::move(catalog), std::move(schema)});
+    scalar_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     scalars_.push_back(std::move(fn));
 }
 

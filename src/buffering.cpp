@@ -55,7 +55,7 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
     params.catalog_name = attachment.catalog;
     params.attachment_id = attachment.id;
     params.attach_options = attachment.options;
-    params.schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
+    params.schema_path = wire::get_schema_path(dto);
     params.execution_id = wire::get_optional_binary(dto, "execution_id").value_or("");
     params.storage = default_storage();
 
@@ -83,8 +83,8 @@ vgi_rpc::Result Dispatcher::table_buffering_process(const vgi_rpc::Request& requ
     if (!dto) throw std::runtime_error("table_buffering_process: empty request");
 
     const auto function_name = wire::get_string(dto, "function_name");
-    const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
-    const Scope scope{attachment_of(dto).catalog, schema_name};
+    const auto schema_path = wire::get_schema_path(dto);
+    const Scope scope{attachment_of(dto).catalog, schema_path};
     auto fn = require_buffering(function_name, scope);
 
     auto batch = wire::decode_ipc(wire::get_binary(dto, "input_batch"));
@@ -104,8 +104,8 @@ vgi_rpc::Result Dispatcher::table_buffering_combine(const vgi_rpc::Request& requ
     if (!dto) throw std::runtime_error("table_buffering_combine: empty request");
 
     const auto function_name = wire::get_string(dto, "function_name");
-    const auto schema_name = wire::get_optional_string(dto, "schema_name").value_or("main");
-    const Scope scope{attachment_of(dto).catalog, schema_name};
+    const auto schema_path = wire::get_schema_path(dto);
+    const Scope scope{attachment_of(dto).catalog, schema_path};
     auto fn = require_buffering(function_name, scope);
 
     auto params = buffering_params(dto, &context);

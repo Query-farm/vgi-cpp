@@ -13,6 +13,7 @@
 #include <arrow/type.h>
 
 #include "vgi/statistics.h"
+#include "vgi/types.h"
 
 namespace vgi {
 
@@ -31,8 +32,13 @@ struct CatalogBranch {
     // Where the branch's data actually lives, when it is another catalog's
     // table rather than a function's output.
     std::optional<std::string> source_catalog;
-    std::optional<std::string> source_schema;
+    std::optional<SchemaPath> source_schema_path;
     std::optional<std::string> source_table;
+    std::optional<std::string> format_name;
+    std::optional<std::vector<std::string>> format_locations;
+    std::optional<std::string> format_options;
+    // Schema containing a VGI function branch; absent for native functions.
+    std::optional<SchemaPath> schema_path;
 };
 
 // One version of a time-travelling table.
@@ -54,6 +60,8 @@ struct ForeignKey {
     std::vector<std::string> columns;
     std::string referenced_table;
     std::vector<std::string> referenced_columns;
+    // Defaults to the owning table's schema path when absent.
+    std::optional<SchemaPath> referenced_schema_path;
 };
 
 // A table the catalog advertises.
@@ -212,7 +220,7 @@ struct SecretTypeSpec {
 
 // A schema and everything declared in it.
 struct CatalogSchema {
-    std::string name = "main";
+    SchemaPath path = {"main"};
     std::optional<std::string> comment;
     std::vector<std::pair<std::string, std::string>> tags;
     std::vector<CatalogTable> tables;
@@ -304,11 +312,17 @@ struct CatalogModel {
 
     // The schema of that name, creating it if absent. The reference stays
     // valid for the life of the model.
-    CatalogSchema& schema(const std::string& schema_name);
-    const CatalogSchema* find_schema(const std::string& schema_name) const;
+    CatalogSchema& schema(const SchemaPath& schema_path);
+    CatalogSchema& schema(const std::string& schema_name) {
+        return schema(SchemaPath{schema_name});
+    }
+    const CatalogSchema* find_schema(const SchemaPath& schema_path) const;
+    const CatalogSchema* find_schema(const std::string& schema_name) const {
+        return find_schema(SchemaPath{schema_name});
+    }
 
-    // Every declared schema name, in declaration order.
-    std::vector<std::string> schema_names() const;
+    // Every declared schema path, in declaration order.
+    std::vector<SchemaPath> schema_paths() const;
 };
 
 }  // namespace vgi

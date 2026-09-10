@@ -23,8 +23,7 @@ namespace {
 // DuckDB extension.  Alias rather than post-process generated output.
 namespace gen = ::vgi::generated;
 
-std::pair<std::string, int> parse_tcp_bind(const std::string& value,
-                                           const char* flag) {
+std::pair<std::string, int> parse_tcp_bind(const std::string& value, const char* flag) {
     std::string host = "127.0.0.1";
     std::string port_text = value;
     const auto split = value.rfind(':');
@@ -80,7 +79,12 @@ void Worker::register_scalar(std::shared_ptr<ScalarFunction> fn) {
 
 void Worker::register_scalar_in(std::string catalog, std::string schema,
                                 std::shared_ptr<ScalarFunction> fn) {
-    disp_->register_scalar_in(std::move(catalog), std::move(schema), std::move(fn));
+    register_scalar_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Worker::register_scalar_in(std::string catalog, SchemaPath schema_path,
+                                std::shared_ptr<ScalarFunction> fn) {
+    disp_->register_scalar_in(std::move(catalog), std::move(schema_path), std::move(fn));
 }
 
 void Worker::register_table(std::shared_ptr<TableFunction> fn) {
@@ -89,7 +93,12 @@ void Worker::register_table(std::shared_ptr<TableFunction> fn) {
 
 void Worker::register_table_in(std::string catalog, std::string schema,
                                std::shared_ptr<TableFunction> fn) {
-    disp_->register_table_in(std::move(catalog), std::move(schema), std::move(fn));
+    register_table_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Worker::register_table_in(std::string catalog, SchemaPath schema_path,
+                               std::shared_ptr<TableFunction> fn) {
+    disp_->register_table_in(std::move(catalog), std::move(schema_path), std::move(fn));
 }
 
 void Worker::register_copy_to(std::shared_ptr<CopyToFunction> writer) {
@@ -106,7 +115,12 @@ void Worker::register_buffering(std::shared_ptr<TableBufferingFunction> fn) {
 
 void Worker::register_buffering_in(std::string catalog, std::string schema,
                                    std::shared_ptr<TableBufferingFunction> fn) {
-    disp_->register_buffering_in(std::move(catalog), std::move(schema), std::move(fn));
+    register_buffering_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Worker::register_buffering_in(std::string catalog, SchemaPath schema_path,
+                                   std::shared_ptr<TableBufferingFunction> fn) {
+    disp_->register_buffering_in(std::move(catalog), std::move(schema_path), std::move(fn));
 }
 
 void Worker::register_aggregate(std::shared_ptr<AggregateFunction> fn) {
@@ -115,7 +129,12 @@ void Worker::register_aggregate(std::shared_ptr<AggregateFunction> fn) {
 
 void Worker::register_aggregate_in(std::string catalog, std::string schema,
                                    std::shared_ptr<AggregateFunction> fn) {
-    disp_->register_aggregate_in(std::move(catalog), std::move(schema), std::move(fn));
+    register_aggregate_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Worker::register_aggregate_in(std::string catalog, SchemaPath schema_path,
+                                   std::shared_ptr<AggregateFunction> fn) {
+    disp_->register_aggregate_in(std::move(catalog), std::move(schema_path), std::move(fn));
 }
 
 void Worker::register_table_in_out(std::shared_ptr<TableInOutFunction> fn) {
@@ -124,7 +143,12 @@ void Worker::register_table_in_out(std::shared_ptr<TableInOutFunction> fn) {
 
 void Worker::register_table_in_out_in(std::string catalog, std::string schema,
                                       std::shared_ptr<TableInOutFunction> fn) {
-    disp_->register_table_in_out_in(std::move(catalog), std::move(schema), std::move(fn));
+    register_table_in_out_in(std::move(catalog), SchemaPath{std::move(schema)}, std::move(fn));
+}
+
+void Worker::register_table_in_out_in(std::string catalog, SchemaPath schema_path,
+                                      std::shared_ptr<TableInOutFunction> fn) {
+    disp_->register_table_in_out_in(std::move(catalog), std::move(schema_path), std::move(fn));
 }
 
 void Worker::run(int argc, char** argv) {
@@ -223,9 +247,8 @@ void Worker::run(int argc, char** argv) {
                 vgi_rpc::HttpConfig config;
                 config.host = "127.0.0.1";
                 config.port = port;
-                config.peer_identity_providers.push_back(
-                    vgi_rpc::iroh_forwarded_header_provider(
-                        {std::move(iroh_issuer), std::move(iroh_trusted_proxies)}));
+                config.peer_identity_providers.push_back(vgi_rpc::iroh_forwarded_header_provider(
+                    {std::move(iroh_issuer), std::move(iroh_trusted_proxies)}));
                 config.peer_authentication_policy = iroh_observe
                                                         ? vgi_rpc::observe_peer_identity
                                                         : vgi_rpc::peer_identity_primary("iroh");

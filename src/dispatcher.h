@@ -66,26 +66,36 @@ public:
     void register_scalar(std::shared_ptr<ScalarFunction> fn);
     void register_scalar_in(std::string catalog, std::string schema,
                             std::shared_ptr<ScalarFunction> fn);
+    void register_scalar_in(std::string catalog, SchemaPath schema_path,
+                            std::shared_ptr<ScalarFunction> fn);
     void register_table(std::shared_ptr<TableFunction> fn);
     void register_table_in(std::string catalog, std::string schema,
+                           std::shared_ptr<TableFunction> fn);
+    void register_table_in(std::string catalog, SchemaPath schema_path,
                            std::shared_ptr<TableFunction> fn);
     void register_table_in_out(std::shared_ptr<TableInOutFunction> fn);
     void register_table_in_out_in(std::string catalog, std::string schema,
                                   std::shared_ptr<TableInOutFunction> fn);
+    void register_table_in_out_in(std::string catalog, SchemaPath schema_path,
+                                  std::shared_ptr<TableInOutFunction> fn);
     void register_aggregate(std::shared_ptr<AggregateFunction> fn);
     void register_aggregate_in(std::string catalog, std::string schema,
+                               std::shared_ptr<AggregateFunction> fn);
+    void register_aggregate_in(std::string catalog, SchemaPath schema_path,
                                std::shared_ptr<AggregateFunction> fn);
     void register_buffering(std::shared_ptr<TableBufferingFunction> fn);
     void register_copy_to(std::shared_ptr<CopyToFunction> writer);
     void register_copy_from(std::shared_ptr<CopyFromFunction> reader);
     void register_buffering_in(std::string catalog, std::string schema,
                                std::shared_ptr<TableBufferingFunction> fn);
+    void register_buffering_in(std::string catalog, SchemaPath schema_path,
+                               std::shared_ptr<TableBufferingFunction> fn);
 
     // Where a registered function is declared. Every registration has exactly
     // one; the default is the catalog's own name and `main`.
     struct Scope {
         std::string catalog;
-        std::string schema;
+        SchemaPath schema_path;
     };
 
     // Register every VGI method on `builder`.
@@ -159,26 +169,26 @@ private:
     // five of them spelling the shared set out separately is how a field ends
     // up wired into four chains and silently defaulted in the fifth.
     static wire::ResultBuilder common_function_info(
-        const std::string& name, const std::string& schema_name, const char* function_type,
+        const std::string& name, const SchemaPath& schema_path, const char* function_type,
         const std::vector<ArgSpec>& specs, const std::shared_ptr<arrow::Schema>& output_schema,
         const FunctionMetadata& metadata);
 
     // Serialize one Info dataclass as the IPC bytes a list<binary> column
     // carries.
     static std::string encode_function_info(const ScalarFunction& fn,
-                                            const std::string& schema_name);
+                                            const SchemaPath& schema_path);
     static std::string encode_table_function_info(const TableFunction& fn,
-                                                  const std::string& schema_name);
+                                                  const SchemaPath& schema_path);
     static std::string encode_table_in_out_info(const TableInOutFunction& fn,
-                                                const std::string& schema_name);
+                                                const SchemaPath& schema_path);
     static std::string encode_aggregate_info(const AggregateFunction& fn,
-                                             const std::string& schema_name);
+                                             const SchemaPath& schema_path);
     static std::string encode_buffering_info(const TableBufferingFunction& fn,
-                                             const std::string& schema_name);
+                                             const SchemaPath& schema_path);
     std::vector<std::string> encode_settings(const CatalogModel& model) const;
     std::vector<std::string> encode_secret_types(const CatalogModel& model) const;
     bool supports_time_travel(const CatalogModel& model) const;
-    static std::string encode_table_info(const CatalogTable& table, const std::string& schema_name,
+    static std::string encode_table_info(const CatalogTable& table, const SchemaPath& schema_path,
                                          const TimeTravelVersion* version = nullptr);
     // The `FunctionInfo` for each name this catalog publishes globally.
     std::vector<std::string> encode_global_functions(const CatalogModel& model) const;
@@ -191,8 +201,8 @@ private:
     std::string encode_schema_info(const std::string& owner, const std::string& handle,
                                    const CatalogSchema& schema,
                                    const CatalogSchema* contents) const;
-    static std::string encode_macro_info(const CatalogMacro& macro, const std::string& schema_name);
-    static std::string encode_view_info(const CatalogView& view, const std::string& schema_name);
+    static std::string encode_macro_info(const CatalogMacro& macro, const SchemaPath& schema_path);
+    static std::string encode_view_info(const CatalogView& view, const SchemaPath& schema_path);
 
     // Every registration under `name`, in registration order.
     //
@@ -281,7 +291,7 @@ private:
     // version sealed into the request's `attach_opaque_data`; every other
     // catalog answers from its declared schemas. Null when there is no such
     // schema, which is how "no such name" is spelled to the engine.
-    const CatalogSchema* schema_for(const vgi_rpc::Request& request, const std::string& name) const;
+    const CatalogSchema* schema_for(const vgi_rpc::Request& request, const SchemaPath& path) const;
 
     static Scope scope_of(const BindParams& params);
     static Scope scope_of(const ProcessParams& params);

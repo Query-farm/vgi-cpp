@@ -11,6 +11,18 @@
 
 namespace vgi {
 
+// A fully-qualified schema name, from the catalog root to the leaf schema.
+using SchemaPath = std::vector<std::string>;
+
+inline std::string schema_path_string(const SchemaPath& path) {
+    std::string value;
+    for (const auto& component : path) {
+        if (!value.empty()) value += '.';
+        value += component;
+    }
+    return value;
+}
+
 // How DuckDB may supply one argument of a function.
 //
 // A VGI argument is not simply "a column": the engine needs to know whether a

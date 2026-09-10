@@ -33,12 +33,15 @@
 #include "arg_schema.h"
 #include "enums.h"
 #include "methods.h"
+#include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "vgi/storage.h"
 
 #include "split_token.h"
 #include "wire.h"
 
 namespace vgi {
+
+namespace gen = ::vgi::generated;
 
 // `GlobalInitResponse` — the header batch every init stream leads with.
 //
@@ -563,7 +566,7 @@ namespace {
 
 bool in_scope(const Dispatcher::Scope& declared, const Dispatcher::Scope& wanted) {
     if (declared.catalog != wanted.catalog) return false;
-    return wanted.schema.empty() || declared.schema == wanted.schema;
+    return wanted.schema_path.empty() || declared.schema_path == wanted.schema_path;
 }
 
 }  // namespace
@@ -614,7 +617,7 @@ std::shared_ptr<AggregateFunction> Dispatcher::require_aggregate(const std::stri
     // Naming the schema, because "no aggregate named x" when x exists in
     // another schema sends the reader looking in the wrong place.
     throw std::invalid_argument("no aggregate function named '" + name + "' in schema '" +
-                                scope.schema + "'");
+                                schema_path_string(scope.schema_path) + "'");
 }
 
 std::vector<std::shared_ptr<TableInOutFunction>> Dispatcher::table_in_outs_in_schema(
@@ -840,11 +843,11 @@ void Dispatcher::check_arg_constraints(const std::string& function_name,
 // two catalogs may declare the same function in the same schema, and only the
 // attachment says which one this call meant.
 Dispatcher::Scope Dispatcher::scope_of(const BindParams& params) {
-    return {params.catalog_name, params.schema_name};
+    return {params.catalog_name, params.schema_path};
 }
 
 Dispatcher::Scope Dispatcher::scope_of(const ProcessParams& params) {
-    return {params.catalog_name, params.schema_name};
+    return {params.catalog_name, params.schema_path};
 }
 
 // The secrets `name` declares, whichever registry it lives in.
@@ -893,7 +896,7 @@ BindParams Dispatcher::read_bind_request(
     params.settings =
         Settings::parse(wire::get_optional_binary(bind_call, "settings").value_or(""));
     params.secrets = Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
-    params.schema_name = wire::get_optional_string(bind_call, "schema_name").value_or("main");
+    params.schema_path = wire::get_schema_path(bind_call);
     // From the attachment's seal, not from the primary: one worker may serve
     // several catalogs, and a bind carries nothing else that says which one.
     const auto attachment = attachment_of(bind_call);
@@ -1016,45 +1019,27 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
 // than a private subset.
 namespace {
 
-const std::shared_ptr<arrow::Schema>& scan_split_schema() {
-    static const auto schema = arrow::schema({
-        arrow::field("payload", arrow::large_binary(), /*nullable=*/false),
-        arrow::field("token", arrow::large_binary(), /*nullable=*/false),
-        arrow::field("estimated_rows", arrow::int64(), /*nullable=*/true),
-        arrow::field("rows_exact", arrow::boolean(), /*nullable=*/false),
-        arrow::field("estimated_bytes", arrow::int64(), /*nullable=*/true),
-    });
-    return schema;
-}
-
 std::string encode_scan_split(const ScanSplit& split, const std::string& token) {
-    arrow::LargeBinaryBuilder payload;
-    arrow::LargeBinaryBuilder stamped;
-    arrow::Int64Builder rows;
-    arrow::BooleanBuilder exact;
-    arrow::Int64Builder bytes;
-    // The payload is carried as well as sealed into the token so the record is
-    // self-describing to a human reading it; only the token is redeemable.
-    (void)payload.Append(split.payload);
-    (void)stamped.Append(token);
+    auto builder = wire::ResultBuilder(gen::ScanSplitSchema());
+    builder.set_binary("payload", split.payload)
+        .set_binary("token", token)
+        .set_bool("rows_exact", split.rows_exact)
+        .set_null("partition_bounds")
+        .set_null("column_statistics")
+        .set_null("location_ids")
+        .set_null("start_position")
+        .set_null("end_position");
     if (split.estimated_rows) {
-        (void)rows.Append(*split.estimated_rows);
+        builder.set_int64("estimated_rows", *split.estimated_rows);
     } else {
-        (void)rows.AppendNull();
+        builder.set_null("estimated_rows");
     }
-    (void)exact.Append(split.rows_exact);
     if (split.estimated_bytes) {
-        (void)bytes.Append(*split.estimated_bytes);
+        builder.set_int64("estimated_bytes", *split.estimated_bytes);
     } else {
-        (void)bytes.AppendNull();
+        builder.set_null("estimated_bytes");
     }
-    std::vector<std::shared_ptr<arrow::Array>> columns(5);
-    if (!payload.Finish(&columns[0]).ok() || !stamped.Finish(&columns[1]).ok() ||
-        !rows.Finish(&columns[2]).ok() || !exact.Finish(&columns[3]).ok() ||
-        !bytes.Finish(&columns[4]).ok()) {
-        throw std::runtime_error("plan: could not build a ScanSplit record");
-    }
-    return wire::encode_ipc(arrow::RecordBatch::Make(scan_split_schema(), 1, columns));
+    return wire::encode_ipc(builder.finish());
 }
 
 }  // namespace
@@ -1100,7 +1085,7 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request)
     // then forget the anchor or mis-bind the fingerprint, and the format stays
     // a framework detail that can change without touching a worker.
     const auto fingerprint = split_token::bind_fingerprint(
-        bind_params.schema_name, function_name,
+        bind_params.schema_path, function_name,
         wire::get_optional_binary(bind_call, "arguments").value_or(std::string{}),
         wire::get_optional_binary(bind_call, "settings").value_or(std::string{}));
     const auto anchor = split_token::anchor_for(result.catalog_version);
@@ -1158,7 +1143,7 @@ vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& r
         params.settings = bind_params.settings;
         params.secrets = bind_params.secrets;
         params.catalog_name = bind_params.catalog_name;
-        params.schema_name = bind_params.schema_name;
+        params.schema_path = bind_params.schema_path;
         params.storage = default_storage();
         cardinality = table->cardinality(params);
     }
@@ -1197,7 +1182,7 @@ vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& re
         params.settings = bind_params.settings;
         params.secrets = bind_params.secrets;
         params.catalog_name = bind_params.catalog_name;
-        params.schema_name = bind_params.schema_name;
+        params.schema_path = bind_params.schema_path;
         params.storage = default_storage();
         statistics = table->statistics(params);
     }
@@ -1292,7 +1277,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     params.catalog_name = bind_params.catalog_name;
     params.attachment_id = bind_params.attachment_id;
     params.attach_options = bind_params.attach_options;
-    params.schema_name = bind_params.schema_name;
+    params.schema_path = bind_params.schema_path;
     params.at_unit = bind_params.at_unit;
     params.at_value = bind_params.at_value;
     params.transaction_opaque_data = bind_params.transaction_opaque_data;
@@ -1320,7 +1305,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // ordinary scan path, and it must stay untouched.
     if (auto tokens = wire::get_binary_list(init_request, "split_tokens"); !tokens.empty()) {
         const auto fingerprint = split_token::bind_fingerprint(
-            bind_params.schema_name, function_name,
+            bind_params.schema_path, function_name,
             wire::get_optional_binary(bind_call, "arguments").value_or(std::string{}),
             wire::get_optional_binary(bind_call, "settings").value_or(std::string{}));
         // The anchor a plan sealed in. Nothing here time-travels, so the

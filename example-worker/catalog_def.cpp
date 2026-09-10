@@ -66,6 +66,7 @@ vgi::CatalogBranch sequence_branch(int64_t count,
     branch.function_name = "sequence";
     branch.scan_arguments = vgi::serialize_scan_arguments({int64_arg(count)});
     branch.branch_filter = std::move(branch_filter);
+    branch.schema_path = vgi::SchemaPath{"data"};
     return branch;
 }
 
@@ -99,6 +100,24 @@ vgi::CatalogBranch native_branch(std::string function_name, const std::string& f
     vgi::CatalogBranch branch;
     branch.function_name = std::move(function_name);
     branch.scan_arguments = vgi::serialize_scan_arguments({string_arg(branch_path(file))});
+    return branch;
+}
+
+vgi::CatalogBranch format_branch(const std::string& format, const std::string& file) {
+    vgi::CatalogBranch branch;
+    branch.format_name = format;
+    branch.format_locations = std::vector<std::string>{branch_path(file)};
+    branch.format_options =
+        vgi::serialize_scan_arguments({}, {{"delim", string_arg("|")},
+                                           {"header",
+                                            [] {
+                                                arrow::BooleanBuilder builder;
+                                                (void)builder.Append(true);
+                                                std::shared_ptr<arrow::Array> value;
+                                                (void)builder.Finish(&value);
+                                                return value;
+                                            }()},
+                                           {"nullstr", string_arg("row_2")}});
     return branch;
 }
 
@@ -245,7 +264,7 @@ void declare_versioned_tables(vgi::CatalogModel& catalog) {
 
     const auto main_with = [](std::vector<vgi::CatalogTable> tables) {
         vgi::CatalogSchema schema;
-        schema.name = "main";
+        schema.path = {"main"};
         schema.tables = std::move(tables);
         return std::vector<vgi::CatalogSchema>{std::move(schema)};
     };
@@ -386,6 +405,13 @@ void declare_catalog(vgi::Worker& worker) {
         {sequence_branch(50), native_branch("read_csv_auto", "vgi_nopushdown_branch.csv")},
         "Multi-branch: VGI + read_csv — used by "
         "multi_branch_pushdown_incapable.test"));
+    {
+        auto format = multi_branch(
+            "multi_branch_format", {format_branch("csv", "vgi_format_branch.csv")},
+            "Format branch: read_csv with delim/header options — used by multi_branch_format.test");
+        format.columns = columns({{"n", arrow::int64()}, {"label", arrow::utf8()}});
+        data.tables.push_back(std::move(format));
+    }
     {
         // Declared for parity only: the iceberg branch is scanned solely by the
         // gated multi_branch_iceberg.test, which the language suites skip.
@@ -613,7 +639,7 @@ void declare_catalog(vgi::Worker& worker) {
         employees.not_null = {0, 1, 2};
         employees.primary_key = {{0}};
         employees.unique = {{2}};
-        employees.foreign_keys = {{{"department_id"}, "departments", {"id"}}};
+        employees.foreign_keys = {{{"department_id"}, "departments", {"id"}, std::nullopt}};
         data.tables.push_back(std::move(employees));
     }
 
@@ -628,7 +654,7 @@ void declare_catalog(vgi::Worker& worker) {
         // would not tell a reader whether the list-of-lists survived the wire.
         projects.primary_key = {{0, 1}};
         projects.not_null = {0, 1, 2};
-        projects.foreign_keys = {{{"department_id"}, "departments", {"id"}}};
+        projects.foreign_keys = {{{"department_id"}, "departments", {"id"}, std::nullopt}};
         data.tables.push_back(std::move(projects));
     }
 
@@ -850,7 +876,7 @@ void declare_catalog(vgi::Worker& worker) {
         constraints.not_null = {0, 1};
         constraints.primary_key = {{0}};
         constraints.unique = {{2}};
-        constraints.foreign_keys = {{{"department_id"}, "departments", {"id"}}};
+        constraints.foreign_keys = {{{"department_id"}, "departments", {"id"}, std::nullopt}};
         data.tables.push_back(std::move(constraints));
     }
 }
