@@ -11,6 +11,7 @@
     },
     "curl",
     "libsodium",
+    "curl",
     "nlohmann-json",
     {
       "name": "cpp-httplib",

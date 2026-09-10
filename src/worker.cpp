@@ -186,8 +186,18 @@ void Worker::run(int argc, char** argv) {
     };
     std::string iroh_upstream;
     std::string iroh_issuer;
+    std::string http_host = "127.0.0.1";
+    int configured_http_port = -1;
     std::vector<std::string> iroh_trusted_proxies;
     bool iroh_observe = false;
+    const auto parse_http_port = [&refuse](const std::string& value) {
+        char* end = nullptr;
+        const long parsed = std::strtol(value.c_str(), &end, 10);
+        if (end == value.c_str() || *end != '\0' || parsed < 0 || parsed > 65535) {
+            refuse("HTTP port must be in 0..65535, got '" + value + "'");
+        }
+        return static_cast<int>(parsed);
+    };
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--iroh-raw-upstream") {
             if (i + 1 >= args.size()) refuse("--iroh-raw-upstream needs [HOST:]PORT");
@@ -200,6 +210,12 @@ void Worker::run(int argc, char** argv) {
             iroh_trusted_proxies.push_back(args[++i]);
         } else if (args[i] == "--iroh-observe") {
             iroh_observe = true;
+        } else if (args[i] == "--host") {
+            if (i + 1 >= args.size()) refuse("--host needs a value");
+            http_host = args[++i];
+        } else if (args[i] == "--port") {
+            if (i + 1 >= args.size()) refuse("--port needs a value");
+            configured_http_port = parse_http_port(args[++i]);
         }
     }
     if (!iroh_upstream.empty()) {
@@ -230,22 +246,22 @@ void Worker::run(int argc, char** argv) {
             std::exit(0);
         }
         if (args[i] == "--http") {
-            int port = 0;
+            int port = configured_http_port < 0 ? 0 : configured_http_port;
             if (i + 1 < args.size() && args[i + 1].rfind("--", 0) != 0) {
-                const auto& value = args[i + 1];
-                char* end = nullptr;
-                const long parsed = std::strtol(value.c_str(), &end, 10);
-                if (end == value.c_str() || *end != '\0' || parsed < 0 || parsed > 65535) {
-                    refuse("--http needs a port in 0..65535, got '" + value + "'");
-                }
-                port = static_cast<int>(parsed);
+                if (configured_http_port >= 0) refuse("use either --http PORT or --port, not both");
+                port = parse_http_port(args[i + 1]);
             }
             if (iroh_issuer.empty()) {
-                server->serve_http("127.0.0.1", port);
+                server->serve_http(http_host, port);
             } else {
+                if (!is_loopback_bind(http_host)) {
+                    refuse(
+                        "Iroh HTTP bridge upstream must bind loopback; expose only the Iroh "
+                        "bridge");
+                }
                 if (iroh_trusted_proxies.empty()) iroh_trusted_proxies.push_back("127.0.0.1");
                 vgi_rpc::HttpConfig config;
-                config.host = "127.0.0.1";
+                config.host = http_host;
                 config.port = port;
                 config.peer_identity_providers.push_back(vgi_rpc::iroh_forwarded_header_provider(
                     {std::move(iroh_issuer), std::move(iroh_trusted_proxies)}));

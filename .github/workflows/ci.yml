@@ -62,7 +62,7 @@ jobs:
       - name: Clone and bootstrap vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg.git
-          git -C vcpkg checkout 05442024c3fda64320bd25d2251cc9807b84fb6f
+          git -C vcpkg checkout 2d32fae67c755b665794a0650f5d268979d7807f
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
           echo "VCPKG_ROOT=$(pwd)/vcpkg" >> $GITHUB_ENV
 
@@ -73,14 +73,14 @@ jobs:
           echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
 
       # vcpkg builds libsodium through its autotools script. The runners ship
-      # libtool but not autoconf/automake, and the port fails at configure time
-      # with a message naming only autoconf.
+      # libtool but not the complete autoconf toolset, and the port fails at
+      # configure time when any one of these tools is absent.
       - name: Install autotools (libsodium)
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            brew install autoconf automake libtool
+            brew install autoconf autoconf-archive automake libtool
           else
-            sudo apt-get update && sudo apt-get install -y autoconf automake libtool
+            sudo apt-get update && sudo apt-get install -y autoconf autoconf-archive automake libtool
           fi
 
       # vcpkg's binary cache covers the dependencies; this covers our own
