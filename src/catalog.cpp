@@ -1070,33 +1070,56 @@ wire::ResultBuilder Dispatcher::common_function_info(
     const std::string& name, const SchemaPath& schema_path, const char* function_type,
     const std::vector<ArgSpec>& specs, const std::shared_ptr<arrow::Schema>& output_schema,
     const FunctionMetadata& metadata) {
-    return wire::ResultBuilder(gen::FunctionInfoSchema())
-        .set_string("name", name)
-        .set_string_list("schema_path", schema_path)
-        .set_enum("function_type", function_type)
-        .set_binary("arguments", wire::encode_schema(build_arg_schema(specs)))
-        .set_binary("output_schema", wire::encode_schema(output_schema))
-        .set_enum("stability", stability_wire_value(metadata.stability))
-        .set_enum("null_handling", metadata.null_handling == NullHandling::Special
-                                       ? enums::null_handling::kSpecial
-                                       : enums::null_handling::kDefault)
-        .set_string("description", metadata.description)
-        .set_examples("examples", metadata.examples)
-        .set_string_list("categories", metadata.categories)
-        .set_string_map("tags", metadata.tags)
-        .set_string_list("required_settings", metadata.required_settings)
-        .set_secret_lookups("required_secrets", secret_entries(metadata))
-        .set_bool("projection_pushdown", metadata.projection_pushdown)
-        .set_bool("filter_pushdown", metadata.filter_pushdown)
-        .set_bool("sampling_pushdown", metadata.sampling_pushdown)
-        .set_bool("input_from_args", metadata.input_from_args)
-        .set_enum("partition_kind", partition_kind_wire_value(metadata))
-        .set_enum("order_dependent", metadata.order_dependent
-                                         ? enums::order_dependence::kOrderDependent
-                                         : enums::order_dependence::kNotOrderDependent)
-        .set_enum("distinct_dependent", metadata.distinct_dependent
-                                            ? enums::distinct_dependence::kDistinctDependent
-                                            : enums::distinct_dependence::kNotDistinctDependent);
+    auto builder =
+        wire::ResultBuilder(gen::FunctionInfoSchema())
+            .set_string("name", name)
+            .set_string_list("schema_path", schema_path)
+            .set_enum("function_type", function_type)
+            .set_binary("arguments", wire::encode_schema(build_arg_schema(specs)))
+            .set_binary("output_schema", wire::encode_schema(output_schema))
+            .set_enum("stability", stability_wire_value(metadata.stability))
+            .set_enum("null_handling", metadata.null_handling == NullHandling::Special
+                                           ? enums::null_handling::kSpecial
+                                           : enums::null_handling::kDefault)
+            .set_string("description", metadata.description)
+            .set_examples("examples", metadata.examples)
+            .set_string_list("categories", metadata.categories)
+            .set_string_map("tags", metadata.tags)
+            .set_string_list("required_settings", metadata.required_settings)
+            .set_secret_lookups("required_secrets", secret_entries(metadata))
+            .set_bool("projection_pushdown", metadata.projection_pushdown)
+            .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_bool("sampling_pushdown", metadata.sampling_pushdown)
+            .set_bool("input_from_args", metadata.input_from_args)
+            .set_enum("partition_kind", partition_kind_wire_value(metadata))
+            .set_enum("order_dependent", metadata.order_dependent
+                                             ? enums::order_dependence::kOrderDependent
+                                             : enums::order_dependence::kNotOrderDependent)
+            .set_enum("distinct_dependent",
+                      metadata.distinct_dependent
+                          ? enums::distinct_dependence::kDistinctDependent
+                          : enums::distinct_dependence::kNotDistinctDependent);
+    if (metadata.parameter_default_values) {
+        if (metadata.parameter_default_values->num_rows() != 1) {
+            throw std::invalid_argument("parameter_default_values must contain exactly one row");
+        }
+        size_t signature_index = 0;
+        for (const auto& field : metadata.parameter_default_values->schema()->fields()) {
+            while (signature_index < specs.size() && specs[signature_index].name != field->name()) {
+                ++signature_index;
+            }
+            if (signature_index == specs.size()) {
+                throw std::invalid_argument("parameter_default_values field '" + field->name() +
+                                            "' is absent from the signature or out of order");
+            }
+            ++signature_index;
+        }
+        builder.set_binary("parameter_default_values",
+                           wire::encode_ipc(metadata.parameter_default_values));
+    } else {
+        builder.set_null("parameter_default_values");
+    }
+    return builder;
 }
 
 std::string Dispatcher::encode_table_function_info(const TableFunction& fn,

@@ -29,6 +29,9 @@ struct BindParams {
     // Argument values known at bind: every constant argument, and the declared
     // type of every argument whether constant or not.
     Arguments arguments;
+    // Resolved name for each logical argument, in complete call order. A null
+    // element is an unnamed vararg; nullopt means the engine supplied no names.
+    std::optional<std::vector<std::optional<std::string>>> argument_names;
     Settings settings;
     Secrets secrets;
     // Whether the engine has already resolved this function's secret lookups.

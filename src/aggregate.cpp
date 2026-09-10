@@ -109,6 +109,7 @@ vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request) {
     BindParams params;
     params.input_schema = wire::get_schema(dto, "input_schema");
     params.arguments = Arguments::parse(wire::get_optional_binary(dto, "arguments").value_or(""));
+    params.argument_names = wire::get_optional_string_list(dto, "argument_names");
     params.settings = Settings::parse(wire::get_optional_binary(dto, "settings").value_or(""));
     params.secrets = Secrets::parse(wire::get_optional_binary(dto, "secrets").value_or(""));
     params.catalog_name = scope.catalog;

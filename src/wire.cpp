@@ -263,6 +263,26 @@ std::vector<std::string> get_string_list(const std::shared_ptr<arrow::RecordBatc
     return items;
 }
 
+std::optional<std::vector<std::optional<std::string>>> get_optional_string_list(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    if (!has_column(batch, field)) return std::nullopt;
+    auto list = std::dynamic_pointer_cast<arrow::ListArray>(column(batch, field));
+    if (!list) fail("param '" + field + "' is not a list");
+    if (list->length() == 0 || list->IsNull(0)) return std::nullopt;
+    auto values = std::dynamic_pointer_cast<arrow::StringArray>(list->values());
+    if (!values) fail("param '" + field + "' is not a list of strings");
+    std::vector<std::optional<std::string>> items;
+    items.reserve(static_cast<size_t>(list->value_length(0)));
+    for (int64_t i = list->value_offset(0); i < list->value_offset(1); ++i) {
+        if (values->IsNull(i)) {
+            items.emplace_back(std::nullopt);
+        } else {
+            items.emplace_back(values->GetString(i));
+        }
+    }
+    return items;
+}
+
 SchemaPath get_schema_path(const std::shared_ptr<arrow::RecordBatch>& batch,
                            const std::string& field) {
     if (!has_column(batch, field)) return {"main"};

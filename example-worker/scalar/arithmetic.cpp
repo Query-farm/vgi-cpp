@@ -4,6 +4,7 @@
 // type bound.
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,64 @@ public:
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         return vgi::add_two(params, batch);
+    }
+};
+
+// `argument_names_probe(left, right, scale)` — rejects binds that lose the
+// resolved logical argument names, including the constant argument.
+class ArgumentNamesProbe : public vgi::ScalarFunction {
+public:
+    std::string name() const override { return "argument_names_probe"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Checks VGI 2.0 bind-time argument names";
+
+        arrow::Int64Builder values;
+        (void)values.Append(2);
+        std::shared_ptr<arrow::Array> scale;
+        (void)values.Finish(&scale);
+        md.parameter_default_values = arrow::RecordBatch::Make(
+            arrow::schema({arrow::field("scale", arrow::int64(), /*nullable=*/true)}), 1, {scale});
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        auto scale = vgi::ArgSpec::constant_arg("scale", 2, "int64", "Scale factor");
+        scale.default_value = "2";
+        return {vgi::ArgSpec::column("left", 0, "int64", "Left value"),
+                vgi::ArgSpec::column("right", 1, "int64", "Right value"), scale};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
+        const std::vector<std::optional<std::string>> expected = {
+            std::string("left"), std::string("right"), std::string("scale")};
+        if (!params.argument_names || *params.argument_names != expected) {
+            throw std::invalid_argument(
+                "argument_names_probe received an incomplete bind signature");
+        }
+        return arrow::schema({arrow::field("result", arrow::int64(), /*nullable=*/true)});
+    }
+
+    std::shared_ptr<arrow::RecordBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        const auto left = std::static_pointer_cast<arrow::Int64Array>(batch->column(0));
+        const auto right = std::static_pointer_cast<arrow::Int64Array>(batch->column(1));
+        const int64_t scale = params.arguments.const_int64(2).value_or(2);
+
+        arrow::Int64Builder out;
+        (void)out.Reserve(batch->num_rows());
+        for (int64_t i = 0; i < batch->num_rows(); ++i) {
+            if (left->IsNull(i) || right->IsNull(i)) {
+                (void)out.AppendNull();
+            } else {
+                (void)out.Append((left->Value(i) + right->Value(i)) * scale);
+            }
+        }
+        std::shared_ptr<arrow::Array> values;
+        (void)out.Finish(&values);
+        return result(params, values);
     }
 };
 
@@ -169,6 +228,7 @@ public:
 void register_arithmetic(vgi::Worker& worker) {
     worker.register_scalar(std::make_shared<Double>());
     worker.register_scalar(std::make_shared<AddValues>());
+    worker.register_scalar(std::make_shared<ArgumentNamesProbe>());
     worker.register_scalar(std::make_shared<Multiply>());
     worker.register_scalar(std::make_shared<SumValues>());
 }

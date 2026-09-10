@@ -897,6 +897,7 @@ BindParams Dispatcher::read_bind_request(
         Settings::parse(wire::get_optional_binary(bind_call, "settings").value_or(""));
     params.secrets = Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
     params.schema_path = wire::get_schema_path(bind_call);
+    params.argument_names = wire::get_optional_string_list(bind_call, "argument_names");
     // From the attachment's seal, not from the primary: one worker may serve
     // several catalogs, and a bind carries nothing else that says which one.
     const auto attachment = attachment_of(bind_call);
