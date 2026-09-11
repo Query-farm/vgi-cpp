@@ -199,3 +199,14 @@ jobs:
         run: |
           test "$(git -C "$VGI_EXT" rev-parse HEAD)" = "$VGI_SHA"
           scripts/run_tests.sh --no-build
+
+      - name: Preserve integration diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vgi-main-integration-logs
+          path: |
+            ${{ runner.temp }}/vgi-cpp-test-cache/run.log
+            ${{ runner.temp }}/vgi-cpp-test-cache/worker.log
+            ${{ runner.temp }}/vgi-cpp-test-cache/failures
+          if-no-files-found: warn
