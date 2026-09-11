@@ -969,7 +969,8 @@ private:
 void register_splits(vgi::Worker& worker) {
     using Shape = SplitFunction::Shape;
     worker.register_table(std::make_shared<SplitFunction>(
-        "split_sequence", Shape::Even, "Integers 0..n-1, divided into n contiguous splits"));
+        "split_sequence", Shape::Even, "Integers 0..n-1, divided into n contiguous splits",
+        /*catalog_version=*/1));
     worker.register_table(
         std::make_shared<SplitFunction>("split_empty_ranges", Shape::EmptyRanges,
                                         "Integers 0..n-1, where every other split names no rows"));

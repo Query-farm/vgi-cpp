@@ -533,7 +533,7 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      .set_bool("supports_transactions", model.supports_transactions)
                      .set_bool("supports_time_travel", supports_time_travel(model))
                      .set_bool("catalog_version_frozen", true)
-                     .set_int64("catalog_version", 1)
+                     .set_int64("catalog_version", *current_catalog_version(request))
                      .set_bool("attach_opaque_data_required", true)
                      .set_string("default_schema", "main")
                      // On, and per-table from here: the flag gates every
@@ -555,9 +555,10 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     return envelope(batch.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_version(const vgi_rpc::Request&) {
-    return envelope(
-        wire::ResultBuilder(payload_schema_of("catalog_version")).set_int64("version", 1).finish());
+vgi_rpc::Result Dispatcher::catalog_version(const vgi_rpc::Request& request) {
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_version"))
+                        .set_int64("version", *current_catalog_version(request))
+                        .finish());
 }
 
 void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
@@ -570,6 +571,12 @@ void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
 }
 
 namespace {}  // namespace
+
+std::optional<int64_t> Dispatcher::current_catalog_version(const vgi_rpc::Request&) const {
+    // One source for ATTACH, catalog_version, split minting, and redemption.
+    // When catalogs become mutable, their live version lookup belongs here.
+    return 1;
+}
 
 vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
     // Minted here rather than by the engine, and unique across processes: the
