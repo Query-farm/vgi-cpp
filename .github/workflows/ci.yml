@@ -112,8 +112,90 @@ jobs:
           test -x build/example-worker/vgi-example-worker
           echo "worker built: $(build/example-worker/vgi-example-worker --help 2>&1 | head -1 || true)"
 
-  # The integration suite is the definition of done for this repo, and it needs
-  # the DuckDB extension built from ~/Development/vgi — a large, separate build
-  # that does not belong in this workflow. It runs locally via
-  # scripts/run_tests.sh; see CLAUDE.md. Wiring it here needs the extension
-  # published as a release artifact first, which is tracked separately.
+  integration:
+    name: VGI main integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GEN: ninja
+      USE_MERGED_VCPKG_MANIFEST: "1"
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Always qualify the SDK against the source currently at VGI main. There
+      # is deliberately no fallback revision or previously published artifact.
+      - name: Check out VGI main
+        uses: actions/checkout@v4
+        with:
+          repository: Query-farm/vgi
+          ref: main
+          path: vgi-upstream
+          submodules: recursive
+
+      - name: Record the resolved VGI revision
+        run: |
+          vgi_sha=$(git -C vgi-upstream rev-parse HEAD)
+          echo "VGI_SHA=$vgi_sha" >> "$GITHUB_ENV"
+          echo "VGI main: $vgi_sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out vgi-rpc-cpp
+        uses: actions/checkout@v4
+        with:
+          repository: Query-farm/vgi-rpc-cpp
+          path: vgi-rpc-c++
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf autoconf-archive automake ccache libtool ninja-build
+
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: vgi-cpp-integration-${{ runner.os }}
+          max-size: 1G
+
+      - uses: dtolnay/rust-toolchain@1.97
+
+      - name: Export vcpkg cache credentials
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Bootstrap VGI vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git vgi-upstream/vcpkg
+          ./vgi-upstream/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Build VGI main
+        working-directory: vgi-upstream
+        run: make release
+
+      - name: Bootstrap SDK vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
+          git -C vcpkg checkout 2d32fae67c755b665794a0650f5d268979d7807f
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure the release worker
+        run: >
+          cmake --preset release
+          -DVGI_RPC_SOURCE_DIR=${{ github.workspace }}/vgi-rpc-c++
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build the release worker
+        run: cmake --build --preset release --parallel
+
+      - name: Run the VGI integration suite
+        env:
+          VGI_EXT: ${{ github.workspace }}/vgi-upstream
+          VGI_CPP_BUILD: ${{ github.workspace }}/build-release
+          VGI_CPP_TEST_CACHE: ${{ runner.temp }}/vgi-cpp-test-cache
+        run: |
+          test "$(git -C "$VGI_EXT" rev-parse HEAD)" = "$VGI_SHA"
+          scripts/run_tests.sh --no-build
