@@ -419,3 +419,47 @@ TEST_CASE("Filter v2 fails closed when a runtime batch changes column type", "[f
         arrow::RecordBatch::Make(arrow::schema({arrow::field("n", arrow::utf8())}), 1, {strings});
     REQUIRE_THROWS(filters.apply(changed));
 }
+
+TEST_CASE("Filter v2 list_contains uses DuckDB nested and NaN equality", "[filter-v2]") {
+    const auto document =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"call","function":"list_contains","arguments":[{"node":"column_ref","column_index":0,"column_name":"values"},{"node":"literal","value_ref":0}]}}]})";
+
+    auto doubles = std::make_shared<arrow::DoubleBuilder>();
+    arrow::ListBuilder list_builder(arrow::default_memory_pool(), doubles);
+    REQUIRE(list_builder.Append().ok());
+    REQUIRE(doubles->Append(NAN).ok());
+    REQUIRE(list_builder.Append().ok());
+    REQUIRE(doubles->Append(1.0).ok());
+    REQUIRE(list_builder.Append().ok());
+    REQUIRE(doubles->AppendNull().ok());
+    REQUIRE(list_builder.AppendNull().ok());
+    std::shared_ptr<arrow::Array> lists;
+    REQUIRE(list_builder.Finish(&lists).ok());
+    auto input = arrow::RecordBatch::Make(arrow::schema({arrow::field("values", lists->type())}), 4,
+                                          {lists});
+    auto nan_filter = vgi::PushdownFilters::parse(filter_batch(document, double_values({NAN})), {},
+                                                  input->schema());
+    REQUIRE(nan_filter.apply(input)->num_rows() == 1);
+    auto null_filter = vgi::PushdownFilters::parse(
+        filter_batch(document, null_value(arrow::float64())), {}, input->schema());
+    REQUIRE(null_filter.apply(input)->num_rows() == 0);
+
+    auto integers = std::make_shared<arrow::Int64Builder>();
+    auto inner_lists = std::make_shared<arrow::ListBuilder>(arrow::default_memory_pool(), integers);
+    arrow::ListBuilder outer_lists(arrow::default_memory_pool(), inner_lists);
+    REQUIRE(outer_lists.Append().ok());
+    REQUIRE(inner_lists->Append().ok());
+    REQUIRE(integers->Append(1).ok());
+    REQUIRE(integers->AppendNull().ok());
+    REQUIRE(outer_lists.Append().ok());
+    REQUIRE(inner_lists->Append().ok());
+    REQUIRE(integers->Append(1).ok());
+    REQUIRE(integers->Append(2).ok());
+    std::shared_ptr<arrow::Array> nested_lists;
+    REQUIRE(outer_lists.Finish(&nested_lists).ok());
+    auto nested_input = arrow::RecordBatch::Make(
+        arrow::schema({arrow::field("values", nested_lists->type())}), 2, {nested_lists});
+    auto nested_filter = vgi::PushdownFilters::parse(
+        filter_batch(document, int64_list({1, std::nullopt})), {}, nested_input->schema());
+    REQUIRE(nested_filter.apply(nested_input)->num_rows() == 1);
+}

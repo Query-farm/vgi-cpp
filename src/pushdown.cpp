@@ -788,6 +788,67 @@ std::optional<std::string> string_at(const std::shared_ptr<arrow::Array>& values
     throw std::runtime_error("standard string filter requires UTF8 arguments");
 }
 
+double floating_scalar_value(const std::shared_ptr<arrow::Scalar>& value) {
+    auto array =
+        value_or_throw(arrow::MakeArrayFromScalar(*value, 1), "materialize floating scalar");
+    auto casted =
+        value_or_throw(arrow::compute::Cast(array, arrow::float64()), "cast floating scalar");
+    return std::static_pointer_cast<arrow::DoubleArray>(casted.make_array())->Value(0);
+}
+
+bool nested_scalar_equal(const std::shared_ptr<arrow::Scalar>& left,
+                         const std::shared_ptr<arrow::Scalar>& right) {
+    if (!left || !right) throw std::runtime_error("nested equality received no scalar");
+    if (!left->is_valid || !right->is_valid) return left->is_valid == right->is_valid;
+    if (!same_logical_type(left->type, right->type)) return false;
+    const auto decode_dictionary = [](std::shared_ptr<arrow::Scalar> value) {
+        if (value->type->id() != arrow::Type::DICTIONARY) return value;
+        auto array =
+            value_or_throw(arrow::MakeArrayFromScalar(*value, 1), "materialize dictionary scalar");
+        const auto target = logical_type(value->type);
+        auto decoded =
+            value_or_throw(arrow::compute::Cast(array, target), "decode dictionary scalar");
+        return value_or_throw(decoded.make_array()->GetScalar(0), "read dictionary scalar");
+    };
+    const auto left_value = decode_dictionary(left);
+    const auto right_value = decode_dictionary(right);
+    const auto type = left_value->type;
+    if (floating_type(type)) {
+        return floating_compare(floating_scalar_value(left_value),
+                                floating_scalar_value(right_value), "eq");
+    }
+    if (type->id() == arrow::Type::STRUCT) {
+        const auto& left_struct = static_cast<const arrow::StructScalar&>(*left_value);
+        const auto& right_struct = static_cast<const arrow::StructScalar&>(*right_value);
+        if (left_struct.value.size() != right_struct.value.size()) return false;
+        for (size_t i = 0; i < left_struct.value.size(); ++i) {
+            if (!nested_scalar_equal(left_struct.value[i], right_struct.value[i])) return false;
+        }
+        return true;
+    }
+    switch (type->id()) {
+        case arrow::Type::LIST:
+        case arrow::Type::LARGE_LIST:
+        case arrow::Type::FIXED_SIZE_LIST:
+        case arrow::Type::LIST_VIEW:
+        case arrow::Type::LARGE_LIST_VIEW:
+        case arrow::Type::MAP: {
+            const auto& left_list = static_cast<const arrow::BaseListScalar&>(*left_value);
+            const auto& right_list = static_cast<const arrow::BaseListScalar&>(*right_value);
+            if (left_list.value->length() != right_list.value->length()) return false;
+            for (int64_t i = 0; i < left_list.value->length(); ++i) {
+                const auto left_child =
+                    value_or_throw(left_list.value->GetScalar(i), "read nested list value");
+                const auto right_child =
+                    value_or_throw(right_list.value->GetScalar(i), "read nested list value");
+                if (!nested_scalar_equal(left_child, right_child)) return false;
+            }
+            return true;
+        }
+        default: return left_value->Equals(*right_value);
+    }
+}
+
 arrow::Datum evaluate(const std::shared_ptr<Spec>& spec,
                       const std::shared_ptr<arrow::RecordBatch>& batch);
 
@@ -818,7 +879,7 @@ arrow::Datum evaluate_standard_call(const Spec& spec,
                 if (values->IsNull(i)) continue;
                 const auto candidate =
                     value_or_throw(values->GetScalar(i), "read list_contains value");
-                if (candidate->Equals(*needle)) {
+                if (nested_scalar_equal(candidate, needle)) {
                     matched = true;
                     break;
                 }
@@ -920,8 +981,6 @@ arrow::Datum evaluate(const std::shared_ptr<Spec>& spec,
     }
     if (spec->kind == "negate") return call("negate_checked", {evaluate(spec->children[0], batch)});
     if (spec->kind == "call") {
-        if (spec->function == "list_contains")
-            throw std::runtime_error("list_contains has no exact standard-v1 evaluator");
         return evaluate_standard_call(*spec, batch);
     }
     throw std::runtime_error("runtime filter has no negotiated evaluator");
