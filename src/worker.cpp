@@ -1,14 +1,17 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include "vgi/worker.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <arrow/compute/initialize.h>
 #include <vgi_rpc/http_config.h>
+#include <vgi_rpc/crypto.h>
 #include <vgi_rpc/identity.h>
 #include <vgi_rpc/iroh_identity.h>
 #include <vgi_rpc/server.h>
@@ -45,6 +48,64 @@ std::pair<std::string, int> parse_tcp_bind(const std::string& value, const char*
 
 bool is_loopback_bind(const std::string& host) {
     return host == "127.0.0.1" || host == "::1" || host == "localhost";
+}
+
+std::map<std::string, std::string> bearer_tokens_from_env() {
+    std::map<std::string, std::string> tokens;
+    const char* configured = std::getenv("VGI_BEARER_TOKENS");
+    if (!configured || !*configured) return tokens;
+    std::string entries(configured);
+    size_t begin = 0;
+    while (begin <= entries.size()) {
+        const auto end = entries.find(',', begin);
+        const auto entry = entries.substr(begin, end == std::string::npos ? end : end - begin);
+        const auto separator = entry.find('=');
+        if (separator == std::string::npos || separator == 0 || separator + 1 == entry.size()) {
+            throw std::invalid_argument(
+                "VGI_BEARER_TOKENS must contain comma-separated token=principal entries");
+        }
+        tokens.emplace(entry.substr(0, separator), entry.substr(separator + 1));
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return tokens;
+}
+
+void configure_bearer_auth(vgi_rpc::HttpConfig& config,
+                           const std::map<std::string, std::string>& tokens) {
+    if (tokens.empty()) return;
+    config.peer_identity_providers.push_back(
+        [tokens](const vgi_rpc::PeerResolutionContext& context) {
+            const auto authorization = context.header("authorization");
+            constexpr const char* kPrefix = "Bearer ";
+            if (!authorization || authorization->rfind(kPrefix, 0) != 0) {
+                throw vgi_rpc::PeerIdentityRejected("missing bearer credential");
+            }
+            const auto found =
+                tokens.find(authorization->substr(std::char_traits<char>::length(kPrefix)));
+            if (found == tokens.end()) {
+                throw vgi_rpc::PeerIdentityRejected("invalid bearer credential");
+            }
+            return vgi_rpc::PeerIdentityResult::available(vgi_rpc::PeerIdentity(
+                "bearer", "authorization", vgi_rpc::IdentityAssurance::CONFIGURED_PROXY,
+                "vgi-worker", "http", vgi_rpc::PeerSubjectKind::USER, found->second,
+                vgi_rpc::SubjectStability::STABLE, /*subject_verified=*/true));
+        });
+    config.peer_authentication_policy = vgi_rpc::peer_identity_primary("bearer");
+}
+
+void configure_signing_key(vgi_rpc::HttpConfig& config) {
+    const char* configured = std::getenv("VGI_SIGNING_KEY");
+    if (!configured || !*configured) return;
+
+    const std::string raw(configured);
+    if (raw.size() == config.token_key.size()) {
+        std::copy(raw.begin(), raw.end(), config.token_key.begin());
+        return;
+    }
+    vgi_rpc::crypto::Sha256 hash;
+    hash.update(raw);
+    config.token_key = hash.digest();
 }
 }  // namespace
 
@@ -252,7 +313,13 @@ void Worker::run(int argc, char** argv) {
                 port = parse_http_port(args[i + 1]);
             }
             if (iroh_issuer.empty()) {
-                server->serve_http(http_host, port);
+                vgi_rpc::HttpConfig config;
+                config.host = http_host;
+                config.port = port;
+                configure_signing_key(config);
+                configure_bearer_auth(config, bearer_tokens_from_env());
+                disp_->set_split_token_signing_key(config.token_key);
+                server->serve_http(config);
             } else {
                 if (!is_loopback_bind(http_host)) {
                     refuse(
@@ -263,11 +330,13 @@ void Worker::run(int argc, char** argv) {
                 vgi_rpc::HttpConfig config;
                 config.host = http_host;
                 config.port = port;
+                configure_signing_key(config);
                 config.peer_identity_providers.push_back(vgi_rpc::iroh_forwarded_header_provider(
                     {std::move(iroh_issuer), std::move(iroh_trusted_proxies)}));
                 config.peer_authentication_policy = iroh_observe
                                                         ? vgi_rpc::observe_peer_identity
                                                         : vgi_rpc::peer_identity_primary("iroh");
+                disp_->set_split_token_signing_key(config.token_key);
                 server->serve_http(config);
             }
             std::exit(0);

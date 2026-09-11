@@ -183,7 +183,6 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
     // still registered — see the note above — but refuses when called.
     const std::unordered_map<std::string, UnaryHandler> unary = {
         {"bind", &Dispatcher::bind},
-        {"table_function_plan", &Dispatcher::table_function_plan},
         {"table_function_cardinality", &Dispatcher::table_function_cardinality},
         {"table_function_statistics", &Dispatcher::table_function_statistics},
         {"table_function_dynamic_to_string", &Dispatcher::table_function_dynamic_to_string},
@@ -222,6 +221,7 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
     };
     // The handlers that also take the call's log channel.
     const std::unordered_map<std::string, UnaryContextHandler> unary_with_context = {
+        {"table_function_plan", &Dispatcher::table_function_plan},
         {"table_buffering_process", &Dispatcher::table_buffering_process},
         {"table_buffering_combine", &Dispatcher::table_buffering_combine},
     };
@@ -242,9 +242,9 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
             // only placeholders — the factory returns the real pair.
             builder.add_exchange(
                 name, spec.params, arrow::schema({}), arrow::schema({}),
-                [this, name](const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
+                [this, name](const vgi_rpc::Request& req, vgi_rpc::CallContext& ctx) {
                     trace(name);
-                    return this->init(req);
+                    return this->init(req, ctx);
                 },
                 "", global_init_response_schema());
             continue;

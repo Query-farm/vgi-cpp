@@ -3,9 +3,9 @@
 
 #include <algorithm>
 #include <chrono>
-#include <thread>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <arrow/array.h>
@@ -167,8 +167,8 @@ public:
                 (void)id;
                 ordered.push_back(decode_indexed(blob));
             }
-            std::sort(ordered.begin(), ordered.end(),
-                      [](const auto& a, const auto& b) { return a.first < b.first; });
+            std::stable_sort(ordered.begin(), ordered.end(),
+                             [](const auto& a, const auto& b) { return a.first < b.first; });
             for (const auto& [index, bytes] : ordered) {
                 (void)index;
                 params.storage->append(params.execution_id, kNamespace, "", bytes);

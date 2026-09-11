@@ -288,6 +288,10 @@ struct FunctionMetadata {
     // and still restore the original order, by sorting on the tag rather than
     // on arrival. A function that declares it and omits the tag is rejected.
     bool supports_batch_index = false;
+    // How long tokens minted for this split-capable function remain usable.
+    // Absent lets the engine use its normal planning horizon; a declared
+    // value below that horizon is refused before any work is scheduled.
+    std::optional<int64_t> split_token_ttl_seconds;
     // What order the engine may assume of this function's rows. Empty leaves
     // the engine's own default in place; the values are in `src/enums.h`.
     std::string order_preservation;

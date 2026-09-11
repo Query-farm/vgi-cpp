@@ -18,16 +18,20 @@
 // cross-SDK fixture covers it. That is why it can hash C++ spellings of the
 // bind fields rather than reproducing the reference's Python `repr`.
 //
-// Nothing here seals: this SDK's transports carry no signing key, and the
-// reference's own header explains why the header must stay plaintext where
-// DuckDB runs. If a key ever arrives, the keyed/keyless decision has to come
-// from the worker's key state and never from the token's own `flags` byte —
-// trusting that byte is `alg:none`.
+// The header is always plaintext. HTTP supplies its process token key and
+// seals the payload; raw transports remain keyless inside their existing
+// trust boundary. The keyed/keyless decision comes from worker key state,
+// never from the attacker-controlled flags byte — trusting that bit alone is
+// `alg:none`.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
+
+#include <vgi_rpc/crypto.h>
+#include <vgi_rpc/identity.h>
 
 #include "vgi/types.h"
 
@@ -43,14 +47,27 @@ inline constexpr size_t kHeaderLen = 4 + kFingerprintLen;
 std::string bind_fingerprint(const SchemaPath& schema_path, const std::string& function_name,
                              const std::string& arguments, const std::string& settings);
 
-// Stamp a payload into a token.
-std::string build(const std::string& payload, const std::string& fingerprint,
-                  const std::string& anchor);
+using SigningKey = std::array<uint8_t, vgi_rpc::crypto::kAeadKeyBytes>;
 
-// Verify a token and return the payload, or nothing when it is malformed, was
-// minted for a different bind, or names a snapshot that has moved on.
-std::optional<std::string> open(const std::string& token, const std::string& expected_fingerprint,
-                                const std::string& current_anchor);
+// Stamp a payload into a token. A keyed worker seals the payload and binds it
+// to the caller identity; a keyless worker leaves it plaintext.
+std::string build(const std::string& payload, const std::string& fingerprint,
+                  const std::string& anchor, const std::optional<SigningKey>& signing_key,
+                  const vgi_rpc::AuthContext& auth);
+
+enum class OpenError { None, Invalid, SnapshotExpired };
+
+struct OpenResult {
+    std::optional<std::string> payload;
+    OpenError error = OpenError::None;
+};
+
+// Verify a token while preserving the one actionable distinction: an expired
+// snapshot can be retried after replanning, while a malformed or wrongly-bound
+// token cannot.
+OpenResult open(const std::string& token, const std::string& expected_fingerprint,
+                const std::string& current_anchor, const std::optional<SigningKey>& signing_key,
+                const vgi_rpc::AuthContext& auth);
 
 // The consistency anchor for a catalog version: int64, little-endian, and an
 // absent version is zero — the same spelling the reference uses.

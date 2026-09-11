@@ -29,6 +29,8 @@ mkdir -p "$BRANCH_DIR"
 
 BUILD=1
 if [[ "${1:-}" == "--no-build" ]]; then BUILD=0; shift; fi
+FULL_RUN=0
+if [[ $# -eq 0 ]]; then FULL_RUN=1; fi
 
 if [[ ! -x "$UNITTEST" ]]; then
   echo "[harness] $UNITTEST missing — build the extension first:"
@@ -121,7 +123,7 @@ start_http_worker() { # name catalog [extra-env...]
     echo "[harness] HTTP worker '$name' never reported a port; see $CACHE/worker.log" >&2
     return 1
   fi
-  echo "http://127.0.0.1:$port"
+  STARTED_HTTP_URL="http://127.0.0.1:$port"
 }
 
 # Opt-in, because each one is a process held open for the whole run and the
@@ -129,9 +131,12 @@ start_http_worker() { # name catalog [extra-env...]
 HTTP_ENV=()
 if [[ "${VGI_HTTP:-0}" == "1" ]]; then
   echo "[harness] starting HTTP workers..."
-  H_EXAMPLE=$(start_http_worker example example) || exit 1
-  H_VERSIONED=$(start_http_worker versioned versioned) || exit 1
-  H_VERSIONED_TABLES=$(start_http_worker versioned_tables versioned_tables) || exit 1
+  start_http_worker example example || exit 1
+  H_EXAMPLE=$STARTED_HTTP_URL
+  start_http_worker versioned versioned || exit 1
+  H_VERSIONED=$STARTED_HTTP_URL
+  start_http_worker versioned_tables versioned_tables || exit 1
+  H_VERSIONED_TABLES=$STARTED_HTTP_URL
   echo "[harness] example=$H_EXAMPLE versioned=$H_VERSIONED tables=$H_VERSIONED_TABLES"
   # VGI_HTTP_TRANSPORT is a flag: it says VGI_TEST_WORKER is itself a URL, so
   # the whole suite runs over HTTP rather than by spawning a subprocess.
@@ -141,6 +146,16 @@ if [[ "${VGI_HTTP:-0}" == "1" ]]; then
     VGI_VERSIONED_HTTP_WORKER="$H_VERSIONED"
     VGI_VERSIONED_TABLES_HTTP_WORKER="$H_VERSIONED_TABLES"
   )
+fi
+
+# The bearer fixture needs a protected HTTP worker while the rest of the suite
+# needs an anonymous worker. Run it separately during a full suite instead of
+# exporting its token into the launcher run, where bearer_token is invalid.
+H_BEARER=""
+if [[ $FULL_RUN == 1 ]]; then
+  start_http_worker bearer example \
+    VGI_BEARER_TOKENS=test-secret-token=test-principal || exit 1
+  H_BEARER=$STARTED_HTTP_URL
 fi
 
 ARGS=()
@@ -162,9 +177,16 @@ echo "[harness] running: ${ARGS[*]}"
   VGI_VERSIONED_TABLES_WORKER="$W_VERSIONED_TABLES" \
   VGI_ATTACH_OPTIONS_WORKER="$W_ATTACH_OPTIONS" \
   VGI_BAD_PROTOCOL_WORKER="$W_BAD_PROTOCOL" \
-  VGI_TEST_BEARER_TOKEN="test-secret-token" \
   "$UNITTEST" "${ARGS[@]}" ) > "$CACHE/run.log" 2>&1
 RC=$?
+
+if [[ $FULL_RUN == 1 ]]; then
+  ( cd "$VGI_EXT" && env \
+    VGI_TEST_WORKER="$H_BEARER" \
+    VGI_TEST_BEARER_TOKEN="test-secret-token" \
+    "$UNITTEST" "test/sql/integration/bearer_auth/*" ) >> "$CACHE/run.log" 2>&1
+  RC=$(( RC | $? ))
+fi
 
 grep -oE 'test/sql/integration/[A-Za-z0-9_/]+\.test(_slow)?' "$CACHE/run.log" \
   | sort -u > "$CACHE/allmentioned" 2>/dev/null

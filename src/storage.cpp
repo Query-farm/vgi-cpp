@@ -298,13 +298,27 @@ private:
             if (!vgi::portable::TryClaimFile(reservation.string(), "vgi storage")) {
                 continue;  // another worker took this id
             }
-            write_file_atomically(dir / (pad(id) + ".entry"), value);
-            // Dropped once the payload is there, so the marker means exactly
-            // one thing to a reader: this id is reserved and its entry has not
-            // landed yet. A popper uses that to tell "someone already took it"
-            // from "it is still on its way".
+            const auto entry = dir / (pad(id) + ".entry");
+            const auto used = dir / (pad(id) + ".used");
             std::error_code ec;
-            fs::remove(reservation, ec);
+            // `from` came from an unlocked directory scan. A publisher can
+            // finish between that scan and this claim, leaving the permanent
+            // tombstone as the authority that this id is already spent.
+            if (fs::exists(entry, ec) || fs::exists(used, ec)) {
+                fs::remove(reservation, ec);
+                continue;
+            }
+            write_file_atomically(entry, value);
+            // Keep a tombstone after publication. Removing the reservation
+            // made this id reusable as soon as a racing appender's directory
+            // scan missed the new entry; that process could then publish over
+            // the existing file and silently lose a batch. The queue also
+            // needs ids to remain spent after their entry has been popped.
+            fs::rename(reservation, used, ec);
+            if (ec) {
+                throw std::runtime_error("vgi storage: cannot finalize log id under " +
+                                         dir.string());
+            }
             return id;
         }
         throw std::runtime_error("vgi storage: could not claim a log id under " + dir.string());

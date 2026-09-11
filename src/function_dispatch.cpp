@@ -1039,7 +1039,8 @@ std::string encode_scan_split(const ScanSplit& split, const std::string& token) 
 
 }  // namespace
 
-vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request,
+                                                vgi_rpc::CallContext& context) {
     auto plan_request = wire::get_ipc(request.batch(), "request");
     if (!plan_request) throw std::runtime_error("plan: empty request");
 
@@ -1085,13 +1086,15 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request)
         bind_params.schema_path, function_name,
         wire::get_optional_binary(bind_call, "arguments").value_or(std::string{}),
         wire::get_optional_binary(bind_call, "settings").value_or(std::string{}));
-    const auto anchor = split_token::anchor_for(result.catalog_version);
+    const auto anchor = split_token::anchor_for(
+        result.catalog_version ? result.catalog_version : current_catalog_version(request));
 
     std::vector<std::string> splits;
     splits.reserve(result.splits.size());
     for (const auto& split : result.splits) {
         splits.push_back(
-            encode_scan_split(split, split_token::build(split.payload, fingerprint, anchor)));
+            encode_scan_split(split, split_token::build(split.payload, fingerprint, anchor,
+                                                        split_token_signing_key_, context.auth())));
     }
 
     auto payload = wire::ResultBuilder(payload_schema_of("table_function_plan"));
@@ -1227,7 +1230,7 @@ vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Requ
                                       .finish());
 }
 
-vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
+vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallContext& context) {
     auto init_request = wire::get_ipc(request.batch(), "request");
     if (!init_request) throw std::runtime_error("init: empty request");
 
@@ -1306,21 +1309,25 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
             bind_params.schema_path, function_name,
             wire::get_optional_binary(bind_call, "arguments").value_or(std::string{}),
             wire::get_optional_binary(bind_call, "settings").value_or(std::string{}));
-        // The anchor a plan sealed in. Nothing here time-travels, so the
-        // current anchor is the one a plan would mint now.
-        const auto anchor = split_token::anchor_for(std::nullopt);
+        const auto anchor = split_token::anchor_for(current_catalog_version(request));
 
         std::vector<std::string> payloads;
         payloads.reserve(tokens.size());
         for (const auto& token : tokens) {
-            auto opened = split_token::open(token, fingerprint, anchor);
-            if (!opened) {
-                throw std::runtime_error(
-                    "init: split token for '" + function_name +
-                    "' is not redeemable here — it was minted for a different bind, or "
-                    "against a snapshot this worker no longer serves");
+            auto opened = split_token::open(token, fingerprint, anchor, split_token_signing_key_,
+                                            context.auth());
+            if (!opened.payload) {
+                if (opened.error == split_token::OpenError::SnapshotExpired) {
+                    throw std::runtime_error("SPLIT_SNAPSHOT_EXPIRED: split token for '" +
+                                             function_name +
+                                             "' names a snapshot this worker no longer serves; "
+                                             "re-run the query to plan against the current "
+                                             "snapshot");
+                }
+                throw std::runtime_error("SPLIT_TOKEN_INVALID: split token for '" + function_name +
+                                         "' is malformed or bound elsewhere");
             }
-            payloads.push_back(std::move(*opened));
+            payloads.push_back(std::move(*opened.payload));
         }
         params.split_payloads = std::move(payloads);
     }

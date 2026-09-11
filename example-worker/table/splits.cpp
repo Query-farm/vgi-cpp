@@ -14,9 +14,11 @@
 // planning off, which is what `splits/rollback.test` pins.
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <arrow/array.h>
@@ -25,6 +27,7 @@
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
+#include <vgi/partition.h>
 #include <vgi/worker.h>
 
 #include "scalar/util.h"
@@ -60,6 +63,19 @@ std::optional<std::pair<int64_t, int64_t>> decode_range(const std::string& paylo
     return std::pair{read(0), read(8)};
 }
 
+std::string encode_indexed_range(int64_t ordinal, int64_t begin, int64_t end) {
+    return encode_range(ordinal, begin) + encode_range(end, 0).substr(0, 8);
+}
+
+std::optional<std::tuple<int64_t, int64_t, int64_t>> decode_indexed_range(
+    const std::string& payload) {
+    if (payload.size() != 24) return std::nullopt;
+    auto ordinal_begin = decode_range(payload.substr(0, 16));
+    auto end_unused = decode_range(payload.substr(8, 16));
+    if (!ordinal_begin || !end_unused) return std::nullopt;
+    return std::tuple{ordinal_begin->first, ordinal_begin->second, end_unused->second};
+}
+
 std::shared_ptr<arrow::Schema> n_schema() {
     return arrow::schema({arrow::field("n", arrow::int64(), /*nullable=*/false)});
 }
@@ -89,8 +105,9 @@ std::string render_filter_bounds(const vgi::PushdownFilters& filters) {
 class RangeProducer : public vgi::TableProducer {
 public:
     RangeProducer(std::shared_ptr<arrow::Schema> schema,
-                  std::vector<std::pair<int64_t, int64_t>> ranges)
-        : schema_(std::move(schema)), ranges_(std::move(ranges)) {}
+                  std::vector<std::pair<int64_t, int64_t>> ranges,
+                  std::map<std::string, std::string> metadata = {})
+        : schema_(std::move(schema)), ranges_(std::move(ranges)), metadata_(std::move(metadata)) {}
 
     std::shared_ptr<arrow::RecordBatch> next_batch() override {
         // An empty range is not the end of the scan: `split_empty_ranges`
@@ -114,10 +131,13 @@ public:
         return batch;
     }
 
+    std::map<std::string, std::string> last_metadata() const override { return metadata_; }
+
 private:
     static constexpr int64_t kBatchRows = 2048;
     std::shared_ptr<arrow::Schema> schema_;
     std::vector<std::pair<int64_t, int64_t>> ranges_;
+    std::map<std::string, std::string> metadata_;
     size_t at_ = 0;
     int64_t cursor_ = 0;
 };
@@ -128,8 +148,16 @@ class SplitFunction : public vgi::TableFunction {
 public:
     enum class Shape { Even, EmptyRanges, Zero, Skewed, Many };
 
-    SplitFunction(std::string name, Shape shape, std::string description)
-        : name_(std::move(name)), shape_(shape), description_(std::move(description)) {}
+    SplitFunction(std::string name, Shape shape, std::string description,
+                  std::optional<int64_t> catalog_version = std::nullopt,
+                  std::optional<int64_t> split_token_ttl_seconds = std::nullopt,
+                  bool cacheable = false)
+        : name_(std::move(name)),
+          shape_(shape),
+          description_(std::move(description)),
+          catalog_version_(catalog_version),
+          split_token_ttl_seconds_(split_token_ttl_seconds),
+          cacheable_(cacheable) {}
 
     std::string name() const override { return name_; }
 
@@ -137,6 +165,7 @@ public:
         vgi::FunctionMetadata md;
         md.description = description_;
         md.categories = {"generator"};
+        md.split_token_ttl_seconds = split_token_ttl_seconds_;
         return md;
     }
 
@@ -159,6 +188,7 @@ public:
         vgi::PlanResult result;
         result.estimated_total_rows = shape_ == Shape::Zero ? 0 : rows;
         result.estimated_total_splits = want;
+        result.catalog_version = catalog_version_;
         for (const auto& range : divide(rows, want)) {
             vgi::ScanSplit split;
             split.payload = encode_range(range.first, range.second);
@@ -190,8 +220,15 @@ public:
             }
             ranges.push_back(*range);
         }
+        std::map<std::string, std::string> metadata;
+        if (cacheable_) {
+            vgi::CacheControl control;
+            control.ttl_seconds = 300;
+            metadata = control.to_metadata();
+        }
         return std::make_unique<RangeProducer>(
-            params.output_schema ? params.output_schema : n_schema(), std::move(ranges));
+            params.output_schema ? params.output_schema : n_schema(), std::move(ranges),
+            std::move(metadata));
     }
 
 private:
@@ -259,6 +296,270 @@ private:
     std::string name_;
     Shape shape_;
     std::string description_;
+    std::optional<int64_t> catalog_version_;
+    std::optional<int64_t> split_token_ttl_seconds_;
+    bool cacheable_;
+};
+
+// `split_paginated(n, splits)` — four disjoint splits per planning page.
+class SplitPaginated : public vgi::TableFunction {
+public:
+    std::string name() const override { return "split_paginated"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Split scan whose plan is enumerated across cursor pages";
+        md.categories = {"generator"};
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::named("n", "int64", "How many rows to generate"),
+                vgi::ArgSpec::named("splits", "int64", "How many splits")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return n_schema();
+    }
+
+    bool supports_splits() const override { return true; }
+
+    vgi::PlanResult plan(const vgi::BindParams& params,
+                         const vgi::PlanParams& request) const override {
+        const int64_t rows = std::max<int64_t>(0, params.arguments.named_int64("n").value_or(0));
+        const int64_t count =
+            std::max<int64_t>(1, params.arguments.named_int64("splits").value_or(1));
+        int64_t page = 0;
+        if (request.cursor && request.cursor->size() == sizeof(int64_t)) {
+            auto decoded = decode_range(*request.cursor + std::string(sizeof(int64_t), '\0'));
+            if (decoded) page = decoded->first;
+        }
+
+        constexpr int64_t kPerPage = 4;
+        const int64_t first = page * kPerPage;
+        const int64_t last = std::min(count, first + kPerPage);
+        vgi::PlanResult result;
+        result.estimated_total_splits = count;
+        result.estimated_total_rows = rows;
+        for (int64_t i = first; i < last; ++i) {
+            vgi::ScanSplit split;
+            split.payload = encode_range(rows * i / count, rows * (i + 1) / count);
+            split.estimated_rows = rows * (i + 1) / count - rows * i / count;
+            split.rows_exact = true;
+            result.splits.push_back(std::move(split));
+        }
+        if (last < count) result.next_cursor = encode_range(page + 1, 0).substr(0, 8);
+        return result;
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        if (!params.split_payloads) {
+            throw std::runtime_error("table function 'split_paginated' is split-only");
+        }
+        std::vector<std::pair<int64_t, int64_t>> ranges;
+        for (const auto& payload : *params.split_payloads) {
+            auto range = decode_range(payload);
+            if (!range) throw std::runtime_error("split_paginated: unrecognized split payload");
+            ranges.push_back(*range);
+        }
+        return std::make_unique<RangeProducer>(
+            params.output_schema ? params.output_schema : n_schema(), std::move(ranges));
+    }
+};
+
+// A batch index derived from the split ordinal remains monotonic when a reader
+// claims several splits in ascending order.
+class SplitBatchIndex : public vgi::TableFunction {
+public:
+    std::string name() const override { return "split_batch_index"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Split scan with batch indices monotonic across split boundaries";
+        md.categories = {"generator", "ordering"};
+        md.supports_batch_index = true;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::named("n", "int64", "How many rows to generate"),
+                vgi::ArgSpec::named("splits", "int64", "How many splits")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return n_schema();
+    }
+
+    bool supports_splits() const override { return true; }
+
+    vgi::PlanResult plan(const vgi::BindParams& params, const vgi::PlanParams&) const override {
+        const int64_t rows = std::max<int64_t>(0, params.arguments.named_int64("n").value_or(0));
+        const int64_t count =
+            std::max<int64_t>(1, params.arguments.named_int64("splits").value_or(1));
+        vgi::PlanResult result;
+        result.estimated_total_splits = count;
+        result.estimated_total_rows = rows;
+        for (int64_t i = 0; i < count; ++i) {
+            vgi::ScanSplit split;
+            const int64_t begin = rows * i / count;
+            const int64_t end = rows * (i + 1) / count;
+            split.payload = encode_indexed_range(i, begin, end);
+            split.estimated_rows = end - begin;
+            split.rows_exact = true;
+            result.splits.push_back(std::move(split));
+        }
+        return result;
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        if (!params.split_payloads) {
+            throw std::runtime_error("table function 'split_batch_index' is split-only");
+        }
+        std::vector<std::tuple<int64_t, int64_t, int64_t>> ranges;
+        for (const auto& payload : *params.split_payloads) {
+            auto range = decode_indexed_range(payload);
+            if (!range) throw std::runtime_error("split_batch_index: unrecognized split payload");
+            ranges.push_back(*range);
+        }
+        return std::make_unique<Producer>(params.output_schema ? params.output_schema : n_schema(),
+                                          std::move(ranges));
+    }
+
+private:
+    class Producer : public vgi::TableProducer {
+    public:
+        Producer(std::shared_ptr<arrow::Schema> schema,
+                 std::vector<std::tuple<int64_t, int64_t, int64_t>> ranges)
+            : schema_(std::move(schema)), ranges_(std::move(ranges)) {}
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            while (at_ < ranges_.size() && cursor_ >= std::get<2>(ranges_[at_])) {
+                ++at_;
+                local_batch_ = 0;
+                if (at_ < ranges_.size()) cursor_ = std::get<1>(ranges_[at_]);
+            }
+            if (at_ >= ranges_.size()) return nullptr;
+            if (cursor_ < std::get<1>(ranges_[at_])) cursor_ = std::get<1>(ranges_[at_]);
+
+            const int64_t end = std::min(cursor_ + kBatchRows, std::get<2>(ranges_[at_]));
+            arrow::Int64Builder builder;
+            for (int64_t value = cursor_; value < end; ++value) (void)builder.Append(value);
+            std::shared_ptr<arrow::Array> values;
+            (void)builder.Finish(&values);
+            metadata_["vgi_batch_index"] =
+                std::to_string(std::get<0>(ranges_[at_]) * kStride + local_batch_++);
+            cursor_ = end;
+            return arrow::RecordBatch::Make(schema_, values->length(), {values});
+        }
+
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
+
+    private:
+        static constexpr int64_t kBatchRows = 8;
+        static constexpr int64_t kStride = 1000;
+        std::shared_ptr<arrow::Schema> schema_;
+        std::vector<std::tuple<int64_t, int64_t, int64_t>> ranges_;
+        size_t at_ = 0;
+        int64_t cursor_ = 0;
+        int64_t local_batch_ = 0;
+        std::map<std::string, std::string> metadata_;
+    };
+};
+
+// One split per country, with each emitted batch retaining that partition's
+// single value and distinct sales range.
+class SplitPartitioned : public vgi::TableFunction {
+public:
+    std::string name() const override { return "split_partitioned"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "One split per partition value";
+        md.categories = {"generator", "partitioning"};
+        md.partition_kind = vgi::partition_kinds::kSingleValuePartitions;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::named("rows_per_country", "int64", "Rows per country")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({vgi::partition_field("country", arrow::utf8()),
+                              arrow::field("sales", arrow::int64(), /*nullable=*/true)});
+    }
+
+    bool supports_splits() const override { return true; }
+
+    vgi::PlanResult plan(const vgi::BindParams& params, const vgi::PlanParams&) const override {
+        const int64_t rows =
+            std::max<int64_t>(0, params.arguments.named_int64("rows_per_country").value_or(0));
+        vgi::PlanResult result;
+        result.estimated_total_splits = static_cast<int64_t>(kCountries.size());
+        result.estimated_total_rows = rows * static_cast<int64_t>(kCountries.size());
+        for (int64_t i = 0; i < static_cast<int64_t>(kCountries.size()); ++i) {
+            vgi::ScanSplit split;
+            split.payload = encode_range(i, rows);
+            split.estimated_rows = rows;
+            split.rows_exact = true;
+            result.splits.push_back(std::move(split));
+        }
+        return result;
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        if (!params.split_payloads) {
+            throw std::runtime_error("table function 'split_partitioned' is split-only");
+        }
+        std::vector<std::pair<int64_t, int64_t>> partitions;
+        for (const auto& payload : *params.split_payloads) {
+            auto decoded = decode_range(payload);
+            if (!decoded || decoded->first < 0 ||
+                decoded->first >= static_cast<int64_t>(kCountries.size())) {
+                throw std::runtime_error("split_partitioned: unrecognized split payload");
+            }
+            partitions.push_back(*decoded);
+        }
+        return std::make_unique<Producer>(params.output_schema ? params.output_schema : bind({}),
+                                          std::move(partitions));
+    }
+
+private:
+    inline static const std::vector<std::string> kCountries{"US", "DE", "JP", "BR"};
+
+    class Producer : public vgi::TableProducer {
+    public:
+        Producer(std::shared_ptr<arrow::Schema> schema,
+                 std::vector<std::pair<int64_t, int64_t>> partitions)
+            : schema_(std::move(schema)), partitions_(std::move(partitions)) {}
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            while (at_ < partitions_.size() && partitions_[at_].second <= 0) ++at_;
+            if (at_ >= partitions_.size()) return nullptr;
+            const auto [country_index, rows] = partitions_[at_++];
+            arrow::StringBuilder countries;
+            arrow::Int64Builder sales;
+            for (int64_t row = 1; row <= rows; ++row) {
+                (void)countries.Append(kCountries[static_cast<size_t>(country_index)]);
+                (void)sales.Append(country_index * 100 + row);
+            }
+            std::shared_ptr<arrow::Array> country_array;
+            std::shared_ptr<arrow::Array> sales_array;
+            (void)countries.Finish(&country_array);
+            (void)sales.Finish(&sales_array);
+            auto batch = arrow::RecordBatch::Make(schema_, rows, {country_array, sales_array});
+            metadata_ = vgi::partition_metadata(schema_, batch);
+            return batch;
+        }
+
+        std::map<std::string, std::string> last_metadata() const override { return metadata_; }
+
+    private:
+        std::shared_ptr<arrow::Schema> schema_;
+        std::vector<std::pair<int64_t, int64_t>> partitions_;
+        size_t at_ = 0;
+        std::map<std::string, std::string> metadata_;
+    };
 };
 
 // `split_fail_at(n, splits, fail_at, fail_in_init)` — a scan that dies where it
@@ -668,7 +969,8 @@ private:
 void register_splits(vgi::Worker& worker) {
     using Shape = SplitFunction::Shape;
     worker.register_table(std::make_shared<SplitFunction>(
-        "split_sequence", Shape::Even, "Integers 0..n-1, divided into n contiguous splits"));
+        "split_sequence", Shape::Even, "Integers 0..n-1, divided into n contiguous splits",
+        /*catalog_version=*/1));
     worker.register_table(
         std::make_shared<SplitFunction>("split_empty_ranges", Shape::EmptyRanges,
                                         "Integers 0..n-1, where every other split names no rows"));
@@ -678,6 +980,19 @@ void register_splits(vgi::Worker& worker) {
         "split_skewed", Shape::Skewed, "Integers 0..n-1, divided very unevenly"));
     worker.register_table(std::make_shared<SplitFunction>(
         "split_many", Shape::Many, "Integers 0..n-1, divided into many more splits than threads"));
+    worker.register_table(std::make_shared<SplitFunction>(
+        "split_stale_plan", Shape::Even, "A plan pinned to a stale catalog version",
+        /*catalog_version=*/987654321));
+    worker.register_table(std::make_shared<SplitFunction>(
+        "split_short_ttl", Shape::Even, "A split plan with an unusably short token lifetime",
+        /*catalog_version=*/std::nullopt, /*split_token_ttl_seconds=*/1));
+    worker.register_table(std::make_shared<SplitFunction>(
+        "split_cacheable", Shape::Even, "A split-capable result-cache candidate",
+        /*catalog_version=*/std::nullopt, /*split_token_ttl_seconds=*/std::nullopt,
+        /*cacheable=*/true));
+    worker.register_table(std::make_shared<SplitPaginated>());
+    worker.register_table(std::make_shared<SplitBatchIndex>());
+    worker.register_table(std::make_shared<SplitPartitioned>());
     worker.register_table(std::make_shared<SplitFailAt>());
     worker.register_table(std::make_shared<SplitEndlessCursor>());
     worker.register_table(std::make_shared<SplitDynamicFilter>());
