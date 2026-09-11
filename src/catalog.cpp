@@ -1192,6 +1192,9 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
         // that overrides `plan()` has said so in the only place that cannot
         // drift from the implementation.
         .set_bool("supports_splits", fn.supports_splits());
+    if (metadata.split_token_ttl_seconds) {
+        builder.set_int64("split_token_ttl_seconds", *metadata.split_token_ttl_seconds);
+    }
     // Only when the function says so: the field is nullable, and writing a
     // value unconditionally would replace the engine's default for every
     // table function that never thought about ordering.
