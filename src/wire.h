@@ -202,6 +202,14 @@ public:
     // The `examples` column: a list of {sql, description, expected_output}.
     ResultBuilder& set_examples(const std::string& field,
                                 const std::vector<FunctionExample>& examples);
+    // A list<{namespace: utf8, name: utf8, version: uint64}> capability field.
+    ResultBuilder& set_filter_identities(
+        const std::string& field,
+        const std::vector<std::tuple<std::string, std::string, uint64_t>>& identities);
+    // A list<{profile: utf8, provider_fingerprint: utf8?}> capability field.
+    ResultBuilder& set_evaluation_contexts(
+        const std::string& field,
+        const std::vector<std::pair<std::string, std::optional<std::string>>>& contexts);
     // A map<utf8, …> column.  Arrow spells map entries key/value (not
     // keys/values), which is what the canonical Python protocol emits.
     ResultBuilder& set_int64_map(const std::string& field,

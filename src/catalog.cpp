@@ -220,6 +220,54 @@ const char* partition_kind_wire_value(const FunctionMetadata& metadata) {
                                            : metadata.partition_kind.c_str();
 }
 
+std::vector<std::tuple<std::string, std::string, uint64_t>> filter_function_identities_of(
+    const FunctionMetadata& metadata) {
+    std::vector<std::tuple<std::string, std::string, uint64_t>> identities;
+    identities.reserve(metadata.additional_filter_functions.size());
+    for (const auto& capability : metadata.additional_filter_functions) {
+        identities.emplace_back(capability.namespace_name, capability.name, capability.version);
+    }
+    return identities;
+}
+
+std::vector<std::tuple<std::string, std::string, uint64_t>> runtime_filter_identities_of(
+    const FunctionMetadata& metadata) {
+    std::vector<std::tuple<std::string, std::string, uint64_t>> identities;
+    identities.reserve(metadata.runtime_filter_algorithms.size());
+    for (const auto& capability : metadata.runtime_filter_algorithms) {
+        identities.emplace_back(capability.namespace_name, capability.name, capability.version);
+    }
+    return identities;
+}
+
+std::vector<std::pair<std::string, std::optional<std::string>>> evaluation_contexts_of(
+    const FunctionMetadata& metadata) {
+    std::vector<std::pair<std::string, std::optional<std::string>>> contexts;
+    contexts.reserve(metadata.filter_evaluation_contexts.size());
+    for (const auto& capability : metadata.filter_evaluation_contexts) {
+        contexts.emplace_back(capability.profile, capability.provider_fingerprint);
+    }
+    return contexts;
+}
+
+void validate_filter_capabilities(const FunctionMetadata& metadata) {
+    // Advertising a capability is a correctness claim: the producer may emit
+    // it in a required predicate and remove its local copy. Keep these lists
+    // empty until this SDK registers the corresponding evaluator.
+    if (!metadata.additional_filter_functions.empty()) {
+        throw std::invalid_argument(
+            "C++ SDK cannot advertise an extension filter function without an evaluator");
+    }
+    if (!metadata.runtime_filter_algorithms.empty()) {
+        throw std::invalid_argument(
+            "C++ SDK has no registered runtime-filter artifact evaluator to advertise");
+    }
+    if (!metadata.filter_evaluation_contexts.empty()) {
+        throw std::invalid_argument(
+            "C++ SDK has no isolated DuckDB session-context evaluator to advertise");
+    }
+}
+
 // Wrap a payload batch in the `{result: binary}` envelope every non-void
 // method answers with.  The engine unwraps it and validates the inner schema
 // against its own generated copy, so a drifted payload is caught there rather
@@ -1070,6 +1118,8 @@ wire::ResultBuilder Dispatcher::common_function_info(
     const std::string& name, const SchemaPath& schema_path, const char* function_type,
     const std::vector<ArgSpec>& specs, const std::shared_ptr<arrow::Schema>& output_schema,
     const FunctionMetadata& metadata) {
+    validate_filter_capabilities(metadata);
+    const auto filter_semantic_profiles = metadata.resolved_filter_semantic_profiles();
     auto builder =
         wire::ResultBuilder(gen::FunctionInfoSchema())
             .set_string("name", name)
@@ -1089,6 +1139,13 @@ wire::ResultBuilder Dispatcher::common_function_info(
             .set_secret_lookups("required_secrets", secret_entries(metadata))
             .set_bool("projection_pushdown", metadata.projection_pushdown)
             .set_bool("filter_pushdown", metadata.filter_pushdown)
+            .set_string_list("filter_semantic_profiles", filter_semantic_profiles)
+            .set_filter_identities("additional_filter_functions",
+                                   filter_function_identities_of(metadata))
+            .set_filter_identities("runtime_filter_algorithms",
+                                   runtime_filter_identities_of(metadata))
+            .set_evaluation_contexts("filter_evaluation_contexts", evaluation_contexts_of(metadata))
+            .set_bool("filters_exactly_applied", metadata.filters_exactly_applied)
             .set_bool("sampling_pushdown", metadata.sampling_pushdown)
             .set_bool("input_from_args", metadata.input_from_args)
             .set_enum("partition_kind", partition_kind_wire_value(metadata))
