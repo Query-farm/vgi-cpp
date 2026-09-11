@@ -122,9 +122,71 @@ TEST_CASE("protocol v2 named schemas use path lists", "[protocol]") {
 
     const auto function_info = vgi::generated::FunctionInfoSchema();
     REQUIRE(function_info->GetFieldByName("parameter_default_values")->nullable());
+    REQUIRE(function_info->GetFieldByName("filter_semantic_profiles")->type()->id() ==
+            arrow::Type::LIST);
+    REQUIRE(function_info->GetFieldByName("additional_filter_functions")->type()->id() ==
+            arrow::Type::LIST);
+    REQUIRE(function_info->GetFieldByName("runtime_filter_algorithms")->type()->id() ==
+            arrow::Type::LIST);
+    REQUIRE(function_info->GetFieldByName("filter_evaluation_contexts")->type()->id() ==
+            arrow::Type::LIST);
+    REQUIRE(function_info->GetFieldByName("filters_exactly_applied")->type()->id() ==
+            arrow::Type::BOOL);
     REQUIRE(vgi::generated::BindRequestSchema()->GetFieldByName("argument_names")->nullable());
     REQUIRE(
         vgi::generated::AggregateBindRequestSchema()->GetFieldByName("argument_names")->nullable());
+}
+
+TEST_CASE("filter pushdown advertises only the implemented semantic profile", "[protocol]") {
+    vgi::FunctionMetadata plain;
+    REQUIRE(plain.resolved_filter_semantic_profiles().empty());
+
+    vgi::FunctionMetadata filtering;
+    filtering.filter_pushdown = true;
+    REQUIRE(filtering.resolved_filter_semantic_profiles() ==
+            std::vector<std::string>{vgi::filter_semantic_profiles::kDuckDBStandardV1});
+    filtering.auto_apply_filters = true;
+    REQUIRE_FALSE(filtering.filters_exactly_applied);
+
+    filtering.filter_semantic_profiles = {"vgi.duckdb.standard.v2"};
+    REQUIRE_THROWS(filtering.resolved_filter_semantic_profiles());
+}
+
+TEST_CASE("filter capability structs preserve generated FunctionInfo shape", "[protocol]") {
+    const auto batch = vgi::wire::ResultBuilder(vgi::generated::FunctionInfoSchema())
+                           .set_string_list("filter_semantic_profiles", {"vgi.duckdb.standard.v1"})
+                           .set_filter_identities("additional_filter_functions",
+                                                  {{"duckdb.spatial", "intersects_extent", 1}})
+                           .set_filter_identities("runtime_filter_algorithms",
+                                                  {{"duckdb.runtime_filter", "bloom", 2}})
+                           .set_evaluation_contexts("filter_evaluation_contexts",
+                                                    {{"vgi.duckdb.session.v1", "duckdb-icu:test"},
+                                                     {"vgi.duckdb.session.v1", std::nullopt}})
+                           .fill_defaults()
+                           .finish();
+
+    const auto identities = std::static_pointer_cast<arrow::ListArray>(
+        batch->GetColumnByName("additional_filter_functions"));
+    REQUIRE(identities->value_length(0) == 1);
+    const auto identity = std::static_pointer_cast<arrow::StructArray>(identities->values());
+    const auto namespaces =
+        std::static_pointer_cast<arrow::StringArray>(identity->GetFieldByName("namespace"));
+    const auto names =
+        std::static_pointer_cast<arrow::StringArray>(identity->GetFieldByName("name"));
+    const auto versions =
+        std::static_pointer_cast<arrow::UInt64Array>(identity->GetFieldByName("version"));
+    REQUIRE(namespaces->GetString(0) == "duckdb.spatial");
+    REQUIRE(names->GetString(0) == "intersects_extent");
+    REQUIRE(versions->Value(0) == 1);
+
+    const auto contexts = std::static_pointer_cast<arrow::ListArray>(
+        batch->GetColumnByName("filter_evaluation_contexts"));
+    REQUIRE(contexts->value_length(0) == 2);
+    const auto context = std::static_pointer_cast<arrow::StructArray>(contexts->values());
+    const auto fingerprints = std::static_pointer_cast<arrow::StringArray>(
+        context->GetFieldByName("provider_fingerprint"));
+    REQUIRE(fingerprints->GetString(0) == "duckdb-icu:test");
+    REQUIRE(fingerprints->IsNull(1));
 }
 
 TEST_CASE("wire schema paths round trip every component", "[wire]") {

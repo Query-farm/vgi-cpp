@@ -7,6 +7,21 @@
 
 namespace vgi {
 
+std::vector<std::string> FunctionMetadata::resolved_filter_semantic_profiles() const {
+    auto profiles = filter_semantic_profiles;
+    if (filter_pushdown && profiles.empty()) {
+        profiles.emplace_back(filter_semantic_profiles::kDuckDBStandardV1);
+    }
+    for (const auto& profile : profiles) {
+        if (profile != filter_semantic_profiles::kDuckDBStandardV1) {
+            throw std::invalid_argument("C++ SDK supports only " +
+                                        std::string(filter_semantic_profiles::kDuckDBStandardV1) +
+                                        " filter semantics");
+        }
+    }
+    return profiles;
+}
+
 ArgSpec ArgSpec::column(std::string name, int index, std::string type, std::string description) {
     ArgSpec s;
     s.name = std::move(name);

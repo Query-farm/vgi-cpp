@@ -1,6 +1,7 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -176,6 +177,31 @@ inline constexpr const char* kNoOrderGuarantee = "NO_ORDER_GUARANTEE";
 inline constexpr const char* kFixedOrder = "FIXED_ORDER";
 }  // namespace order_preservations
 
+namespace filter_semantic_profiles {
+inline constexpr const char* kDuckDBStandardV1 = "vgi.duckdb.standard.v1";
+}  // namespace filter_semantic_profiles
+
+// A versioned extension function the worker can evaluate inside a Filter-v2
+// expression. The standard profile's built-in functions do not appear here.
+struct FilterFunctionCapability {
+    std::string namespace_name;
+    std::string name;
+    uint64_t version = 0;
+};
+
+// A versioned runtime-filter artifact algorithm the worker can evaluate.
+struct RuntimeFilterAlgorithmCapability {
+    std::string namespace_name;
+    std::string name;
+    uint64_t version = 0;
+};
+
+// An evaluation-context profile the worker can apply in an isolated session.
+struct EvaluationContextCapability {
+    std::string profile;
+    std::optional<std::string> provider_fingerprint;
+};
+
 // Everything the engine shows a user about a function, plus the return type
 // when it is fixed.  A function whose return type depends on its arguments
 // leaves `return_type` empty and answers during bind instead.
@@ -226,6 +252,19 @@ struct FunctionMetadata {
     // On, the framework filters each emitted batch, which is what a fixture
     // that merely advertises the capability wants.
     bool auto_apply_filters = false;
+    // Filter Encoding v2 semantics implemented by this function. A function
+    // that enables filter_pushdown and leaves this empty advertises the C++
+    // SDK's standard-v1 evaluator.
+    std::vector<std::string> filter_semantic_profiles;
+    // Capability-gated extensions to the standard profile. The C++ SDK
+    // currently rejects non-empty lists until matching evaluators exist.
+    std::vector<FilterFunctionCapability> additional_filter_functions;
+    std::vector<RuntimeFilterAlgorithmCapability> runtime_filter_algorithms;
+    std::vector<EvaluationContextCapability> filter_evaluation_contexts;
+    // True only when the worker applies every pushed predicate exactly and
+    // the engine may therefore remove its residual. Never inferred from
+    // auto_apply_filters.
+    bool filters_exactly_applied = false;
     // Whether the engine may rewrite a scan of this function into a
     // late-materialization plan: fetch the row ids first, then fetch only the
     // surviving rows' columns.
@@ -269,6 +308,10 @@ struct FunctionMetadata {
     // engine forward their values; a setting not declared here never arrives,
     // however it was set.
     std::vector<std::string> required_settings;
+
+    // Resolve the wire advertisement, applying the SDK default and rejecting
+    // semantic profiles for which this SDK has no evaluator.
+    std::vector<std::string> resolved_filter_semantic_profiles() const;
 };
 
 }  // namespace vgi
