@@ -287,10 +287,12 @@ std::shared_ptr<arrow::RecordBatch> narrow_to(const std::shared_ptr<arrow::Recor
 class TableProduce : public vgi_rpc::ProducerState {
 public:
     TableProduce(std::unique_ptr<TableProducer> producer, PushdownFilters filters = {},
-                 std::shared_ptr<arrow::Schema> output_schema = nullptr)
+                 std::shared_ptr<arrow::Schema> output_schema = nullptr,
+                 bool auto_apply_filters = false)
         : producer_(std::move(producer)),
           filters_(std::move(filters)),
-          output_schema_(std::move(output_schema)) {}
+          output_schema_(std::move(output_schema)),
+          auto_apply_filters_(auto_apply_filters) {}
 
     // Conditional-request validators from the init request, which is where
     // they arrive for a producer: over HTTP the first tick is folded into the
@@ -319,18 +321,14 @@ public:
         // below runs first, and a producer holding a collector from an earlier
         // tick would write into one that has already been destroyed.
         bind_log(out);
-        // Re-read every tick, not only the first: the engine re-sends them as
-        // the join's build side fills in, and the last one is the tightest.
-        //
-        // Kept per-tick rather than folded into `filters_`: they describe this
-        // tick's build side, and a later tick that carries none must fall back
-        // to the static predicates rather than keep stale dynamic ones.
-        dynamic_filters_.reset();
+        // Dynamic Filter v2 metadata is a revisioned delta over the init-time
+        // snapshot, not a standalone replacement tree. Keep the accumulated
+        // state when a later tick carries no update.
         if (auto encoded = metadata_value(input.custom_metadata, keys::kDynamicFilters)) {
             auto decoded = wire::base64_decode(*encoded);
-            dynamic_filters_ = PushdownFilters::parse(decoded);
-            if (producer_) producer_->on_dynamic_filters(*dynamic_filters_);
+            filters_.apply_delta(decoded);
         }
+        if (producer_) producer_->on_dynamic_filters(filters_);
         produce(out, context);
     }
 
@@ -353,11 +351,8 @@ public:
         }
         // Applied here rather than in the producer so a function that only
         // advertises the capability gets it for free, and one that uses the
-        // filters itself is not filtered twice. This tick's dynamic filters
-        // supersede the static ones when it carried any — they are the
-        // tighter predicate, derived from the same scan.
-        const PushdownFilters& active = dynamic_filters_ ? *dynamic_filters_ : filters_;
-        if (!active.empty()) batch = active.apply(batch);
+        // filters itself is not filtered twice.
+        if (auto_apply_filters_ && !filters_.empty()) batch = filters_.apply(batch);
 
         // Validated before it leaves.
         //
@@ -400,13 +395,12 @@ private:
 
     std::unique_ptr<TableProducer> producer_;
     PushdownFilters filters_;
-    // This tick's join-side predicate, if it carried one.
-    std::optional<PushdownFilters> dynamic_filters_;
     // What the engine asked for, which a producer that ignores the projection
     // does not emit.
     std::shared_ptr<arrow::Schema> output_schema_;
     std::optional<std::string> if_none_match_;
     std::optional<std::string> if_modified_since_;
+    bool auto_apply_filters_ = false;
     // Asked once, before the first batch: a producer that answered
     // `not_modified` has nothing more to decide.
     bool asked_ = false;
@@ -1058,6 +1052,8 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request)
     PlanResult result;
     auto table = find_table(function_name, scope_of(bind_params), &bind_params);
     if (table && table->supports_splits()) {
+        const auto output_schema = table->bind(bind_params);
+        if (!output_schema) throw std::runtime_error("plan: function bound to no output schema");
         PlanParams plan;
         plan.target_split_bytes = wire::get_optional_int64(plan_request, "target_split_bytes");
         plan.min_splits = wire::get_optional_int64(plan_request, "min_splits");
@@ -1072,7 +1068,7 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request)
         }
         plan.pushdown_filters = PushdownFilters::parse(
             wire::get_optional_binary(plan_request, "pushdown_filters").value_or(std::string{}),
-            wire::get_binary_list(plan_request, "join_keys"));
+            wire::get_binary_list(plan_request, "join_keys"), output_schema);
         result = table->plan(bind_params, plan);
     } else {
         // The whole scan as one unit. This is what a function that has not
@@ -1245,6 +1241,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // worker re-derive it, so a function whose bind is expensive pays once.
     auto output_schema = wire::get_schema(init_request, "output_schema");
     if (!output_schema) throw std::runtime_error("init: request carries no output_schema");
+    const auto bind_output_schema = output_schema;
 
     // Projection pushdown arrives as indices into the bound schema rather than
     // as a narrowed schema, so the narrowing has to happen here: a function
@@ -1345,7 +1342,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
     // Parsed once for the whole scan; the engine sends it on init.
     params.pushdown_filters = PushdownFilters::parse(
         wire::get_optional_binary(init_request, "pushdown_filters").value_or(std::string{}),
-        wire::get_binary_list(init_request, "join_keys"));
+        wire::get_binary_list(init_request, "join_keys"), bind_output_schema);
 
     int64_t max_workers = 1;
     // Same tie-break as `bind`: a COPY TO whose writer shares a name with a
@@ -1416,10 +1413,9 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
 
     if (auto table = find_table(function_name, scope_of(params), &bind_params)) {
         stream.input_schema = arrow::schema({});
-        auto auto_apply =
-            table->metadata().auto_apply_filters ? params.pushdown_filters : PushdownFilters{};
-        auto produce = std::make_shared<TableProduce>(table->init(params), std::move(auto_apply),
-                                                      output_schema);
+        const bool auto_apply = table->metadata().auto_apply_filters;
+        auto produce = std::make_shared<TableProduce>(table->init(params), params.pushdown_filters,
+                                                      output_schema, auto_apply);
         produce->set_validators(request_metadata(request, keys::kIfNoneMatch),
                                 request_metadata(request, keys::kIfModifiedSince));
         stream.state = std::move(produce);
