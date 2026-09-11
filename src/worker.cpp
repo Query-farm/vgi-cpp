@@ -1,6 +1,7 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include "vgi/worker.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <map>
@@ -10,6 +11,7 @@
 
 #include <arrow/compute/initialize.h>
 #include <vgi_rpc/http_config.h>
+#include <vgi_rpc/crypto.h>
 #include <vgi_rpc/identity.h>
 #include <vgi_rpc/iroh_identity.h>
 #include <vgi_rpc/server.h>
@@ -90,6 +92,20 @@ void configure_bearer_auth(vgi_rpc::HttpConfig& config,
                 vgi_rpc::SubjectStability::STABLE, /*subject_verified=*/true));
         });
     config.peer_authentication_policy = vgi_rpc::peer_identity_primary("bearer");
+}
+
+void configure_signing_key(vgi_rpc::HttpConfig& config) {
+    const char* configured = std::getenv("VGI_SIGNING_KEY");
+    if (!configured || !*configured) return;
+
+    const std::string raw(configured);
+    if (raw.size() == config.token_key.size()) {
+        std::copy(raw.begin(), raw.end(), config.token_key.begin());
+        return;
+    }
+    vgi_rpc::crypto::Sha256 hash;
+    hash.update(raw);
+    config.token_key = hash.digest();
 }
 }  // namespace
 
@@ -300,7 +316,9 @@ void Worker::run(int argc, char** argv) {
                 vgi_rpc::HttpConfig config;
                 config.host = http_host;
                 config.port = port;
+                configure_signing_key(config);
                 configure_bearer_auth(config, bearer_tokens_from_env());
+                disp_->set_split_token_signing_key(config.token_key);
                 server->serve_http(config);
             } else {
                 if (!is_loopback_bind(http_host)) {
@@ -312,11 +330,13 @@ void Worker::run(int argc, char** argv) {
                 vgi_rpc::HttpConfig config;
                 config.host = http_host;
                 config.port = port;
+                configure_signing_key(config);
                 config.peer_identity_providers.push_back(vgi_rpc::iroh_forwarded_header_provider(
                     {std::move(iroh_issuer), std::move(iroh_trusted_proxies)}));
                 config.peer_authentication_policy = iroh_observe
                                                         ? vgi_rpc::observe_peer_identity
                                                         : vgi_rpc::peer_identity_primary("iroh");
+                disp_->set_split_token_signing_key(config.token_key);
                 server->serve_http(config);
             }
             std::exit(0);

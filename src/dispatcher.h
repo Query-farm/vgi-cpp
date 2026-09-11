@@ -21,6 +21,7 @@
 #include "vgi/copy_from.h"
 #include "vgi/copy_to.h"
 #include "vgi/table_in_out.h"
+#include "split_token.h"
 
 namespace vgi {
 
@@ -101,6 +102,13 @@ public:
     // Register every VGI method on `builder`.
     void install(vgi_rpc::ServerBuilder& builder);
 
+    // HTTP tokens are authenticated with the transport's process key. Raw
+    // transports deliberately remain keyless inside their existing trust
+    // boundary.
+    void set_split_token_signing_key(split_token::SigningKey key) {
+        split_token_signing_key_ = std::move(key);
+    }
+
     using UnaryHandler = vgi_rpc::Result (Dispatcher::*)(const vgi_rpc::Request&);
     // The few handlers that need the call's own channel back to the client.
     // Kept separate rather than widening every signature: only a method that
@@ -117,7 +125,8 @@ public:
     // than in a 5,000-line switch.
 
     vgi_rpc::Result bind(const vgi_rpc::Request& request);
-    vgi_rpc::Result table_function_plan(const vgi_rpc::Request& request);
+    vgi_rpc::Result table_function_plan(const vgi_rpc::Request& request,
+                                        vgi_rpc::CallContext& context);
     vgi_rpc::Result table_function_cardinality(const vgi_rpc::Request& request);
     vgi_rpc::Result table_function_statistics(const vgi_rpc::Request& request);
     vgi_rpc::Result table_function_dynamic_to_string(const vgi_rpc::Request& request);
@@ -138,7 +147,7 @@ public:
     vgi_rpc::Result table_buffering_combine(const vgi_rpc::Request& request,
                                             vgi_rpc::CallContext& context);
     vgi_rpc::Result table_buffering_destructor(const vgi_rpc::Request& request);
-    vgi_rpc::Stream init(const vgi_rpc::Request& request);
+    vgi_rpc::Stream init(const vgi_rpc::Request& request, vgi_rpc::CallContext& context);
 
     vgi_rpc::Result catalog_attach(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_schemas(const vgi_rpc::Request& request);
@@ -164,6 +173,8 @@ public:
     void catalog_transaction_rollback(const vgi_rpc::Request& request);
 
 private:
+    std::optional<int64_t> current_catalog_version(const vgi_rpc::Request& request) const;
+
     // The fields every FunctionInfo carries, whatever kind of function it is.
     // Each `encode_*_info` starts here and appends only what is its own; the
     // five of them spelling the shared set out separately is how a field ends
@@ -309,6 +320,7 @@ private:
     // `catalog()` mean. Held indirectly so a reference handed out by
     // `catalog(name)` survives a later addition.
     std::vector<std::unique_ptr<CatalogModel>> catalogs_;
+    std::optional<split_token::SigningKey> split_token_signing_key_;
     std::set<std::string> hidden_;
     std::vector<std::shared_ptr<ScalarFunction>> scalars_;
     // Parallel to scalars_: where each one is declared.
