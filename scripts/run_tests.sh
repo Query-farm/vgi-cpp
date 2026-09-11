@@ -123,7 +123,7 @@ start_http_worker() { # name catalog [extra-env...]
     echo "[harness] HTTP worker '$name' never reported a port; see $CACHE/worker.log" >&2
     return 1
   fi
-  echo "http://127.0.0.1:$port"
+  STARTED_HTTP_URL="http://127.0.0.1:$port"
 }
 
 # Opt-in, because each one is a process held open for the whole run and the
@@ -131,9 +131,12 @@ start_http_worker() { # name catalog [extra-env...]
 HTTP_ENV=()
 if [[ "${VGI_HTTP:-0}" == "1" ]]; then
   echo "[harness] starting HTTP workers..."
-  H_EXAMPLE=$(start_http_worker example example) || exit 1
-  H_VERSIONED=$(start_http_worker versioned versioned) || exit 1
-  H_VERSIONED_TABLES=$(start_http_worker versioned_tables versioned_tables) || exit 1
+  start_http_worker example example || exit 1
+  H_EXAMPLE=$STARTED_HTTP_URL
+  start_http_worker versioned versioned || exit 1
+  H_VERSIONED=$STARTED_HTTP_URL
+  start_http_worker versioned_tables versioned_tables || exit 1
+  H_VERSIONED_TABLES=$STARTED_HTTP_URL
   echo "[harness] example=$H_EXAMPLE versioned=$H_VERSIONED tables=$H_VERSIONED_TABLES"
   # VGI_HTTP_TRANSPORT is a flag: it says VGI_TEST_WORKER is itself a URL, so
   # the whole suite runs over HTTP rather than by spawning a subprocess.
@@ -150,8 +153,9 @@ fi
 # exporting its token into the launcher run, where bearer_token is invalid.
 H_BEARER=""
 if [[ $FULL_RUN == 1 ]]; then
-  H_BEARER=$(start_http_worker bearer example \
-    VGI_BEARER_TOKENS=test-secret-token=test-principal) || exit 1
+  start_http_worker bearer example \
+    VGI_BEARER_TOKENS=test-secret-token=test-principal || exit 1
+  H_BEARER=$STARTED_HTTP_URL
 fi
 
 ARGS=()
