@@ -1314,13 +1314,18 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request) {
         payloads.reserve(tokens.size());
         for (const auto& token : tokens) {
             auto opened = split_token::open(token, fingerprint, anchor);
-            if (!opened) {
-                throw std::runtime_error(
-                    "init: split token for '" + function_name +
-                    "' is not redeemable here — it was minted for a different bind, or "
-                    "against a snapshot this worker no longer serves");
+            if (!opened.payload) {
+                if (opened.error == split_token::OpenError::SnapshotExpired) {
+                    throw std::runtime_error("SPLIT_SNAPSHOT_EXPIRED: split token for '" +
+                                             function_name +
+                                             "' names a snapshot this worker no longer serves; "
+                                             "re-run the query to plan against the current "
+                                             "snapshot");
+                }
+                throw std::runtime_error("SPLIT_TOKEN_INVALID: split token for '" + function_name +
+                                         "' is malformed or bound elsewhere");
             }
-            payloads.push_back(std::move(*opened));
+            payloads.push_back(std::move(*opened.payload));
         }
         params.split_payloads = std::move(payloads);
     }

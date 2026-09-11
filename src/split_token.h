@@ -47,10 +47,18 @@ std::string bind_fingerprint(const SchemaPath& schema_path, const std::string& f
 std::string build(const std::string& payload, const std::string& fingerprint,
                   const std::string& anchor);
 
-// Verify a token and return the payload, or nothing when it is malformed, was
-// minted for a different bind, or names a snapshot that has moved on.
-std::optional<std::string> open(const std::string& token, const std::string& expected_fingerprint,
-                                const std::string& current_anchor);
+enum class OpenError { None, Invalid, SnapshotExpired };
+
+struct OpenResult {
+    std::optional<std::string> payload;
+    OpenError error = OpenError::None;
+};
+
+// Verify a token while preserving the one actionable distinction: an expired
+// snapshot can be retried after replanning, while a malformed or wrongly-bound
+// token cannot.
+OpenResult open(const std::string& token, const std::string& expected_fingerprint,
+                const std::string& current_anchor);
 
 // The consistency anchor for a catalog version: int64, little-endian, and an
 // absent version is zero — the same spelling the reference uses.

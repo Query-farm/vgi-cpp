@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -45,6 +46,50 @@ std::pair<std::string, int> parse_tcp_bind(const std::string& value, const char*
 
 bool is_loopback_bind(const std::string& host) {
     return host == "127.0.0.1" || host == "::1" || host == "localhost";
+}
+
+std::map<std::string, std::string> bearer_tokens_from_env() {
+    std::map<std::string, std::string> tokens;
+    const char* configured = std::getenv("VGI_BEARER_TOKENS");
+    if (!configured || !*configured) return tokens;
+    std::string entries(configured);
+    size_t begin = 0;
+    while (begin <= entries.size()) {
+        const auto end = entries.find(',', begin);
+        const auto entry = entries.substr(begin, end == std::string::npos ? end : end - begin);
+        const auto separator = entry.find('=');
+        if (separator == std::string::npos || separator == 0 || separator + 1 == entry.size()) {
+            throw std::invalid_argument(
+                "VGI_BEARER_TOKENS must contain comma-separated token=principal entries");
+        }
+        tokens.emplace(entry.substr(0, separator), entry.substr(separator + 1));
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return tokens;
+}
+
+void configure_bearer_auth(vgi_rpc::HttpConfig& config,
+                           const std::map<std::string, std::string>& tokens) {
+    if (tokens.empty()) return;
+    config.peer_identity_providers.push_back(
+        [tokens](const vgi_rpc::PeerResolutionContext& context) {
+            const auto authorization = context.header("authorization");
+            constexpr const char* kPrefix = "Bearer ";
+            if (!authorization || authorization->rfind(kPrefix, 0) != 0) {
+                throw vgi_rpc::PeerIdentityRejected("missing bearer credential");
+            }
+            const auto found =
+                tokens.find(authorization->substr(std::char_traits<char>::length(kPrefix)));
+            if (found == tokens.end()) {
+                throw vgi_rpc::PeerIdentityRejected("invalid bearer credential");
+            }
+            return vgi_rpc::PeerIdentityResult::available(vgi_rpc::PeerIdentity(
+                "bearer", "authorization", vgi_rpc::IdentityAssurance::CONFIGURED_PROXY,
+                "vgi-worker", "http", vgi_rpc::PeerSubjectKind::USER, found->second,
+                vgi_rpc::SubjectStability::STABLE, /*subject_verified=*/true));
+        });
+    config.peer_authentication_policy = vgi_rpc::peer_identity_primary("bearer");
 }
 }  // namespace
 
@@ -252,7 +297,11 @@ void Worker::run(int argc, char** argv) {
                 port = parse_http_port(args[i + 1]);
             }
             if (iroh_issuer.empty()) {
-                server->serve_http(http_host, port);
+                vgi_rpc::HttpConfig config;
+                config.host = http_host;
+                config.port = port;
+                configure_bearer_auth(config, bearer_tokens_from_env());
+                server->serve_http(config);
             } else {
                 if (!is_loopback_bind(http_host)) {
                     refuse(

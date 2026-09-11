@@ -29,6 +29,8 @@ mkdir -p "$BRANCH_DIR"
 
 BUILD=1
 if [[ "${1:-}" == "--no-build" ]]; then BUILD=0; shift; fi
+FULL_RUN=0
+if [[ $# -eq 0 ]]; then FULL_RUN=1; fi
 
 if [[ ! -x "$UNITTEST" ]]; then
   echo "[harness] $UNITTEST missing — build the extension first:"
@@ -143,6 +145,15 @@ if [[ "${VGI_HTTP:-0}" == "1" ]]; then
   )
 fi
 
+# The bearer fixture needs a protected HTTP worker while the rest of the suite
+# needs an anonymous worker. Run it separately during a full suite instead of
+# exporting its token into the launcher run, where bearer_token is invalid.
+H_BEARER=""
+if [[ $FULL_RUN == 1 ]]; then
+  H_BEARER=$(start_http_worker bearer example \
+    VGI_BEARER_TOKENS=test-secret-token=test-principal) || exit 1
+fi
+
 ARGS=()
 if [[ $# -ge 1 ]]; then
   case "$1" in
@@ -162,9 +173,16 @@ echo "[harness] running: ${ARGS[*]}"
   VGI_VERSIONED_TABLES_WORKER="$W_VERSIONED_TABLES" \
   VGI_ATTACH_OPTIONS_WORKER="$W_ATTACH_OPTIONS" \
   VGI_BAD_PROTOCOL_WORKER="$W_BAD_PROTOCOL" \
-  VGI_TEST_BEARER_TOKEN="test-secret-token" \
   "$UNITTEST" "${ARGS[@]}" ) > "$CACHE/run.log" 2>&1
 RC=$?
+
+if [[ $FULL_RUN == 1 ]]; then
+  ( cd "$VGI_EXT" && env \
+    VGI_TEST_WORKER="$H_BEARER" \
+    VGI_TEST_BEARER_TOKEN="test-secret-token" \
+    "$UNITTEST" "test/sql/integration/bearer_auth/*" ) >> "$CACHE/run.log" 2>&1
+  RC=$(( RC | $? ))
+fi
 
 grep -oE 'test/sql/integration/[A-Za-z0-9_/]+\.test(_slow)?' "$CACHE/run.log" \
   | sort -u > "$CACHE/allmentioned" 2>/dev/null
