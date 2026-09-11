@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -36,22 +37,23 @@ struct ColumnBounds {
 
 // The predicates the engine pushed into this scan.
 //
-// The wire form is a one-row batch whose first column is a JSON filter tree
-// and whose remaining columns are the constant *values* the tree references by
-// index. Values ride as Arrow columns rather than inside the JSON so they keep
-// their exact type — a decimal or a timestamp survives, where a JSON number
-// would not.
+// Filter Encoding v2 is a one-row Arrow batch. Its non-null `filter_spec` UTF-8
+// field contains the versioned snapshot/delta document; sibling `value_N`,
+// `type_N`, and `artifact_N` fields carry typed payloads. External IN sets are
+// addressed by batch and column index in the request's `join_keys` list.
 class PushdownFilters {
 public:
     // Parse the IPC filter blob. Empty input yields no filters, which is what
     // a scan with nothing pushed into it sees.
     //
-    // `join_key_batches` are the side batches a `join_keys` filter refers to —
-    // DuckDB turns an `IN (…)` list, and a semi-join's build side, into a
-    // filter that names a column in them rather than carrying the values
-    // inline. Without them such a filter has no values at all.
+    // `output_schema` is the authoritative unprojected bind output schema used
+    // to resolve v2 column indices. It is required for non-empty snapshots.
     static PushdownFilters parse(const std::string& ipc_bytes,
-                                 const std::vector<std::string>& join_key_batches = {});
+                                 const std::vector<std::string>& join_key_batches = {},
+                                 std::shared_ptr<arrow::Schema> output_schema = nullptr);
+
+    // Validate and atomically apply a dynamic v2 delta to this scan's state.
+    void apply_delta(const std::string& ipc_bytes);
 
     bool empty() const noexcept { return filters_.empty(); }
 
@@ -83,11 +85,8 @@ public:
 
     // Apply every filter to `batch`, returning the surviving rows.
     //
-    // Best effort by design: a filter this cannot evaluate is skipped rather
-    // than failing the scan, because pushdown is an optimization and the
-    // engine re-checks the predicate itself. Dropping a row it should have
-    // kept would be a wrong answer; keeping one it could have dropped is only
-    // slower.
+    // Required predicates fail closed when they cannot be evaluated. Advisory
+    // predicates may be ignored, as prescribed by Filter Encoding v2.
     std::shared_ptr<arrow::RecordBatch> apply(
         const std::shared_ptr<arrow::RecordBatch>& batch) const;
 
@@ -107,7 +106,7 @@ public:
     // a count — because the tests compare the string.
     std::string format() const;
 
-    // The parsed filter tree. Public only so the implementation's free
+    // The parsed expression tree. Public only so the implementation's free
     // helpers can name it; it is not part of the SDK's surface.
     struct Spec;
 
@@ -122,8 +121,11 @@ private:
 
     std::vector<Filter> filters_;
     std::vector<std::shared_ptr<Spec>> specs_;
-    std::vector<std::shared_ptr<arrow::Array>> values_;
-    std::map<std::string, std::shared_ptr<arrow::Array>> join_keys_;
+    std::map<std::string, uint64_t> revisions_;
+    std::set<std::string> required_ids_;
+    std::vector<std::shared_ptr<arrow::RecordBatch>> join_keys_;
+    std::shared_ptr<arrow::Schema> output_schema_;
+    std::string evaluation_context_;
 };
 
 }  // namespace vgi

@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <arrow/array.h>
+#include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
@@ -61,6 +62,27 @@ std::optional<std::pair<int64_t, int64_t>> decode_range(const std::string& paylo
 
 std::shared_ptr<arrow::Schema> n_schema() {
     return arrow::schema({arrow::field("n", arrow::int64(), /*nullable=*/false)});
+}
+
+std::shared_ptr<arrow::Schema> dynamic_filter_schema() {
+    return arrow::schema({arrow::field("n", arrow::int64(), /*nullable=*/false),
+                          arrow::field("pushed_filters", arrow::utf8(), /*nullable=*/false)});
+}
+
+std::string render_filter_bounds(const vgi::PushdownFilters& filters) {
+    std::string result;
+    for (const auto& column : filters.filtered_columns()) {
+        const auto bounds = filters.column_bounds(column);
+        if (bounds.min) {
+            if (!result.empty()) result += ',';
+            result += column + ">=" + std::to_string(*bounds.min);
+        }
+        if (bounds.max) {
+            if (!result.empty()) result += ',';
+            result += column + "<=" + std::to_string(*bounds.max);
+        }
+    }
+    return result.empty() ? "(none)" : result;
 }
 
 // Emits the rows of one or more half-open ranges, in order.
@@ -392,6 +414,141 @@ public:
     }
 };
 
+// `split_dynamic_filter(n, splits)` — a split scan that reports and applies
+// the filter in force for every batch. A reader re-initializes between claimed
+// splits, so reporting the filter as data makes lost state observable even
+// though DuckDB also checks the predicate above the scan.
+class SplitDynamicFilter : public vgi::TableFunction {
+public:
+    std::string name() const override { return "split_dynamic_filter"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Echoes the dynamic filter each tick carried, per split";
+        md.categories = {"generator", "diagnostic"};
+        md.projection_pushdown = true;
+        md.filter_pushdown = true;
+        md.auto_apply_filters = true;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::named("n", "int64", "How many rows to generate"),
+                vgi::ArgSpec::named("splits", "int64", "How many splits")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return dynamic_filter_schema();
+    }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        const auto rows = std::max<int64_t>(0, params.arguments.named_int64("n").value_or(0));
+        return {rows, rows};
+    }
+
+    bool supports_splits() const override { return true; }
+
+    vgi::PlanResult plan(const vgi::BindParams& params, const vgi::PlanParams&) const override {
+        const int64_t rows = std::max<int64_t>(0, params.arguments.named_int64("n").value_or(0));
+        const int64_t want =
+            std::max<int64_t>(1, params.arguments.named_int64("splits").value_or(1));
+
+        vgi::PlanResult result;
+        result.estimated_total_rows = rows;
+        result.estimated_total_splits = want;
+        for (int64_t i = 0; i < want; ++i) {
+            vgi::ScanSplit split;
+            const int64_t begin = rows * i / want;
+            const int64_t end = rows * (i + 1) / want;
+            split.payload = encode_range(begin, end);
+            split.estimated_rows = end - begin;
+            split.rows_exact = true;
+            result.splits.push_back(std::move(split));
+        }
+        return result;
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        if (!params.split_payloads) {
+            throw std::runtime_error(
+                "split_dynamic_filter is split-only but was initialized with no split tokens");
+        }
+        std::vector<std::pair<int64_t, int64_t>> ranges;
+        ranges.reserve(params.split_payloads->size());
+        for (const auto& payload : *params.split_payloads) {
+            auto range = decode_range(payload);
+            if (!range) {
+                throw std::runtime_error("split_dynamic_filter: unrecognized split payload");
+            }
+            ranges.push_back(*range);
+        }
+        return std::make_unique<Producer>(
+            params.output_schema ? params.output_schema : dynamic_filter_schema(),
+            std::move(ranges), render_filter_bounds(params.pushdown_filters));
+    }
+
+private:
+    class Producer : public vgi::TableProducer {
+    public:
+        Producer(std::shared_ptr<arrow::Schema> schema,
+                 std::vector<std::pair<int64_t, int64_t>> ranges, std::string rendered)
+            : schema_(std::move(schema)),
+              ranges_(std::move(ranges)),
+              rendered_(std::move(rendered)) {
+            if (!ranges_.empty()) cursor_ = ranges_.front().first;
+        }
+
+        void on_dynamic_filters(const vgi::PushdownFilters& filters) override {
+            rendered_ = render_filter_bounds(filters);
+        }
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            while (at_ < ranges_.size() && cursor_ >= ranges_[at_].second) {
+                ++at_;
+                if (at_ < ranges_.size()) cursor_ = ranges_[at_].first;
+            }
+            if (at_ >= ranges_.size()) return nullptr;
+
+            constexpr int64_t kBatchRows = 4;
+            const int64_t begin = cursor_;
+            const int64_t end = std::min(begin + kBatchRows, ranges_[at_].second);
+            cursor_ = end;
+
+            arrow::Int64Builder ns;
+            arrow::StringBuilder reports;
+            (void)ns.Reserve(end - begin);
+            (void)reports.Reserve(end - begin);
+            for (int64_t value = begin; value < end; ++value) {
+                (void)ns.Append(value);
+                (void)reports.Append(rendered_);
+            }
+            std::vector<std::shared_ptr<arrow::Array>> built(2);
+            (void)ns.Finish(&built[0]);
+            (void)reports.Finish(&built[1]);
+
+            const std::vector<std::string> names{"n", "pushed_filters"};
+            std::vector<std::shared_ptr<arrow::Array>> projected;
+            projected.reserve(static_cast<size_t>(schema_->num_fields()));
+            for (const auto& field : schema_->fields()) {
+                const auto found = std::find(names.begin(), names.end(), field->name());
+                if (found == names.end()) {
+                    throw std::runtime_error("split_dynamic_filter: unexpected column '" +
+                                             field->name() + "'");
+                }
+                projected.push_back(built[static_cast<size_t>(found - names.begin())]);
+            }
+            return arrow::RecordBatch::Make(schema_, end - begin, std::move(projected));
+        }
+
+    private:
+        std::shared_ptr<arrow::Schema> schema_;
+        std::vector<std::pair<int64_t, int64_t>> ranges_;
+        size_t at_ = 0;
+        int64_t cursor_ = 0;
+        std::string rendered_;
+    };
+};
+
 // `split_echo_filters(splits)` — reports what `plan()` was told.
 //
 // One row per split, carrying the split's ordinal and whether planning saw any
@@ -523,6 +680,7 @@ void register_splits(vgi::Worker& worker) {
         "split_many", Shape::Many, "Integers 0..n-1, divided into many more splits than threads"));
     worker.register_table(std::make_shared<SplitFailAt>());
     worker.register_table(std::make_shared<SplitEndlessCursor>());
+    worker.register_table(std::make_shared<SplitDynamicFilter>());
     worker.register_table(std::make_shared<SplitEchoFilters>());
 }
 

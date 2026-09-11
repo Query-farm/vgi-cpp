@@ -544,6 +544,15 @@ arrow::StringBuilder* string_child(arrow::StructBuilder& entry, const char* name
     return builder;
 }
 
+arrow::UInt64Builder* uint64_child(arrow::StructBuilder& entry, const char* name) {
+    const auto type = entry.type();
+    const int index = static_cast<const arrow::StructType&>(*type).GetFieldIndex(name);
+    if (index < 0) fail(std::string("struct has no '") + name + "' field");
+    auto* builder = dynamic_cast<arrow::UInt64Builder*>(entry.field_builder(index));
+    if (!builder) fail(std::string("struct field '") + name + "' is not uint64");
+    return builder;
+}
+
 ResultBuilder& ResultBuilder::set_secret_lookups(
     const std::string& field,
     const std::vector<std::tuple<std::string, std::string, std::string>>& lookups) {
@@ -604,6 +613,62 @@ ResultBuilder& ResultBuilder::set_examples(const std::string& field,
     }
     arrays_[static_cast<size_t>(index)] =
         unwrap(list->Finish(), "finishing examples field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_filter_identities(
+    const std::string& field,
+    const std::vector<std::tuple<std::string, std::string, uint64_t>>& identities) {
+    const int index = field_index(field);
+    std::unique_ptr<arrow::ArrayBuilder> raw;
+    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), schema_->field(index)->type(), &raw),
+             "building filter capability field '" + field + "'");
+    auto* list = dynamic_cast<arrow::ListBuilder*>(raw.get());
+    if (!list) fail("result field '" + field + "' is not a list");
+    auto* entry = dynamic_cast<arrow::StructBuilder*>(list->value_builder());
+    if (!entry) fail("result field '" + field + "' is not a list of structs");
+
+    auto* namespace_builder = string_child(*entry, "namespace");
+    auto* name_builder = string_child(*entry, "name");
+    auto* version_builder = uint64_child(*entry, "version");
+
+    check_ok(list->Append(), "opening filter capability field '" + field + "'");
+    for (const auto& [namespace_name, name, version] : identities) {
+        check_ok(entry->Append(), "opening a filter capability");
+        check_ok(namespace_builder->Append(namespace_name), "appending filter namespace");
+        check_ok(name_builder->Append(name), "appending filter name");
+        check_ok(version_builder->Append(version), "appending filter version");
+    }
+    arrays_[static_cast<size_t>(index)] =
+        unwrap(list->Finish(), "finishing filter capability field '" + field + "'");
+    return *this;
+}
+
+ResultBuilder& ResultBuilder::set_evaluation_contexts(
+    const std::string& field,
+    const std::vector<std::pair<std::string, std::optional<std::string>>>& contexts) {
+    const int index = field_index(field);
+    std::unique_ptr<arrow::ArrayBuilder> raw;
+    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), schema_->field(index)->type(), &raw),
+             "building evaluation-context field '" + field + "'");
+    auto* list = dynamic_cast<arrow::ListBuilder*>(raw.get());
+    if (!list) fail("result field '" + field + "' is not a list");
+    auto* entry = dynamic_cast<arrow::StructBuilder*>(list->value_builder());
+    if (!entry) fail("result field '" + field + "' is not a list of structs");
+
+    auto* profile_builder = string_child(*entry, "profile");
+    auto* fingerprint_builder = string_child(*entry, "provider_fingerprint");
+
+    check_ok(list->Append(), "opening evaluation-context field '" + field + "'");
+    for (const auto& [profile, fingerprint] : contexts) {
+        check_ok(entry->Append(), "opening an evaluation context");
+        check_ok(profile_builder->Append(profile), "appending evaluation-context profile");
+        check_ok(fingerprint ? fingerprint_builder->Append(*fingerprint)
+                             : fingerprint_builder->AppendNull(),
+                 "appending evaluation-context fingerprint");
+    }
+    arrays_[static_cast<size_t>(index)] =
+        unwrap(list->Finish(), "finishing evaluation-context field '" + field + "'");
     return *this;
 }
 
