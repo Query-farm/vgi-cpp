@@ -1,6 +1,10 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+#include <limits>
+#include <optional>
+
 #include <arrow/builder.h>
 #include <arrow/type.h>
 #include <arrow/util/key_value_metadata.h>
@@ -34,16 +38,17 @@ public:
     vgi::FunctionMetadata metadata() const override { return {}; }
 };
 
-std::string filter_batch(const std::string& document,
-                         const std::shared_ptr<arrow::Array>& payload = nullptr) {
+std::string filter_batch_with_payloads(
+    const std::string& document,
+    const std::vector<std::pair<std::string, std::shared_ptr<arrow::Array>>>& payloads) {
     arrow::StringBuilder spec_builder;
     REQUIRE(spec_builder.Append(document).ok());
     std::shared_ptr<arrow::Array> spec;
     REQUIRE(spec_builder.Finish(&spec).ok());
     arrow::FieldVector fields{arrow::field("filter_spec", arrow::utf8(), false)};
     arrow::ArrayVector arrays{spec};
-    if (payload) {
-        fields.push_back(arrow::field("value_0", payload->type(), true));
+    for (const auto& [name, payload] : payloads) {
+        fields.push_back(arrow::field(name, payload->type(), true));
         arrays.push_back(payload);
     }
     auto metadata = arrow::key_value_metadata(
@@ -53,12 +58,61 @@ std::string filter_batch(const std::string& document,
         arrow::RecordBatch::Make(arrow::schema(fields, metadata), 1, arrays));
 }
 
+std::string filter_batch(const std::string& document,
+                         const std::shared_ptr<arrow::Array>& payload = nullptr) {
+    if (payload) return filter_batch_with_payloads(document, {{"value_0", payload}});
+    return filter_batch_with_payloads(document, {});
+}
+
 std::shared_ptr<arrow::Array> int64_values(std::initializer_list<int64_t> values) {
     arrow::Int64Builder builder;
     for (const auto value : values) REQUIRE(builder.Append(value).ok());
     std::shared_ptr<arrow::Array> result;
     REQUIRE(builder.Finish(&result).ok());
     return result;
+}
+
+std::shared_ptr<arrow::Array> nullable_int64_values(
+    std::initializer_list<std::optional<int64_t>> values) {
+    arrow::Int64Builder builder;
+    for (const auto value : values) {
+        if (value)
+            REQUIRE(builder.Append(*value).ok());
+        else
+            REQUIRE(builder.AppendNull().ok());
+    }
+    std::shared_ptr<arrow::Array> result;
+    REQUIRE(builder.Finish(&result).ok());
+    return result;
+}
+
+std::shared_ptr<arrow::Array> int64_list(std::initializer_list<std::optional<int64_t>> values) {
+    auto child = std::make_shared<arrow::Int64Builder>();
+    arrow::ListBuilder builder(arrow::default_memory_pool(), child);
+    REQUIRE(builder.Append().ok());
+    for (const auto value : values) {
+        if (value)
+            REQUIRE(child->Append(*value).ok());
+        else
+            REQUIRE(child->AppendNull().ok());
+    }
+    std::shared_ptr<arrow::Array> result;
+    REQUIRE(builder.Finish(&result).ok());
+    return result;
+}
+
+std::shared_ptr<arrow::Array> double_values(std::initializer_list<double> values) {
+    arrow::DoubleBuilder builder;
+    for (const auto value : values) REQUIRE(builder.Append(value).ok());
+    std::shared_ptr<arrow::Array> result;
+    REQUIRE(builder.Finish(&result).ok());
+    return result;
+}
+
+std::shared_ptr<arrow::Array> null_value(const std::shared_ptr<arrow::DataType>& type) {
+    auto result = arrow::MakeArrayOfNull(type, 1);
+    REQUIRE(result.ok());
+    return result.MoveValueUnsafe();
 }
 
 }  // namespace
@@ -246,4 +300,122 @@ TEST_CASE("Filter v2 dynamic deltas update snapshot state atomically", "[filter-
     auto input = arrow::RecordBatch::Make(arrow::schema({arrow::field("n", arrow::int64())}), 5,
                                           {int64_values({1, 2, 3, 4, 5})});
     REQUIRE(filters.apply(input)->num_rows() == 3);
+}
+
+TEST_CASE("Filter v2 IN follows SQL three-valued NULL semantics", "[filter-v2]") {
+    const auto in_document =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"in","expression":{"node":"column_ref","column_index":0,"column_name":"n"},"set":{"kind":"literal","value_ref":0},"negated":false}}]})";
+    auto in_filter =
+        vgi::PushdownFilters::parse(filter_batch(in_document, int64_list({1, std::nullopt})), {},
+                                    arrow::schema({arrow::field("n", arrow::int64())}));
+    auto input = arrow::RecordBatch::Make(arrow::schema({arrow::field("n", arrow::int64())}), 3,
+                                          {nullable_int64_values({1, 2, std::nullopt})});
+    REQUIRE(in_filter.apply(input)->num_rows() == 1);
+
+    const auto not_in_document =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"in","expression":{"node":"column_ref","column_index":0,"column_name":"n"},"set":{"kind":"literal","value_ref":0},"negated":true}}]})";
+    auto not_in_with_null =
+        vgi::PushdownFilters::parse(filter_batch(not_in_document, int64_list({1, std::nullopt})),
+                                    {}, arrow::schema({arrow::field("n", arrow::int64())}));
+    REQUIRE(not_in_with_null.apply(input)->num_rows() == 0);
+
+    auto not_in_without_null =
+        vgi::PushdownFilters::parse(filter_batch(not_in_document, int64_list({1})), {},
+                                    arrow::schema({arrow::field("n", arrow::int64())}));
+    auto null_input = arrow::RecordBatch::Make(arrow::schema({arrow::field("n", arrow::int64())}),
+                                               1, {nullable_int64_values({std::nullopt})});
+    REQUIRE(not_in_without_null.apply(null_input)->num_rows() == 0);
+}
+
+TEST_CASE("Filter v2 field references propagate parent struct validity", "[filter-v2]") {
+    const auto document =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"comparison","op":"eq","left":{"node":"field_ref","expression":{"node":"column_ref","column_index":0,"column_name":"s"},"field_index":0,"field_name":"n"},"right":{"node":"literal","value_ref":0}}}]})";
+    const auto struct_type = arrow::struct_({arrow::field("n", arrow::int64())});
+    auto filters = vgi::PushdownFilters::parse(filter_batch(document, int64_values({5})), {},
+                                               arrow::schema({arrow::field("s", struct_type)}));
+
+    arrow::BooleanBuilder validity_builder;
+    REQUIRE(validity_builder.Append(false).ok());
+    REQUIRE(validity_builder.Append(true).ok());
+    std::shared_ptr<arrow::Array> validity;
+    REQUIRE(validity_builder.Finish(&validity).ok());
+    auto maybe_struct = arrow::StructArray::Make(
+        {int64_values({5, 5})}, {arrow::field("n", arrow::int64())},
+        std::static_pointer_cast<arrow::BooleanArray>(validity)->values(), 1);
+    REQUIRE(maybe_struct.ok());
+    auto input = arrow::RecordBatch::Make(arrow::schema({arrow::field("s", struct_type)}), 2,
+                                          {maybe_struct.MoveValueUnsafe()});
+    REQUIRE(filters.apply(input)->num_rows() == 1);
+    REQUIRE_FALSE(filters.column_values("s"));
+    REQUIRE_FALSE(filters.column_bounds("s").min);
+    REQUIRE_FALSE(filters.column_bounds("s").max);
+}
+
+TEST_CASE("Filter v2 comparisons use DuckDB NaN and signed-zero ordering", "[filter-v2]") {
+    auto input = arrow::RecordBatch::Make(arrow::schema({arrow::field("n", arrow::float64())}), 4,
+                                          {double_values({NAN, -0.0, 0.0, 1.0})});
+    const auto rows_for = [&](const std::string& op, double literal) {
+        const auto document =
+            std::string(
+                R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"comparison","op":")") +
+            op +
+            R"(","left":{"node":"column_ref","column_index":0,"column_name":"n"},"right":{"node":"literal","value_ref":0}}}]})";
+        auto filters = vgi::PushdownFilters::parse(filter_batch(document, double_values({literal})),
+                                                   {}, input->schema());
+        return filters.apply(input)->num_rows();
+    };
+    REQUIRE(rows_for("eq", NAN) == 1);
+    REQUIRE(rows_for("lt", NAN) == 3);
+    REQUIRE(rows_for("distinct_from", NAN) == 3);
+    REQUIRE(rows_for("not_distinct_from", NAN) == 1);
+    REQUIRE(rows_for("eq", 0.0) == 2);
+}
+
+TEST_CASE("Filter v2 rejects duplicate JSON keys and malformed stale upserts", "[filter-v2]") {
+    const auto duplicate =
+        R"({"encoding":"vgi.filters.v2","encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[]})";
+    REQUIRE_THROWS(vgi::PushdownFilters::parse(filter_batch(duplicate), {}, arrow::schema({})));
+
+    const auto snapshot =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[]})";
+    auto filters = vgi::PushdownFilters::parse(filter_batch(snapshot), {}, arrow::schema({}));
+    const auto fresh =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"delta","updates":[{"operation":"remove","id":"p","revision":2}]})";
+    filters.apply_delta(filter_batch(fresh));
+    const auto stale_malformed =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"delta","updates":[{"operation":"upsert","id":"p","revision":1,"mode":"advisory","source":"top_n","expression":{"node":"bogus"}}]})";
+    REQUIRE_THROWS(filters.apply_delta(filter_batch(stale_malformed)));
+}
+
+TEST_CASE("Filter v2 arithmetic is checked and unsafe casts are declined", "[filter-v2]") {
+    const auto arithmetic =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"comparison","op":"eq","left":{"node":"arithmetic","op":"add","left":{"node":"column_ref","column_index":0,"column_name":"n"},"right":{"node":"literal","value_ref":0}},"right":{"node":"literal","value_ref":1}}}]})";
+    auto filters = vgi::PushdownFilters::parse(
+        filter_batch_with_payloads(
+            arithmetic, {{"value_0", int64_values({1})}, {"value_1", int64_values({0})}}),
+        {}, arrow::schema({arrow::field("n", arrow::int64())}));
+    auto overflow = arrow::RecordBatch::Make(arrow::schema({arrow::field("n", arrow::int64())}), 1,
+                                             {int64_values({std::numeric_limits<int64_t>::max()})});
+    REQUIRE_THROWS(filters.apply(overflow));
+
+    const auto unsafe_cast =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"comparison","op":"eq","left":{"node":"cast","expression":{"node":"column_ref","column_index":0,"column_name":"n"},"type_ref":0},"right":{"node":"literal","value_ref":0}}}]})";
+    REQUIRE_THROWS(vgi::PushdownFilters::parse(
+        filter_batch_with_payloads(
+            unsafe_cast, {{"type_0", null_value(arrow::int64())}, {"value_0", int64_values({1})}}),
+        {}, arrow::schema({arrow::field("n", arrow::float64())})));
+}
+
+TEST_CASE("Filter v2 fails closed when a runtime batch changes column type", "[filter-v2]") {
+    const auto document =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"comparison","op":"eq","left":{"node":"column_ref","column_index":0,"column_name":"n"},"right":{"node":"literal","value_ref":0}}}]})";
+    auto filters = vgi::PushdownFilters::parse(filter_batch(document, int64_values({1})), {},
+                                               arrow::schema({arrow::field("n", arrow::int64())}));
+    arrow::StringBuilder builder;
+    REQUIRE(builder.Append("1").ok());
+    std::shared_ptr<arrow::Array> strings;
+    REQUIRE(builder.Finish(&strings).ok());
+    auto changed =
+        arrow::RecordBatch::Make(arrow::schema({arrow::field("n", arrow::utf8())}), 1, {strings});
+    REQUIRE_THROWS(filters.apply(changed));
 }

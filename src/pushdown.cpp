@@ -2,10 +2,12 @@
 #include "vgi/pushdown.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <limits>
+#include <regex>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -147,12 +149,53 @@ std::string validate_batch(const std::shared_ptr<arrow::RecordBatch>& batch) {
     return context;
 }
 
+void validate_arrow_extensions(const std::shared_ptr<arrow::Field>& field) {
+    static const std::unordered_set<std::string> known = {
+        "arrow.bool8",
+        "arrow.json",
+        "arrow.uuid",
+        "geoarrow.linestring",
+        "geoarrow.multilinestring",
+        "geoarrow.multipoint",
+        "geoarrow.multipolygon",
+        "geoarrow.point",
+        "geoarrow.polygon",
+        "geoarrow.wkb",
+    };
+    if (field->metadata() && field->metadata()->Contains("ARROW:extension:name")) {
+        const auto name = field->metadata()->Get("ARROW:extension:name");
+        if (!name.ok() || !known.count(name.ValueUnsafe()))
+            invalid("unknown Arrow extension type on field '" + field->name() + "'");
+    }
+    if (field->type()->id() == arrow::Type::EXTENSION) {
+        const auto& extension = static_cast<const arrow::ExtensionType&>(*field->type());
+        if (!known.count(extension.extension_name()))
+            invalid("unknown Arrow extension type '" + extension.extension_name() + "'");
+    }
+    if (field->type()->id() == arrow::Type::STRUCT) {
+        for (const auto& child : static_cast<const arrow::StructType&>(*field->type()).fields())
+            validate_arrow_extensions(child);
+    } else if (field->type()->id() == arrow::Type::LIST) {
+        validate_arrow_extensions(
+            static_cast<const arrow::ListType&>(*field->type()).value_field());
+    } else if (field->type()->id() == arrow::Type::LARGE_LIST) {
+        validate_arrow_extensions(
+            static_cast<const arrow::LargeListType&>(*field->type()).value_field());
+    } else if (field->type()->id() == arrow::Type::FIXED_SIZE_LIST) {
+        validate_arrow_extensions(
+            static_cast<const arrow::FixedSizeListType&>(*field->type()).value_field());
+    }
+}
+
 std::shared_ptr<arrow::Array> payload(const std::shared_ptr<arrow::RecordBatch>& batch,
                                       const std::string& prefix, uint64_t reference) {
     const auto name = prefix + "_" + std::to_string(reference);
     const auto indices = batch->schema()->GetAllFieldIndices(name);
     if (indices.size() != 1) invalid("missing or duplicate payload field '" + name + "'");
-    return batch->column(indices.front());
+    const auto position = indices.front();
+    const auto& field = batch->schema()->field(position);
+    if (prefix != "artifact") validate_arrow_extensions(field);
+    return batch->column(position);
 }
 
 std::string root_column(const std::shared_ptr<Spec>& expression) {
@@ -161,6 +204,86 @@ std::string root_column(const std::shared_ptr<Spec>& expression) {
     if (expression->kind == "field" && !expression->children.empty())
         return root_column(expression->children[0]);
     return {};
+}
+
+bool is_direct_column(const std::shared_ptr<Spec>& expression, const std::string& column) {
+    return expression && expression->kind == "column" && expression->column_name == column;
+}
+
+std::shared_ptr<arrow::DataType> logical_type(std::shared_ptr<arrow::DataType> type) {
+    while (type && type->id() == arrow::Type::DICTIONARY) {
+        type = static_cast<const arrow::DictionaryType&>(*type).value_type();
+    }
+    return type;
+}
+
+bool same_logical_type(const std::shared_ptr<arrow::DataType>& left,
+                       const std::shared_ptr<arrow::DataType>& right) {
+    const auto left_type = logical_type(left);
+    const auto right_type = logical_type(right);
+    return left_type && right_type && left_type->Equals(right_type);
+}
+
+bool boolean_type(const std::shared_ptr<arrow::DataType>& type) {
+    const auto logical = logical_type(type);
+    return logical && logical->id() == arrow::Type::BOOL;
+}
+
+bool numeric_type(const std::shared_ptr<arrow::DataType>& type) {
+    const auto logical = logical_type(type);
+    if (!logical) return false;
+    switch (logical->id()) {
+        case arrow::Type::UINT8:
+        case arrow::Type::INT8:
+        case arrow::Type::UINT16:
+        case arrow::Type::INT16:
+        case arrow::Type::UINT32:
+        case arrow::Type::INT32:
+        case arrow::Type::UINT64:
+        case arrow::Type::INT64:
+        case arrow::Type::HALF_FLOAT:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::DECIMAL128:
+        case arrow::Type::DECIMAL256: return true;
+        default: return false;
+    }
+}
+
+bool exact_context_free_cast(const std::shared_ptr<arrow::DataType>& source,
+                             const std::shared_ptr<arrow::DataType>& target) {
+    if (!source || !target) return false;
+    if (source->Equals(target)) return true;
+    if (arrow::is_integer(source->id()) && arrow::is_integer(target->id())) return true;
+    return source->id() == arrow::Type::FLOAT && target->id() == arrow::Type::DOUBLE;
+}
+
+bool contextual_type(const std::shared_ptr<arrow::DataType>& type) {
+    const auto logical = logical_type(type);
+    if (!logical) return false;
+    switch (logical->id()) {
+        case arrow::Type::STRING:
+        case arrow::Type::LARGE_STRING:
+        case arrow::Type::DATE32:
+        case arrow::Type::DATE64:
+        case arrow::Type::TIME32:
+        case arrow::Type::TIME64:
+        case arrow::Type::TIMESTAMP: return true;
+        default: return false;
+    }
+}
+
+void validate_identity(const json& identity, const std::string& where) {
+    require_keys(identity, {"namespace", "name", "version"}, {}, where);
+    const auto identity_namespace = required_string(identity, "namespace", where);
+    const auto identity_name = required_string(identity, "name", where);
+    const auto identity_version = required_uint(identity, "version", where);
+    static const std::regex namespace_pattern(R"([a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)*)");
+    static const std::regex name_pattern(R"([a-z][a-z0-9_]*)");
+    if (!std::regex_match(identity_namespace, namespace_pattern) ||
+        !std::regex_match(identity_name, name_pattern) || identity_version == 0) {
+        invalid(where + " has a noncanonical identity");
+    }
 }
 
 struct Parser {
@@ -188,6 +311,7 @@ struct Parser {
                 invalid("column_ref index is outside the authoritative output schema");
             }
             const auto& field = output_schema->field(static_cast<int>(result->column_index));
+            validate_arrow_extensions(field);
             if (field->name() != result->column_name)
                 invalid("column_ref name does not match authoritative index");
             result->data_type = field->type();
@@ -209,6 +333,7 @@ struct Parser {
                 fields[result->field_index]->name() != result->field_name) {
                 invalid("field_ref name/index does not match authoritative struct");
             }
+            validate_arrow_extensions(fields[result->field_index]);
             result->column_name = root_column(result->children[0]);
             result->data_type = fields[result->field_index]->type();
             return result;
@@ -230,6 +355,10 @@ struct Parser {
                 invalid("unknown comparison operator '" + result->op + "'");
             result->children = {expression(node.at("left"), depth + 1),
                                 expression(node.at("right"), depth + 1)};
+            if (!same_logical_type(result->children[0]->data_type,
+                                   result->children[1]->data_type)) {
+                invalid("comparison operands have incompatible types");
+            }
             result->column_name = root_column(result->children[0]);
             if (result->column_name.empty()) result->column_name = root_column(result->children[1]);
             if (result->children[1]->kind == "literal") result->value = result->children[1]->value;
@@ -243,6 +372,9 @@ struct Parser {
             result->kind = kind;
             for (const auto& child : node.at("children"))
                 result->children.push_back(expression(child, depth + 1));
+            for (const auto& child : result->children) {
+                if (!boolean_type(child->data_type)) invalid(kind + " children must be BOOLEAN");
+            }
             result->data_type = arrow::boolean();
             return result;
         }
@@ -250,6 +382,8 @@ struct Parser {
             require_keys(node, {"node", "expression"}, {}, "not");
             result->kind = "not";
             result->children.push_back(expression(node.at("expression"), depth + 1));
+            if (!boolean_type(result->children[0]->data_type))
+                invalid("not operand must be BOOLEAN");
             result->data_type = arrow::boolean();
             return result;
         }
@@ -297,9 +431,12 @@ struct Parser {
                     invalid("external IN batch/column index is unavailable");
                 if (join_keys[bi]->schema()->field(static_cast<int>(ci))->name() != name)
                     invalid("external IN column name does not match authoritative index");
+                validate_arrow_extensions(join_keys[bi]->schema()->field(static_cast<int>(ci)));
                 result->value = join_keys[bi]->column(static_cast<int>(ci));
             } else
                 invalid("in.set has an unknown kind");
+            if (!same_logical_type(result->children[0]->data_type, result->value->type()))
+                invalid("IN expression and set have incompatible types");
             result->data_type = arrow::boolean();
             return result;
         }
@@ -310,6 +447,12 @@ struct Parser {
             result->value = payload(batch, "type", required_uint(node, "type_ref", "cast"));
             if (!result->value->IsNull(0)) invalid("cast type payload must contain NULL");
             result->data_type = result->value->type();
+            if (contextual_type(result->children[0]->data_type) &&
+                contextual_type(result->data_type)) {
+                invalid("context-dependent cast requires vgi.duckdb.session.v1");
+            }
+            if (!exact_context_free_cast(result->children[0]->data_type, result->data_type))
+                invalid("cast has no exact context-free standard-v1 evaluator");
             return result;
         }
         if (kind == "arithmetic") {
@@ -323,6 +466,11 @@ struct Parser {
                 invalid("context-dependent arithmetic requires vgi.duckdb.session.v1");
             result->children = {expression(node.at("left"), depth + 1),
                                 expression(node.at("right"), depth + 1)};
+            if (!numeric_type(result->children[0]->data_type) ||
+                !same_logical_type(result->children[0]->data_type,
+                                   result->children[1]->data_type)) {
+                invalid("arithmetic operands require one exact numeric type");
+            }
             result->data_type = result->children[0]->data_type;
             return result;
         }
@@ -330,13 +478,17 @@ struct Parser {
             require_keys(node, {"node", "expression"}, {}, "negate");
             result->kind = "negate";
             result->children.push_back(expression(node.at("expression"), depth + 1));
+            if (!numeric_type(result->children[0]->data_type))
+                invalid("negate operand must be numeric");
             result->data_type = result->children[0]->data_type;
             return result;
         }
         if (kind == "call") {
             require_keys(node, {"node", "function", "arguments"}, {"options"}, "call");
-            if (!node.at("function").is_string())
+            if (!node.at("function").is_string()) {
+                validate_identity(node.at("function"), "call.function");
                 invalid("extension filter functions were not advertised");
+            }
             result->function = node.at("function").get<std::string>();
             if (result->function != "starts_with" && result->function != "ends_with" &&
                 result->function != "contains" && result->function != "list_contains")
@@ -348,6 +500,21 @@ struct Parser {
             result->kind = "call";
             for (const auto& argument : node.at("arguments"))
                 result->children.push_back(expression(argument, depth + 1));
+            if (result->function == "starts_with" || result->function == "ends_with" ||
+                result->function == "contains") {
+                for (const auto& argument : result->children) {
+                    if (!argument->data_type || argument->data_type->id() != arrow::Type::STRING)
+                        invalid("string function arguments must be UTF8");
+                }
+            } else {
+                const auto list_type = result->children[0]->data_type;
+                if (!list_type || list_type->id() != arrow::Type::LIST)
+                    invalid("list_contains first argument must be LIST");
+                const auto element_type =
+                    static_cast<const arrow::ListType&>(*list_type).value_type();
+                if (!same_logical_type(element_type, result->children[1]->data_type))
+                    invalid("list_contains element type mismatch");
+            }
             result->data_type = arrow::boolean();
             return result;
         }
@@ -355,6 +522,22 @@ struct Parser {
             require_keys(node, {"node", "algorithm", "input", "artifact_ref", "null_handling"}, {},
                          "runtime_filter");
             if (!root) invalid("runtime_filter may appear only at a predicate root");
+            const auto& algorithm = node.at("algorithm");
+            validate_identity(algorithm, "runtime_filter.algorithm");
+            const auto algorithm_namespace =
+                required_string(algorithm, "namespace", "runtime_filter.algorithm");
+            const auto algorithm_name =
+                required_string(algorithm, "name", "runtime_filter.algorithm");
+            const auto algorithm_version =
+                required_uint(algorithm, "version", "runtime_filter.algorithm");
+            if (algorithm_namespace != "duckdb.runtime_filter" ||
+                (algorithm_name != "bloom" && algorithm_name != "prefix_range") ||
+                algorithm_version != 1) {
+                invalid("unknown runtime-filter algorithm");
+            }
+            const auto null_handling = required_string(node, "null_handling", "runtime_filter");
+            if (null_handling != "pass" && null_handling != "reject")
+                invalid("runtime_filter.null_handling must be pass or reject");
             result->kind = "runtime_filter";
             result->children.push_back(expression(node.at("input"), depth + 1));
             (void)payload(batch, "artifact", required_uint(node, "artifact_ref", "runtime_filter"));
@@ -368,7 +551,22 @@ json document_for(const std::shared_ptr<arrow::RecordBatch>& batch) {
     const auto text = std::static_pointer_cast<arrow::StringArray>(batch->column(0))->GetString(0);
     if (std::getenv("VGI_FILTER_DEBUG")) std::fprintf(stderr, "[vgi-filter] %s\n", text.c_str());
     try {
-        return json::parse(text);
+        bool duplicate = false;
+        std::vector<std::unordered_set<std::string>> object_keys;
+        auto callback = [&](int depth, json::parse_event_t event, json& parsed) {
+            if (event == json::parse_event_t::object_start) {
+                if (object_keys.size() <= static_cast<size_t>(depth))
+                    object_keys.resize(static_cast<size_t>(depth) + 1);
+                object_keys[static_cast<size_t>(depth)].clear();
+            } else if (event == json::parse_event_t::key && depth > 0) {
+                auto& keys = object_keys[static_cast<size_t>(depth - 1)];
+                if (!keys.insert(parsed.get<std::string>()).second) duplicate = true;
+            }
+            return true;
+        };
+        auto document = json::parse(text, callback);
+        if (duplicate) invalid("invalid filter JSON: duplicate object key");
+        return document;
     } catch (const json::exception& error) {
         invalid(std::string("invalid filter JSON: ") + error.what());
     }
@@ -405,6 +603,8 @@ std::shared_ptr<Spec> parse_predicate(Parser& parser, const json& item, bool del
     if (expression->kind == "runtime_filter" && !expression->advisory) {
         invalid("runtime_filter predicates must be advisory");
     }
+    if (expression->kind != "runtime_filter" && !boolean_type(expression->data_type))
+        invalid("predicate root must resolve to BOOLEAN");
     return expression;
 }
 
@@ -458,6 +658,123 @@ arrow::Datum call(const std::string& name, std::vector<arrow::Datum> arguments) 
     for (auto& argument : arguments) argument = decoded_dictionary(std::move(argument));
     return value_or_throw(arrow::compute::CallFunction(name, std::move(arguments)),
                           "evaluate " + name);
+}
+
+bool floating_type(const std::shared_ptr<arrow::DataType>& type) {
+    return type->id() == arrow::Type::HALF_FLOAT || type->id() == arrow::Type::FLOAT ||
+           type->id() == arrow::Type::DOUBLE;
+}
+
+bool comparison_type_supported(const std::shared_ptr<arrow::DataType>& type) {
+    switch (type->id()) {
+        case arrow::Type::NA:
+        case arrow::Type::LIST:
+        case arrow::Type::LARGE_LIST:
+        case arrow::Type::FIXED_SIZE_LIST:
+        case arrow::Type::LIST_VIEW:
+        case arrow::Type::LARGE_LIST_VIEW:
+        case arrow::Type::STRUCT:
+        case arrow::Type::MAP:
+        case arrow::Type::SPARSE_UNION:
+        case arrow::Type::DENSE_UNION:
+        case arrow::Type::RUN_END_ENCODED:
+        case arrow::Type::EXTENSION: return false;
+        default: return true;
+    }
+}
+
+bool floating_compare(double left, double right, const std::string& op) {
+    int ordering = 0;
+    if (std::isnan(left)) {
+        ordering = std::isnan(right) ? 0 : 1;
+    } else if (std::isnan(right)) {
+        ordering = -1;
+    } else if (left < right) {
+        ordering = -1;
+    } else if (left > right) {
+        ordering = 1;
+    }
+    if (op == "eq" || op == "not_distinct_from") return ordering == 0;
+    if (op == "ne" || op == "distinct_from") return ordering != 0;
+    if (op == "lt") return ordering < 0;
+    if (op == "le") return ordering <= 0;
+    if (op == "gt") return ordering > 0;
+    if (op == "ge") return ordering >= 0;
+    throw std::runtime_error("unsupported comparison operator");
+}
+
+arrow::Datum compare(arrow::Datum left, arrow::Datum right, const std::string& op, int64_t length) {
+    left = decoded_dictionary(std::move(left));
+    right = decoded_dictionary(std::move(right));
+    auto left_values = array_from_datum(left, length);
+    auto right_values = array_from_datum(right, length);
+    if (!left_values->type()->Equals(right_values->type()) ||
+        !comparison_type_supported(left_values->type())) {
+        throw std::runtime_error("comparison type has no exact standard-v1 evaluator");
+    }
+
+    const bool distinct = op == "distinct_from" || op == "not_distinct_from";
+    if (floating_type(left_values->type()) || floating_type(right_values->type())) {
+        left_values =
+            array_from_datum(value_or_throw(arrow::compute::Cast(left_values, arrow::float64()),
+                                            "cast floating comparison input"),
+                             length);
+        right_values =
+            array_from_datum(value_or_throw(arrow::compute::Cast(right_values, arrow::float64()),
+                                            "cast floating comparison input"),
+                             length);
+        const auto& left_floats = static_cast<const arrow::DoubleArray&>(*left_values);
+        const auto& right_floats = static_cast<const arrow::DoubleArray&>(*right_values);
+        arrow::BooleanBuilder output;
+        auto status = output.Reserve(length);
+        if (!status.ok()) throw std::runtime_error(status.ToString());
+        for (int64_t row = 0; row < length; ++row) {
+            const bool left_null = left_floats.IsNull(row);
+            const bool right_null = right_floats.IsNull(row);
+            if (left_null || right_null) {
+                if (distinct) {
+                    const bool value = left_null != right_null;
+                    (void)output.Append(op == "distinct_from" ? value : !value);
+                } else {
+                    (void)output.AppendNull();
+                }
+                continue;
+            }
+            (void)output.Append(
+                floating_compare(left_floats.Value(row), right_floats.Value(row), op));
+        }
+        std::shared_ptr<arrow::Array> result;
+        status = output.Finish(&result);
+        if (!status.ok()) throw std::runtime_error(status.ToString());
+        return arrow::Datum(result);
+    }
+
+    if (distinct) {
+        auto equals = array_from_datum(call("equal", {left_values, right_values}), length);
+        const auto& equal_values = static_cast<const arrow::BooleanArray&>(*equals);
+        arrow::BooleanBuilder output;
+        auto status = output.Reserve(length);
+        if (!status.ok()) throw std::runtime_error(status.ToString());
+        for (int64_t row = 0; row < length; ++row) {
+            const bool left_null = left_values->IsNull(row);
+            const bool right_null = right_values->IsNull(row);
+            const bool value =
+                left_null || right_null ? left_null != right_null : !equal_values.Value(row);
+            (void)output.Append(op == "distinct_from" ? value : !value);
+        }
+        std::shared_ptr<arrow::Array> result;
+        status = output.Finish(&result);
+        if (!status.ok()) throw std::runtime_error(status.ToString());
+        return arrow::Datum(result);
+    }
+
+    static const std::map<std::string, std::string> kernels = {
+        {"eq", "equal"},      {"ne", "not_equal"}, {"lt", "less"},
+        {"le", "less_equal"}, {"gt", "greater"},   {"ge", "greater_equal"},
+    };
+    const auto found = kernels.find(op);
+    if (found == kernels.end()) throw std::runtime_error("unsupported comparison operator");
+    return call(found->second, {left_values, right_values});
 }
 
 std::optional<std::string> string_at(const std::shared_ptr<arrow::Array>& values, int64_t index) {
@@ -539,6 +856,8 @@ arrow::Datum evaluate(const std::shared_ptr<Spec>& spec,
         }
         if (index < 0)
             throw std::runtime_error("filter column '" + spec->column_name + "' is absent");
+        if (!batch->schema()->field(index)->type()->Equals(spec->data_type))
+            throw std::runtime_error("filter column '" + spec->column_name + "' changed type");
         return arrow::Datum(batch->column(index));
     }
     if (spec->kind == "field") {
@@ -547,26 +866,18 @@ arrow::Datum evaluate(const std::shared_ptr<Spec>& spec,
         if (!values || spec->field_index >= static_cast<size_t>(values->num_fields())) {
             throw std::runtime_error("filter field_ref input is not the authoritative struct");
         }
-        return arrow::Datum(values->field(static_cast<int>(spec->field_index)));
+        auto child =
+            decoded_dictionary(arrow::Datum(values->field(static_cast<int>(spec->field_index))));
+        if (values->null_count() == 0) return child;
+        return call("if_else", {call("is_valid", {parent}), child,
+                                arrow::Datum(arrow::MakeNullScalar(child.type()))});
     }
     if (spec->kind == "literal") {
         return arrow::Datum(value_or_throw(spec->value->GetScalar(0), "read filter literal"));
     }
     if (spec->kind == "constant") {
-        static const std::map<std::string, std::string> kernels = {
-            {"eq", "equal"},
-            {"ne", "not_equal"},
-            {"lt", "less"},
-            {"le", "less_equal"},
-            {"gt", "greater"},
-            {"ge", "greater_equal"},
-            {"distinct_from", "is_distinct_from"},
-            {"not_distinct_from", "is_not_distinct_from"},
-        };
-        const auto found = kernels.find(spec->op);
-        if (found == kernels.end()) throw std::runtime_error("unsupported comparison operator");
-        return call(found->second,
-                    {evaluate(spec->children[0], batch), evaluate(spec->children[1], batch)});
+        return compare(evaluate(spec->children[0], batch), evaluate(spec->children[1], batch),
+                       spec->op, batch->num_rows());
     }
     if (spec->kind == "and" || spec->kind == "or") {
         auto result = evaluate(spec->children[0], batch);
@@ -582,26 +893,37 @@ arrow::Datum evaluate(const std::shared_ptr<Spec>& spec,
                     {evaluate(spec->children[0], batch)});
     }
     if (spec->kind == "in") {
-        static const auto initialized = arrow::compute::Initialize();
-        if (!initialized.ok()) throw std::runtime_error(initialized.ToString());
-        arrow::compute::SetLookupOptions options(spec->value);
-        auto result = value_or_throw(
-            arrow::compute::CallFunction(
-                "is_in", {decoded_dictionary(evaluate(spec->children[0], batch))}, &options),
-            "evaluate IN");
+        auto input = decoded_dictionary(evaluate(spec->children[0], batch));
+        auto values = decoded_dictionary(arrow::Datum(spec->value)).make_array();
+        auto result = arrow::Datum(value_or_throw(
+            arrow::MakeArrayFromScalar(arrow::BooleanScalar(false), batch->num_rows()),
+            "initialize IN result"));
+        for (int64_t index = 0; index < values->length(); ++index) {
+            auto candidate = value_or_throw(values->GetScalar(index), "read IN value");
+            result = call("or_kleene", {std::move(result), compare(input, arrow::Datum(candidate),
+                                                                   "eq", batch->num_rows())});
+        }
         return spec->negated ? call("invert", {std::move(result)}) : result;
     }
     if (spec->kind == "cast") {
+        const auto source = spec->children[0]->data_type;
+        const auto target = spec->data_type;
+        if (!exact_context_free_cast(source, target))
+            throw std::runtime_error("cast has no exact context-free standard-v1 evaluator");
         return value_or_throw(
             arrow::compute::Cast(evaluate(spec->children[0], batch), spec->data_type),
             "evaluate cast");
     }
     if (spec->kind == "arithmetic") {
-        return call(spec->op,
+        return call(spec->op + "_checked",
                     {evaluate(spec->children[0], batch), evaluate(spec->children[1], batch)});
     }
-    if (spec->kind == "negate") return call("negate", {evaluate(spec->children[0], batch)});
-    if (spec->kind == "call") return evaluate_standard_call(*spec, batch);
+    if (spec->kind == "negate") return call("negate_checked", {evaluate(spec->children[0], batch)});
+    if (spec->kind == "call") {
+        if (spec->function == "list_contains")
+            throw std::runtime_error("list_contains has no exact standard-v1 evaluator");
+        return evaluate_standard_call(*spec, batch);
+    }
     throw std::runtime_error("runtime filter has no negotiated evaluator");
 }
 
@@ -690,11 +1012,11 @@ bool mentions(const std::shared_ptr<Spec>& spec, const std::string& column) {
 std::shared_ptr<arrow::Array> discrete_values(const std::shared_ptr<Spec>& spec,
                                               const std::string& column) {
     if (spec->kind == "constant" && spec->op == "eq" && spec->children.size() == 2 &&
-        root_column(spec->children[0]) == column && spec->children[1]->kind == "literal") {
+        is_direct_column(spec->children[0], column) && spec->children[1]->kind == "literal") {
         return spec->children[1]->value;
     }
     if (spec->kind == "in" && !spec->negated && !spec->children.empty() &&
-        root_column(spec->children[0]) == column)
+        is_direct_column(spec->children[0], column))
         return spec->value;
     if (spec->kind == "and") {
         for (const auto& child : spec->children) {
@@ -725,6 +1047,7 @@ struct Bounds {
 
 std::optional<int64_t> scalar_int64(const std::shared_ptr<arrow::Array>& value) {
     if (!value || value->length() == 0 || value->IsNull(0)) return std::nullopt;
+    if (!arrow::is_integer(logical_type(value->type())->id())) return std::nullopt;
     auto casted = arrow::compute::Cast(*value->Slice(0, 1), arrow::int64());
     if (!casted.ok()) return std::nullopt;
     return std::static_pointer_cast<arrow::Int64Array>(casted.MoveValueUnsafe())->Value(0);
@@ -752,9 +1075,9 @@ std::optional<Bounds> bounds_for(const std::shared_ptr<Spec>& spec, const std::s
     if (spec->kind == "constant" && spec->children.size() == 2) {
         auto op = spec->op;
         std::shared_ptr<Spec> literal;
-        if (root_column(spec->children[0]) == column && spec->children[1]->kind == "literal") {
+        if (is_direct_column(spec->children[0], column) && spec->children[1]->kind == "literal") {
             literal = spec->children[1];
-        } else if (root_column(spec->children[1]) == column &&
+        } else if (is_direct_column(spec->children[1], column) &&
                    spec->children[0]->kind == "literal") {
             literal = spec->children[0];
             if (op == "gt")
@@ -779,7 +1102,8 @@ std::optional<Bounds> bounds_for(const std::shared_ptr<Spec>& spec, const std::s
         if (!result.min && !result.max) return std::nullopt;
         return result;
     }
-    if (spec->kind == "in" && !spec->negated && root_column(spec->children[0]) == column) {
+    if (spec->kind == "in" && !spec->negated && is_direct_column(spec->children[0], column)) {
+        if (!arrow::is_integer(logical_type(spec->value->type())->id())) return std::nullopt;
         auto casted = arrow::compute::Cast(*spec->value, arrow::int64());
         if (!casted.ok()) return std::nullopt;
         const auto values = std::static_pointer_cast<arrow::Int64Array>(casted.MoveValueUnsafe());
@@ -866,11 +1190,13 @@ void PushdownFilters::apply_delta(const std::string& ipc_bytes) {
         if (id.size() > 128) invalid("predicate ID exceeds 128 bytes");
         if (!seen.insert(id).second) invalid("duplicate delta predicate ID");
         if (required_ids_.count(id)) invalid("delta targets required predicate");
+        std::shared_ptr<Spec> parsed;
         if (operation == "remove") {
             require_keys(update, {"operation", "id", "revision"}, {}, "remove update");
         } else if (operation == "upsert") {
             require_keys(update, {"operation", "id", "revision", "mode", "source", "expression"},
                          {}, "upsert update");
+            parsed = parse_predicate(parser, update, true);
         } else
             invalid("delta operation must be remove or upsert");
         const auto old = next.revisions_.find(id);
@@ -878,7 +1204,7 @@ void PushdownFilters::apply_delta(const std::string& ipc_bytes) {
         next.specs_.erase(std::remove_if(next.specs_.begin(), next.specs_.end(),
                                          [&](const auto& spec) { return spec->id == id; }),
                           next.specs_.end());
-        if (operation == "upsert") next.specs_.push_back(parse_predicate(parser, update, true));
+        if (parsed) next.specs_.push_back(std::move(parsed));
         next.revisions_[id] = revision;
     }
     if (next.revisions_.size() > kMaxPredicateIds) invalid("delta exceeds predicate-ID limit");
