@@ -84,8 +84,9 @@ std::string build(const std::string& payload, const std::string& fingerprint,
     out.append(fingerprint);
     out.append(anchor);
     if (signing_key) {
+        const auto aad = token_aad(out, auth);
         out.push_back(kSealVersion);
-        out.append(vgi_rpc::crypto::aead_seal(*signing_key, payload, token_aad(out, auth)));
+        out.append(vgi_rpc::crypto::aead_seal(*signing_key, payload, aad));
     } else {
         out.append(payload);
     }
