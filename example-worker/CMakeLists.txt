@@ -16,6 +16,7 @@ add_executable(vgi-example-worker
     scalar/secrets.cpp
     scalar/cached.cpp
     table/sequence.cpp
+    table/same_name.cpp
     table/cache.cpp
     table/more.cpp
     table/generators.cpp

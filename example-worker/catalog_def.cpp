@@ -70,6 +70,15 @@ vgi::CatalogBranch sequence_branch(int64_t count,
     return branch;
 }
 
+vgi::CatalogBranch split_sequence_branch(int64_t count, int64_t splits) {
+    vgi::CatalogBranch branch;
+    branch.function_name = "split_sequence";
+    branch.scan_arguments =
+        vgi::serialize_scan_arguments({}, {{"n", int64_arg(count)}, {"splits", int64_arg(splits)}});
+    branch.schema_path = vgi::SchemaPath{"data"};
+    return branch;
+}
+
 vgi::CatalogTable multi_branch(std::string name, std::vector<vgi::CatalogBranch> branches,
                                std::string comment = {}) {
     vgi::CatalogTable table;
@@ -391,6 +400,10 @@ void declare_catalog(vgi::Worker& worker) {
     data.tables.push_back(multi_branch("multi_branch_empty", {},
                                        "Multi-branch: empty branches list — used by "
                                        "multi_branch_empty_branches.test"));
+    data.tables.push_back(
+        multi_branch("multi_branch_split", {split_sequence_branch(30, 6), sequence_branch(20)},
+                     "Multi-branch: split_sequence(30, splits=6) + sequence(20) — used by "
+                     "splits/multi_branch.test"));
 
     // Heterogeneous branches: one arm is this worker, the others are DuckDB's
     // own readers over files the test writes first. What they probe is that a
@@ -526,6 +539,12 @@ void declare_catalog(vgi::Worker& worker) {
     // and the suite names `main` for these two.
     auto& main = worker.catalog().schema("main");
     main.comment = "Example functions for testing VGI";
+    main.tables.push_back(backed_by("test_same_name_table", "test_same_name_table_scan",
+                                    columns({{"tag", arrow::utf8()}}),
+                                    "Schema-disambiguation probe; the main-schema table"));
+    data.tables.push_back(backed_by("test_same_name_table", "test_same_name_table_scan",
+                                    columns({{"tag", arrow::utf8()}}),
+                                    "Schema-disambiguation probe; the data-schema table"));
     // Macros never reach the worker at run time — the engine substitutes the
     // text — so declaring them is the whole implementation.
     main.macros.push_back({"vgi_multiply",

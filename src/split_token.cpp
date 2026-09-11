@@ -70,32 +70,36 @@ std::string build(const std::string& payload, const std::string& fingerprint,
     return out;
 }
 
-std::optional<std::string> open(const std::string& token, const std::string& expected_fingerprint,
-                                const std::string& current_anchor) {
-    if (token.size() < kHeaderLen) return std::nullopt;
-    if (static_cast<uint8_t>(token[0]) != kFormatVersion) return std::nullopt;
+OpenResult open(const std::string& token, const std::string& expected_fingerprint,
+                const std::string& current_anchor) {
+    const OpenResult invalid{std::nullopt, OpenError::Invalid};
+    if (token.size() < kHeaderLen) return invalid;
+    if (static_cast<uint8_t>(token[0]) != kFormatVersion) return invalid;
 
     const auto flags = static_cast<uint8_t>(token[1]);
     // Every bit is reserved here, `payload_sealed` included: this SDK holds no
     // key, so a token claiming to be sealed is one we cannot open, and a token
     // setting a reserved bit is from a future this build does not speak.
-    if (flags != 0) return std::nullopt;
+    if (flags != 0) return invalid;
 
     const auto anchor_len = static_cast<size_t>(static_cast<uint8_t>(token[2])) |
                             (static_cast<size_t>(static_cast<uint8_t>(token[3])) << 8);
     const size_t end_of_anchor = kHeaderLen + anchor_len;
-    if (token.size() < end_of_anchor) return std::nullopt;
+    if (token.size() < end_of_anchor) return invalid;
 
     const auto fingerprint = token.substr(4, kFingerprintLen);
     if (!vgi_rpc::crypto::constant_time_equal(fingerprint, expected_fingerprint)) {
-        return std::nullopt;
+        return invalid;
     }
     // Checked after the bind check and kept distinct in the caller's error
     // text: "this snapshot moved" is a different situation for a client from
     // "this token is not yours", and only one of them means re-plan.
-    if (token.compare(kHeaderLen, anchor_len, current_anchor) != 0) return std::nullopt;
+    if (anchor_len != current_anchor.size() ||
+        token.compare(kHeaderLen, anchor_len, current_anchor) != 0) {
+        return {std::nullopt, OpenError::SnapshotExpired};
+    }
 
-    return token.substr(end_of_anchor);
+    return {token.substr(end_of_anchor), OpenError::None};
 }
 
 }  // namespace vgi::split_token
