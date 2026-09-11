@@ -820,10 +820,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
         .set_string_list("schema_path", schema_path)
         .set_binary("columns", wire::encode_schema(shape))
         .set_binary("scan_function", table.inline_scan ? wire::encode_ipc(scan) : std::string{})
-        .set_bool("supports_insert", false)
-        .set_bool("supports_update", false)
-        .set_bool("supports_delete", false)
-        .set_bool("supports_returning", false)
+        .set_string_map("write_result_modes", {})
         .set_int32_list("not_null_constraints", reseat(table.not_null, table.columns, shape))
         .set_int32_list_list("unique_constraints", reseat(table.unique, table.columns, shape))
         .set_int32_list_list("primary_key_constraints",
