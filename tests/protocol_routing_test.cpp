@@ -40,6 +40,7 @@
 
 #include "methods.h"
 #include "vgi/generated/vgi_protocol_names.hpp"
+#include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "vgi/generated/vgi_protocol_version.hpp"
 #include "wire.h"
 
@@ -183,7 +184,11 @@ void require_hosts_vgi(const vgi_rpc::ProtocolListing& listing) {
 }
 
 // Reflection describes exactly the VgiProtocol surface -- every method the
-// generated table derives from vgi-python's VgiProtocol, and nothing else.
+// generated table derives from vgi-python's VgiProtocol, and nothing else --
+// and describes it as the reference does. Nullability and field order are part
+// of an Arrow type, so they are part of the description and of its hash: a
+// `result` column is nullable only for a `bytes | None` return, and the init
+// header is the generated GlobalInitResponse, field for field.
 void require_describes_the_protocol(const vgi_rpc::ServiceDescription& description) {
     CHECK(description.protocol_name == kProtocol);
     CHECK(description.protocol_version == kVersion);
@@ -192,6 +197,19 @@ void require_describes_the_protocol(const vgi_rpc::ServiceDescription& descripti
     std::set<std::string> described;
     for (const auto& [name, method] : description.methods) described.insert(name);
     CHECK(described == expected);
+
+    for (const auto& spec : vgi::protocol_methods()) {
+        if (spec.kind == vgi::MethodKind::Void || spec.kind == vgi::MethodKind::Stream) continue;
+        const auto* method = description.method(spec.name);
+        REQUIRE(method != nullptr);
+        INFO(spec.name << " declares result " << method->result_schema->ToString());
+        REQUIRE(method->result_schema->num_fields() == 1);
+        CHECK(method->result_schema->field(0)->nullable() == spec.optional_result);
+    }
+    const auto* init = description.method("init");
+    REQUIRE(init != nullptr);
+    REQUIRE(init->header_schema != nullptr);
+    CHECK(init->header_schema->Equals(*gen::GlobalInitResponseSchema()));
 }
 
 vgi_rpc::RpcClientOptions raw_options(const std::string& protocol) {

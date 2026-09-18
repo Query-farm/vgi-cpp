@@ -10,6 +10,36 @@
 
 namespace vgi {
 
+namespace {
+
+// Re-declare a handler's answer under the envelope its method is registered
+// with.
+//
+// Handlers build in the nullable `envelope_schema()`, while a method whose
+// return is not optional declares `result` non-nullable -- and an Arrow IPC
+// writer refuses a batch whose schema differs from its stream's, nullability
+// included. Doing it here keeps that at one seam instead of at every handler.
+// A null where the protocol says there cannot be one is the handler's bug, and
+// is reported as such rather than written.
+vgi_rpc::Result conform(vgi_rpc::Result result, const std::shared_ptr<arrow::Schema>& declared,
+                        const std::string& method) {
+    auto answer = result.annotated_batch();
+    if (!answer.batch || answer.batch->schema()->Equals(*declared) ||
+        !answer.batch->schema()->Equals(*envelope_schema())) {
+        return result;
+    }
+    for (int i = 0; i < declared->num_fields(); ++i) {
+        if (!declared->field(i)->nullable() && answer.batch->column(i)->null_count() > 0) {
+            throw std::runtime_error(method + " answered null, but its return is not optional");
+        }
+    }
+    answer.batch =
+        arrow::RecordBatch::Make(declared, answer.batch->num_rows(), answer.batch->columns());
+    return vgi_rpc::Result::from_annotated_batch(std::move(answer));
+}
+
+}  // namespace
+
 void Dispatcher::register_scalar(std::shared_ptr<ScalarFunction> fn) {
     register_scalar_in(catalog().name, "main", std::move(fn));
 }
@@ -234,6 +264,7 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
 
     for (const auto& spec : protocol_methods()) {
         const std::string name = spec.name;
+        const auto& declared = declared_envelope_schema(spec);
 
         if (spec.kind == MethodKind::Stream) {
             // `init` is the only streaming method, and an exchange rather than
@@ -288,26 +319,26 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         } else {
             if (auto it = unary_with_context.find(name); it != unary_with_context.end()) {
                 auto handler = it->second;
-                builder.add_unary(
-                    name, spec.params, envelope_schema(),
-                    [this, handler, name](const vgi_rpc::Request& req, vgi_rpc::CallContext& ctx) {
-                        trace(name);
-                        return (this->*handler)(req, ctx);
-                    });
+                builder.add_unary(name, spec.params, declared,
+                                  [this, handler, name, declared](const vgi_rpc::Request& req,
+                                                                  vgi_rpc::CallContext& ctx) {
+                                      trace(name);
+                                      return conform((this->*handler)(req, ctx), declared, name);
+                                  });
                 continue;
             }
             if (auto it = unary.find(name); it != unary.end()) {
                 auto handler = it->second;
-                builder.add_unary(
-                    name, spec.params, envelope_schema(),
-                    [this, handler, name](const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
-                        trace(name);
-                        return (this->*handler)(req);
-                    });
+                builder.add_unary(name, spec.params, declared,
+                                  [this, handler, name, declared](const vgi_rpc::Request& req,
+                                                                  vgi_rpc::CallContext&) {
+                                      trace(name);
+                                      return conform((this->*handler)(req), declared, name);
+                                  });
                 continue;
             }
             builder.add_unary(
-                name, spec.params, envelope_schema(),
+                name, spec.params, declared,
                 [refuse](const vgi_rpc::Request&, vgi_rpc::CallContext&) -> vgi_rpc::Result {
                     refuse();
                     return vgi_rpc::Result::void_result();  // unreachable

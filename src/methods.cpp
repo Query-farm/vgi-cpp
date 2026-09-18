@@ -21,6 +21,12 @@ const std::shared_ptr<arrow::Schema>& envelope_schema() {
     return s;
 }
 
+const std::shared_ptr<arrow::Schema>& declared_envelope_schema(const MethodSpec& spec) {
+    static const auto required =
+        arrow::schema({arrow::field("result", arrow::binary(), /*nullable=*/false)});
+    return spec.optional_result ? envelope_schema() : required;
+}
+
 const std::shared_ptr<arrow::Schema>& payload_schema_of(const std::string& method) {
     for (const auto& spec : protocol_methods()) {
         if (spec.name == method) return spec.payload;
@@ -30,160 +36,161 @@ const std::shared_ptr<arrow::Schema>& payload_schema_of(const std::string& metho
 
 const std::vector<MethodSpec>& protocol_methods() {
     static const std::vector<MethodSpec> methods = {
-        {"bind", MethodKind::Result, gen::BindParamsSchema(),
-         gen::BindResultSchema()},  // -> BindResponse
-        {"init", MethodKind::Stream, gen::InitParamsSchema(),
-         kNoSchema},  // -> Stream[ProcessState, GlobalInitResponse]
+        {"bind", MethodKind::Result, gen::BindParamsSchema(), gen::BindResultSchema(),
+         false},  // -> BindResponse
+        {"init", MethodKind::Stream, gen::InitParamsSchema(), kNoSchema,
+         false},  // -> Stream[ProcessState, GlobalInitResponse]
         {"table_function_plan", MethodKind::Result, gen::TableFunctionPlanParamsSchema(),
-         gen::TableFunctionPlanResultSchema()},  // -> PlanResponse
+         gen::TableFunctionPlanResultSchema(), false},  // -> PlanResponse
         {"table_function_cardinality", MethodKind::Result,
-         gen::TableFunctionCardinalityParamsSchema(),
-         gen::TableFunctionCardinalityResultSchema()},  // -> TableCardinality
+         gen::TableFunctionCardinalityParamsSchema(), gen::TableFunctionCardinalityResultSchema(),
+         false},  // -> TableCardinality
         {"table_function_statistics", MethodKind::Binary,
-         gen::TableFunctionStatisticsParamsSchema(), kNoSchema},  // -> bytes | None
+         gen::TableFunctionStatisticsParamsSchema(), kNoSchema, true},  // -> bytes | None
         {"table_function_dynamic_to_string", MethodKind::Result,
          gen::TableFunctionDynamicToStringParamsSchema(),
-         gen::TableFunctionDynamicToStringResultSchema()},  // ->
-                                                            // TableFunctionDynamicToStringResponse
+         gen::TableFunctionDynamicToStringResultSchema(),
+         false},  // -> TableFunctionDynamicToStringResponse
         {"aggregate_bind", MethodKind::Result, gen::AggregateBindParamsSchema(),
-         gen::AggregateBindResultSchema()},  // -> AggregateBindResponse
+         gen::AggregateBindResultSchema(), false},  // -> AggregateBindResponse
         {"aggregate_update", MethodKind::Result, gen::AggregateUpdateParamsSchema(),
-         gen::AggregateUpdateResultSchema()},  // -> AggregateUpdateResponse
+         gen::AggregateUpdateResultSchema(), false},  // -> AggregateUpdateResponse
         {"aggregate_combine", MethodKind::Result, gen::AggregateCombineParamsSchema(),
-         gen::AggregateCombineResultSchema()},  // -> AggregateCombineResponse
+         gen::AggregateCombineResultSchema(), false},  // -> AggregateCombineResponse
         {"aggregate_finalize", MethodKind::Result, gen::AggregateFinalizeParamsSchema(),
-         gen::AggregateFinalizeResultSchema()},  // -> AggregateFinalizeResponse
+         gen::AggregateFinalizeResultSchema(), false},  // -> AggregateFinalizeResponse
         {"aggregate_destructor", MethodKind::Result, gen::AggregateDestructorParamsSchema(),
-         gen::AggregateDestructorResultSchema()},  // -> AggregateDestructorResponse
+         gen::AggregateDestructorResultSchema(), false},  // -> AggregateDestructorResponse
         {"table_buffering_process", MethodKind::Result, gen::TableBufferingProcessParamsSchema(),
-         gen::TableBufferingProcessResultSchema()},  // -> TableBufferingProcessResponse
+         gen::TableBufferingProcessResultSchema(), false},  // -> TableBufferingProcessResponse
         {"table_buffering_combine", MethodKind::Result, gen::TableBufferingCombineParamsSchema(),
-         gen::TableBufferingCombineResultSchema()},  // -> TableBufferingCombineResponse
+         gen::TableBufferingCombineResultSchema(), false},  // -> TableBufferingCombineResponse
         {"table_buffering_destructor", MethodKind::Result,
-         gen::TableBufferingDestructorParamsSchema(),
-         gen::TableBufferingDestructorResultSchema()},  // -> TableBufferingDestructorResponse
+         gen::TableBufferingDestructorParamsSchema(), gen::TableBufferingDestructorResultSchema(),
+         false},  // -> TableBufferingDestructorResponse
         {"aggregate_window_init", MethodKind::Result, gen::AggregateWindowInitParamsSchema(),
-         gen::AggregateWindowInitResultSchema()},  // -> AggregateWindowInitResponse
+         gen::AggregateWindowInitResultSchema(), false},  // -> AggregateWindowInitResponse
         {"aggregate_window", MethodKind::Result, gen::AggregateWindowParamsSchema(),
-         gen::AggregateWindowResultSchema()},  // -> AggregateWindowResponse
+         gen::AggregateWindowResultSchema(), false},  // -> AggregateWindowResponse
         {"aggregate_window_destructor", MethodKind::Result,
-         gen::AggregateWindowDestructorParamsSchema(),
-         gen::AggregateWindowDestructorResultSchema()},  // -> AggregateWindowDestructorResponse
+         gen::AggregateWindowDestructorParamsSchema(), gen::AggregateWindowDestructorResultSchema(),
+         false},  // -> AggregateWindowDestructorResponse
         {"aggregate_window_batch", MethodKind::Result, gen::AggregateWindowBatchParamsSchema(),
-         gen::AggregateWindowBatchResultSchema()},  // -> AggregateWindowBatchResponse
+         gen::AggregateWindowBatchResultSchema(), false},  // -> AggregateWindowBatchResponse
         {"aggregate_streaming_open", MethodKind::Result, gen::AggregateStreamingOpenParamsSchema(),
-         gen::AggregateStreamingOpenResultSchema()},  // -> AggregateStreamingOpenResponse
+         gen::AggregateStreamingOpenResultSchema(), false},  // -> AggregateStreamingOpenResponse
         {"aggregate_streaming_chunk", MethodKind::Result,
-         gen::AggregateStreamingChunkParamsSchema(),
-         gen::AggregateStreamingChunkResultSchema()},  // -> AggregateStreamingChunkResponse
+         gen::AggregateStreamingChunkParamsSchema(), gen::AggregateStreamingChunkResultSchema(),
+         false},  // -> AggregateStreamingChunkResponse
         {"aggregate_streaming_close", MethodKind::Result,
-         gen::AggregateStreamingCloseParamsSchema(),
-         gen::AggregateStreamingCloseResultSchema()},  // -> AggregateStreamingCloseResponse
+         gen::AggregateStreamingCloseParamsSchema(), gen::AggregateStreamingCloseResultSchema(),
+         false},  // -> AggregateStreamingCloseResponse
         {"catalog_catalogs", MethodKind::Result, gen::CatalogCatalogsParamsSchema(),
-         gen::CatalogCatalogsResultSchema()},  // -> CatalogsResponse
+         gen::CatalogCatalogsResultSchema(), false},  // -> CatalogsResponse
         {"catalog_attach", MethodKind::Result, gen::CatalogAttachParamsSchema(),
-         gen::CatalogAttachResultSchema()},  // -> CatalogAttachResult
-        {"catalog_detach", MethodKind::Void, gen::CatalogDetachParamsSchema(),
-         kNoSchema},  // -> None
-        {"catalog_create", MethodKind::Void, gen::CatalogCreateParamsSchema(),
-         kNoSchema},                                                                    // -> None
-        {"catalog_drop", MethodKind::Void, gen::CatalogDropParamsSchema(), kNoSchema},  // -> None
+         gen::CatalogAttachResultSchema(), false},  // -> CatalogAttachResult
+        {"catalog_detach", MethodKind::Void, gen::CatalogDetachParamsSchema(), kNoSchema,
+         false},  // -> None
+        {"catalog_create", MethodKind::Void, gen::CatalogCreateParamsSchema(), kNoSchema,
+         false},  // -> None
+        {"catalog_drop", MethodKind::Void, gen::CatalogDropParamsSchema(), kNoSchema,
+         false},  // -> None
         {"catalog_version", MethodKind::Result, gen::CatalogVersionParamsSchema(),
-         gen::CatalogVersionResultSchema()},  // -> CatalogVersionResponse
+         gen::CatalogVersionResultSchema(), false},  // -> CatalogVersionResponse
         {"catalog_transaction_begin", MethodKind::Result,
-         gen::CatalogTransactionBeginParamsSchema(),
-         gen::CatalogTransactionBeginResultSchema()},  // -> TransactionBeginResponse
+         gen::CatalogTransactionBeginParamsSchema(), gen::CatalogTransactionBeginResultSchema(),
+         false},  // -> TransactionBeginResponse
         {"catalog_transaction_commit", MethodKind::Void,
-         gen::CatalogTransactionCommitParamsSchema(), kNoSchema},  // -> None
+         gen::CatalogTransactionCommitParamsSchema(), kNoSchema, false},  // -> None
         {"catalog_transaction_rollback", MethodKind::Void,
-         gen::CatalogTransactionRollbackParamsSchema(), kNoSchema},  // -> None
+         gen::CatalogTransactionRollbackParamsSchema(), kNoSchema, false},  // -> None
         {"catalog_schemas", MethodKind::Result, gen::CatalogSchemasParamsSchema(),
-         gen::CatalogSchemasResultSchema()},  // -> SchemasResponse
+         gen::CatalogSchemasResultSchema(), false},  // -> SchemasResponse
         {"catalog_schema_get", MethodKind::Result, gen::CatalogSchemaGetParamsSchema(),
-         gen::CatalogSchemaGetResultSchema()},  // -> SchemasResponse
+         gen::CatalogSchemaGetResultSchema(), false},  // -> SchemasResponse
         {"catalog_schema_create", MethodKind::Void, gen::CatalogSchemaCreateParamsSchema(),
-         kNoSchema},  // -> None
-        {"catalog_schema_drop", MethodKind::Void, gen::CatalogSchemaDropParamsSchema(),
-         kNoSchema},  // -> None
+         kNoSchema, false},  // -> None
+        {"catalog_schema_drop", MethodKind::Void, gen::CatalogSchemaDropParamsSchema(), kNoSchema,
+         false},  // -> None
         {"catalog_schema_contents_tables", MethodKind::Result,
          gen::CatalogSchemaContentsTablesParamsSchema(),
-         gen::CatalogSchemaContentsTablesResultSchema()},  // -> TablesResponse
+         gen::CatalogSchemaContentsTablesResultSchema(), false},  // -> TablesResponse
         {"catalog_schema_contents_views", MethodKind::Result,
          gen::CatalogSchemaContentsViewsParamsSchema(),
-         gen::CatalogSchemaContentsViewsResultSchema()},  // -> ViewsResponse
+         gen::CatalogSchemaContentsViewsResultSchema(), false},  // -> ViewsResponse
         {"catalog_schema_contents_functions", MethodKind::Result,
          gen::CatalogSchemaContentsFunctionsParamsSchema(),
-         gen::CatalogSchemaContentsFunctionsResultSchema()},  // -> FunctionsResponse
+         gen::CatalogSchemaContentsFunctionsResultSchema(), false},  // -> FunctionsResponse
         {"catalog_copy_from_formats", MethodKind::Result, gen::CatalogCopyFromFormatsParamsSchema(),
-         gen::CatalogCopyFromFormatsResultSchema()},  // -> CopyFromFormatsResponse
+         gen::CatalogCopyFromFormatsResultSchema(), false},  // -> CopyFromFormatsResponse
         {"catalog_table_get", MethodKind::Result, gen::CatalogTableGetParamsSchema(),
-         gen::CatalogTableGetResultSchema()},  // -> TablesResponse
-        {"catalog_table_create", MethodKind::Void, gen::CatalogTableCreateParamsSchema(),
-         kNoSchema},  // -> None
-        {"catalog_table_drop", MethodKind::Void, gen::CatalogTableDropParamsSchema(),
-         kNoSchema},  // -> None
+         gen::CatalogTableGetResultSchema(), false},  // -> TablesResponse
+        {"catalog_table_create", MethodKind::Void, gen::CatalogTableCreateParamsSchema(), kNoSchema,
+         false},  // -> None
+        {"catalog_table_drop", MethodKind::Void, gen::CatalogTableDropParamsSchema(), kNoSchema,
+         false},  // -> None
         {"catalog_table_scan_function_get", MethodKind::Binary,
-         gen::CatalogTableScanFunctionGetParamsSchema(), kNoSchema},  // -> bytes
+         gen::CatalogTableScanFunctionGetParamsSchema(), kNoSchema, false},  // -> bytes
         {"catalog_table_scan_branches_get", MethodKind::Binary,
-         gen::CatalogTableScanBranchesGetParamsSchema(), kNoSchema},  // -> bytes
+         gen::CatalogTableScanBranchesGetParamsSchema(), kNoSchema, false},  // -> bytes
         {"catalog_table_column_statistics_get", MethodKind::Binary,
-         gen::CatalogTableColumnStatisticsGetParamsSchema(), kNoSchema},  // -> bytes | None
+         gen::CatalogTableColumnStatisticsGetParamsSchema(), kNoSchema, true},  // -> bytes | None
         {"catalog_table_insert_function_get", MethodKind::Binary,
-         gen::CatalogTableInsertFunctionGetParamsSchema(), kNoSchema},  // -> bytes
+         gen::CatalogTableInsertFunctionGetParamsSchema(), kNoSchema, false},  // -> bytes
         {"catalog_table_update_function_get", MethodKind::Binary,
-         gen::CatalogTableUpdateFunctionGetParamsSchema(), kNoSchema},  // -> bytes
+         gen::CatalogTableUpdateFunctionGetParamsSchema(), kNoSchema, false},  // -> bytes
         {"catalog_table_delete_function_get", MethodKind::Binary,
-         gen::CatalogTableDeleteFunctionGetParamsSchema(), kNoSchema},  // -> bytes
+         gen::CatalogTableDeleteFunctionGetParamsSchema(), kNoSchema, false},  // -> bytes
         {"catalog_table_comment_set", MethodKind::Void, gen::CatalogTableCommentSetParamsSchema(),
-         kNoSchema},  // -> None
+         kNoSchema, false},  // -> None
         {"catalog_table_column_comment_set", MethodKind::Void,
-         gen::CatalogTableColumnCommentSetParamsSchema(), kNoSchema},  // -> None
-        {"catalog_table_rename", MethodKind::Void, gen::CatalogTableRenameParamsSchema(),
-         kNoSchema},  // -> None
+         gen::CatalogTableColumnCommentSetParamsSchema(), kNoSchema, false},  // -> None
+        {"catalog_table_rename", MethodKind::Void, gen::CatalogTableRenameParamsSchema(), kNoSchema,
+         false},  // -> None
         {"catalog_table_column_add", MethodKind::Void, gen::CatalogTableColumnAddParamsSchema(),
-         kNoSchema},  // -> None
+         kNoSchema, false},  // -> None
         {"catalog_table_column_drop", MethodKind::Void, gen::CatalogTableColumnDropParamsSchema(),
-         kNoSchema},  // -> None
+         kNoSchema, false},  // -> None
         {"catalog_table_column_rename", MethodKind::Void,
-         gen::CatalogTableColumnRenameParamsSchema(), kNoSchema},  // -> None
+         gen::CatalogTableColumnRenameParamsSchema(), kNoSchema, false},  // -> None
         {"catalog_table_column_default_set", MethodKind::Void,
-         gen::CatalogTableColumnDefaultSetParamsSchema(), kNoSchema},  // -> None
+         gen::CatalogTableColumnDefaultSetParamsSchema(), kNoSchema, false},  // -> None
         {"catalog_table_column_default_drop", MethodKind::Void,
-         gen::CatalogTableColumnDefaultDropParamsSchema(), kNoSchema},  // -> None
+         gen::CatalogTableColumnDefaultDropParamsSchema(), kNoSchema, false},  // -> None
         {"catalog_table_column_type_change", MethodKind::Void,
-         gen::CatalogTableColumnTypeChangeParamsSchema(), kNoSchema},  // -> None
+         gen::CatalogTableColumnTypeChangeParamsSchema(), kNoSchema, false},  // -> None
         {"catalog_table_not_null_drop", MethodKind::Void,
-         gen::CatalogTableNotNullDropParamsSchema(), kNoSchema},  // -> None
+         gen::CatalogTableNotNullDropParamsSchema(), kNoSchema, false},  // -> None
         {"catalog_table_not_null_set", MethodKind::Void, gen::CatalogTableNotNullSetParamsSchema(),
-         kNoSchema},  // -> None
+         kNoSchema, false},  // -> None
         {"catalog_view_get", MethodKind::Result, gen::CatalogViewGetParamsSchema(),
-         gen::CatalogViewGetResultSchema()},  // -> ViewsResponse
-        {"catalog_view_create", MethodKind::Void, gen::CatalogViewCreateParamsSchema(),
-         kNoSchema},  // -> None
-        {"catalog_view_drop", MethodKind::Void, gen::CatalogViewDropParamsSchema(),
-         kNoSchema},  // -> None
-        {"catalog_view_rename", MethodKind::Void, gen::CatalogViewRenameParamsSchema(),
-         kNoSchema},  // -> None
+         gen::CatalogViewGetResultSchema(), false},  // -> ViewsResponse
+        {"catalog_view_create", MethodKind::Void, gen::CatalogViewCreateParamsSchema(), kNoSchema,
+         false},  // -> None
+        {"catalog_view_drop", MethodKind::Void, gen::CatalogViewDropParamsSchema(), kNoSchema,
+         false},  // -> None
+        {"catalog_view_rename", MethodKind::Void, gen::CatalogViewRenameParamsSchema(), kNoSchema,
+         false},  // -> None
         {"catalog_view_comment_set", MethodKind::Void, gen::CatalogViewCommentSetParamsSchema(),
-         kNoSchema},  // -> None
+         kNoSchema, false},  // -> None
         {"catalog_macro_get", MethodKind::Result, gen::CatalogMacroGetParamsSchema(),
-         gen::CatalogMacroGetResultSchema()},  // -> MacrosResponse
-        {"catalog_macro_create", MethodKind::Void, gen::CatalogMacroCreateParamsSchema(),
-         kNoSchema},  // -> None
-        {"catalog_macro_drop", MethodKind::Void, gen::CatalogMacroDropParamsSchema(),
-         kNoSchema},  // -> None
+         gen::CatalogMacroGetResultSchema(), false},  // -> MacrosResponse
+        {"catalog_macro_create", MethodKind::Void, gen::CatalogMacroCreateParamsSchema(), kNoSchema,
+         false},  // -> None
+        {"catalog_macro_drop", MethodKind::Void, gen::CatalogMacroDropParamsSchema(), kNoSchema,
+         false},  // -> None
         {"catalog_schema_contents_macros", MethodKind::Result,
          gen::CatalogSchemaContentsMacrosParamsSchema(),
-         gen::CatalogSchemaContentsMacrosResultSchema()},  // -> MacrosResponse
+         gen::CatalogSchemaContentsMacrosResultSchema(), false},  // -> MacrosResponse
         {"catalog_index_get", MethodKind::Result, gen::CatalogIndexGetParamsSchema(),
-         gen::CatalogIndexGetResultSchema()},  // -> IndexesResponse
-        {"catalog_index_create", MethodKind::Void, gen::CatalogIndexCreateParamsSchema(),
-         kNoSchema},  // -> None
-        {"catalog_index_drop", MethodKind::Void, gen::CatalogIndexDropParamsSchema(),
-         kNoSchema},  // -> None
+         gen::CatalogIndexGetResultSchema(), false},  // -> IndexesResponse
+        {"catalog_index_create", MethodKind::Void, gen::CatalogIndexCreateParamsSchema(), kNoSchema,
+         false},  // -> None
+        {"catalog_index_drop", MethodKind::Void, gen::CatalogIndexDropParamsSchema(), kNoSchema,
+         false},  // -> None
         {"catalog_schema_contents_indexes", MethodKind::Result,
          gen::CatalogSchemaContentsIndexesParamsSchema(),
-         gen::CatalogSchemaContentsIndexesResultSchema()},  // -> IndexesResponse
+         gen::CatalogSchemaContentsIndexesResultSchema(), false},  // -> IndexesResponse
     };
     return methods;
 }

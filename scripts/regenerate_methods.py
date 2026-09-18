@@ -14,9 +14,9 @@ as a schema mismatch deep in dispatch:
     schemas, themselves generated from the same Protocol by
     `vgi.codegen.cpp_schemas`.
 
-Run after regenerating the headers:
+Run after regenerating the headers, then format (the output is not):
 
-    python3 scripts/regenerate_methods.py
+    python3 scripts/regenerate_methods.py && scripts/format.sh
 """
 
 from __future__ import annotations
@@ -60,7 +60,11 @@ def main() -> None:
             raise SystemExit(f"no params schema generated for {name}")
         if kind == "Result" and name not in results:
             raise SystemExit(f"no result schema generated for {name}")
-        rows.append((name, kind, params[name], results.get(name), ret))
+        # Nullability is part of an Arrow type, so it is part of the protocol
+        # description reflection reports and hashes: the reference declares the
+        # `result` column nullable only where the return annotation admits None.
+        optional = kind != "Void" and "None" in [t.strip() for t in ret.split("|")]
+        rows.append((name, kind, params[name], results.get(name), ret, optional))
 
     lines = [
         "// © Copyright 2025, 2026 Query Farm LLC - https://query.farm",
@@ -86,6 +90,11 @@ def main() -> None:
         "    return s;",
         "}",
         "",
+        "const std::shared_ptr<arrow::Schema>& declared_envelope_schema(const MethodSpec& spec) {",
+        '    static const auto required = arrow::schema({arrow::field("result", arrow::binary(), /*nullable=*/false)});',
+        "    return spec.optional_result ? envelope_schema() : required;",
+        "}",
+        "",
         "const std::shared_ptr<arrow::Schema>& payload_schema_of(const std::string& method) {",
         "    for (const auto& spec : protocol_methods()) {",
         "        if (spec.name == method) return spec.payload;",
@@ -96,14 +105,15 @@ def main() -> None:
         "const std::vector<MethodSpec>& protocol_methods() {",
         "    static const std::vector<MethodSpec> methods = {",
     ]
-    for name, kind, p, r, ret in rows:
+    for name, kind, p, r, ret, optional in rows:
         if kind == "Result":
             res = f"gen::{r}()"
         else:
             # A Binary method's bytes are the payload; there is no inner schema.
             res = "kNoSchema"
+        opt = "true" if optional else "false"
         lines.append(
-            f'        {{"{name}", MethodKind::{kind}, gen::{p}(), {res}}},  // -> {ret}'
+            f'        {{"{name}", MethodKind::{kind}, gen::{p}(), {res}, {opt}}},  // -> {ret}'
         )
     lines += [
         "    };",
@@ -114,7 +124,8 @@ def main() -> None:
         "",
     ]
     (ROOT / "src/methods.cpp").write_text("\n".join(lines))
-    print(f"wrote {len(rows)} methods:", dict(Counter(k for _, k, _, _, _ in rows)))
+    print(f"wrote {len(rows)} methods:", dict(Counter(row[1] for row in rows)))
+    print("optional results:", [row[0] for row in rows if row[5]])
 
 
 if __name__ == "__main__":

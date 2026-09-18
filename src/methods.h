@@ -29,13 +29,26 @@ struct MethodSpec {
     // `{result: binary}`; what varies is what those bytes decode to. For a
     // Result method they are an IPC stream of a one-row batch in this schema.
     // For a Binary method they are the returned bytes verbatim, and this is
-    // null. Registration uses `envelope_schema()`; handlers build against this.
+    // null. Registration uses `declared_envelope_schema()`; handlers build
+    // against this.
     std::shared_ptr<arrow::Schema> payload;
+    // Whether the reference's return annotation admits None (`bytes | None`).
+    // Only such a method may answer a null `result`, and only its envelope
+    // column is declared nullable.
+    bool optional_result;
 };
 
-// The response schema every non-void method registers: one binary column named
-// "result", wrapping whatever the method actually returns.
+// The envelope every non-void handler builds its answer in: one binary column
+// named "result", wrapping whatever the method actually returns. Nullable,
+// because it has to hold the `bytes | None` answers too.
 const std::shared_ptr<arrow::Schema>& envelope_schema();
+
+// The same envelope as `spec` declares it on the wire, which is what a method
+// is registered with. Nullability is part of an Arrow type, and so of the
+// protocol description `vgi_rpc.Reflection.v1` reports and hashes: `result`
+// is nullable only where the return is optional, as vgi-python derives it.
+// dispatcher.cpp re-declares each handler's answer under this schema.
+const std::shared_ptr<arrow::Schema>& declared_envelope_schema(const MethodSpec& spec);
 
 // The payload schema declared for `method`, or null if it has none.
 const std::shared_ptr<arrow::Schema>& payload_schema_of(const std::string& method);

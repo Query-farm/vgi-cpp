@@ -45,17 +45,14 @@ namespace gen = ::vgi::generated;
 
 // `GlobalInitResponse` — the header batch every init stream leads with.
 //
-// Not in the generated schemas because it is a stream *header* rather than a
-// method result, so it is spelled out here against the canonical dataclass in
-// `vgi/invocation.py`. Registration in dispatcher.cpp needs it too, which is
-// why it is not file-local.
+// The generated schema, not a hand-spelled copy of it. The copy this replaced
+// put `max_workers` before `opaque_data`: harmless to a reader that looks
+// fields up by name, but field order is part of a schema, so it is part of the
+// `init` description reflection reports and of the protocol hash, which then
+// disagreed with the reference. Registration in dispatcher.cpp needs it too,
+// which is why it is not file-local.
 const std::shared_ptr<arrow::Schema>& global_init_response_schema() {
-    static const auto schema = arrow::schema({
-        arrow::field("execution_id", arrow::binary(), /*nullable=*/false),
-        arrow::field("max_workers", arrow::int64(), /*nullable=*/false),
-        arrow::field("opaque_data", arrow::binary(), /*nullable=*/true),
-    });
-    return schema;
+    return gen::GlobalInitResponseSchema();
 }
 
 namespace {}  // namespace

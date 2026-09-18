@@ -167,7 +167,12 @@ Iceberg, the companion and writable fixture workers). Run
 Each of these cost real debugging time, and none is guessable from the code:
 
 - **Every non-void method answers `{result: binary}`.** The generated "result
-  schema" describes what is *inside* those bytes, not the response batch.
+  schema" describes what is *inside* those bytes, not the response batch. The
+  column is non-nullable unless the return is `bytes | None`
+  (`MethodSpec::optional_result`); handlers build in the nullable
+  `envelope_schema()` and dispatcher.cpp re-declares the answer under
+  `declared_envelope_schema()`. Nullability and field order are part of the
+  protocol description reflection hashes, and the hash matches vgi-python's.
 - **`arguments` and `output_schema` are IPC-serialized *schemas*, not
   batches.** A parameter list is fields plus metadata; `vgi_const` above all,
   because a const parameter must not appear in the per-row batch.
