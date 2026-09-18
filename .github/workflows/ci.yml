@@ -108,8 +108,10 @@ jobs:
       - name: Test (unit)
         run: ctest --test-dir build --output-on-failure
 
-      # The example worker is the deliverable: if it does not start and answer
-      # __describe__, nothing downstream of it can work.
+      # The example worker is the deliverable: if it does not start, nothing
+      # downstream of it can work. The unit step above already drove it for
+      # real -- tests/protocol_routing_test.cpp calls vgi_rpc.Reflection.v1 and
+      # a vgi.v2 method on it over stdio, a unix socket and HTTP.
       - name: Smoke — the worker describes itself
         run: |
           python3 -m pip install --quiet 'vgi-rpc[http]' || true

@@ -17,6 +17,7 @@
 #include <vgi_rpc/server.h>
 
 #include "dispatcher.h"
+#include "vgi/generated/vgi_protocol_names.hpp"
 #include "vgi/generated/vgi_protocol_version.hpp"
 
 namespace vgi {
@@ -227,9 +228,17 @@ void Worker::run(int argc, char** argv) {
     // than somewhere later in the query.
     const char* override_version = std::getenv("VGI_PROTOCOL_VERSION_OVERRIDE");
     vgi_rpc::ServerBuilder builder;
-    builder.enable_describe("vgi").protocol_version(override_version && *override_version
-                                                        ? std::string(override_version)
-                                                        : std::string(gen::VGI_PROTOCOL_VERSION));
+    // The wire name is the routing key every request must carry: dispatch
+    // resolves the pair (protocol, method), and over HTTP the name is also the
+    // path segment (`{prefix}/vgi.v2/{method}`). It is generated from
+    // vgi-python rather than spelled here, because a worker declaring any
+    // other name answers ProtocolNotSupported to every client that exists.
+    // Only the version is overridable: `bad_protocol` must reach the version
+    // gate it exists to test, which a renamed protocol never would.
+    builder.protocol(std::string(gen::VGI_PROTOCOL_NAME))
+        .protocol_version(override_version && *override_version
+                              ? std::string(override_version)
+                              : std::string(gen::VGI_PROTOCOL_VERSION));
     if (!server_id_.empty()) builder.server_id(server_id_);
     disp_->install(builder);
 

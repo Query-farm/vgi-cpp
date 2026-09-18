@@ -28,6 +28,11 @@ run() { (cd "$VGI_PYTHON" && uv run --project . python -m "$1" --namespace "$NS"
 run vgi.codegen.cpp_schemas          > "$ROOT/include/vgi/generated/vgi_protocol_schemas.hpp"
 run vgi.codegen.cpp_constants        > "$ROOT/include/vgi/generated/vgi_protocol_constants.hpp"
 run vgi.codegen.cpp_protocol_version > "$ROOT/include/vgi/generated/vgi_protocol_version.hpp"
+# The wire routing key (`vgi.v2`): generated, not hand-spelled, for the reason
+# the generator gives. A version bump that misses this tree is a red build; a
+# rename that missed it was a silent misroute -- the worker answered on a name
+# no client sent, and nothing failed until integration.
+run vgi.codegen.cpp_protocol_name    > "$ROOT/include/vgi/generated/vgi_protocol_names.hpp"
 
 # Rewrite the provenance banner. Two reasons, both real:
 #
@@ -39,7 +44,8 @@ run vgi.codegen.cpp_protocol_version > "$ROOT/include/vgi/generated/vgi_protocol
 #     the end of a `//` comment is a line continuation — GCC warns
 #     (-Wcomment) and swallows the next line. Clang does not, so it only shows
 #     up on the Linux CI legs.
-for f in vgi_protocol_schemas.hpp vgi_protocol_constants.hpp vgi_protocol_version.hpp; do
+for f in vgi_protocol_schemas.hpp vgi_protocol_constants.hpp vgi_protocol_version.hpp \
+         vgi_protocol_names.hpp; do
     python3 - "$ROOT/include/vgi/generated/$f" <<'PY'
 import re, sys
 p = sys.argv[1]
@@ -52,3 +58,4 @@ done
 
 echo "regenerated into namespace $NS"
 grep -h "VGI_PROTOCOL_VERSION = " "$ROOT/include/vgi/generated/vgi_protocol_version.hpp"
+grep -h "VGI_PROTOCOL_NAME = " "$ROOT/include/vgi/generated/vgi_protocol_names.hpp"

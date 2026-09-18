@@ -41,8 +41,8 @@ one binary is routed into several catalogs by wrapper scripts and the
 
 ## Protocol code is generated, not written
 
-The Arrow schemas, constants and protocol version in `include/vgi/generated/`
-come from generators in `vgi-python`. **Never hand-edit them.** They are
+The Arrow schemas, constants, protocol version and protocol wire name in
+`include/vgi/generated/` come from generators in `vgi-python`. **Never hand-edit them.** They are
 public headers (part of the `vgi::vgi` target's install interface): a client
 SDK links against them to build requests and parse responses without
 depending on any worker-side symbol — see `vgi-sqlite`. Regenerate with:
@@ -51,8 +51,9 @@ depending on any worker-side symbol — see `vgi-sqlite`. Regenerate with:
 scripts/regenerate_protocol.sh
 ```
 
-That wraps the three `python -m vgi.codegen.cpp_*` generators, passes
-`--namespace vgi::generated`, and prints the resulting `VGI_PROTOCOL_VERSION`.
+That wraps the four `python -m vgi.codegen.cpp_*` generators, passes
+`--namespace vgi::generated`, and prints the resulting `VGI_PROTOCOL_VERSION`
+and `VGI_PROTOCOL_NAME`.
 
 Two things to know:
 
@@ -61,6 +62,17 @@ Two things to know:
   feature, and a worker built on this SDK links no DuckDB — so this repo
   passes `--namespace vgi::generated`. Leaving the default alone is what keeps
   the extension's own copies byte-identical.
+- **The wire name (`vgi.v2`) is the routing key, not a label.** Since vgi-rpc
+  0.46 every request names the protocol it addresses — `vgi_rpc.protocol` in
+  the batch metadata, and the path segment over HTTP
+  (`{prefix}/vgi.v2/{method}`) — and the server dispatches on the pair
+  `(protocol, method)`. A worker declaring any other name answers
+  `ProtocolNotSupported` to every client, which is why it is generated rather
+  than spelled in `worker.cpp`. The major is in the name, so an incompatible
+  major is a routing 404, not a payload error. Introspection is
+  `vgi_rpc.Reflection.v1` (`list_protocols`, `describe`), hosted by vgi-rpc
+  itself; `__describe__` is gone. `tests/protocol_routing_test.cpp` drives a
+  real worker on stdio, unix and HTTP to hold this.
 - **Regenerating adopts whatever protocol version vgi-python is at.** If that
   is ahead of the engine you test against, the version gate refuses every
   request and the whole suite fails at once. The script prints the version for

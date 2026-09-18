@@ -178,7 +178,8 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
     // RPC layer, which the engine may treat as an optional capability the
     // worker declined, and the query then fails somewhere else entirely. The
     // second says exactly which method was reached. It also makes
-    // `__describe__` an honest inventory of the protocol surface.
+    // `vgi_rpc.Reflection.v1`'s `describe` an honest inventory of the
+    // protocol surface.
     // Implemented handlers, by method name. Anything absent from this map is
     // still registered — see the note above — but refuses when called.
     const std::unordered_map<std::string, UnaryHandler> unary = {
