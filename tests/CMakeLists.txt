@@ -11,6 +11,13 @@ target_include_directories(function_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 include(Catch)
 catch_discover_tests(function_test)
 
+# A real Dispatcher behind a real vgi-rpc server, in-process so the test can
+# count what building a function listing asks of each registered function.
+add_executable(function_listing_test function_listing_test.cpp)
+target_link_libraries(function_listing_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(function_listing_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+catch_discover_tests(function_listing_test)
+
 # Drives the built example worker over stdio, a unix socket and HTTP with
 # vgi-rpc's own clients: the routing key is a statement about a running server,
 # not about a constant, so it is tested against one.

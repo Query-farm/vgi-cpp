@@ -1319,48 +1319,77 @@ Dispatcher::Attachment Dispatcher::attachment_of(const vgi_rpc::Request& request
     return attachment_of(request.batch());
 }
 
-bool Dispatcher::advertised_to(const Scope& scope, const vgi_rpc::Request& request) const {
-    // A function declared in some other catalog is not part of this
-    // attachment's surface, however the attachment was named.
-    return scope.catalog == attachment_of(request).catalog;
-}
-
 vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Request& request) {
     const auto schema_path = wire::get_schema_path(request.batch(), "path");
     const auto filter = normalize_function_type(wire::get_enum(request.batch(), "type"));
+    // The seal is read once here rather than once per registration: it
+    // carries the attachment's options as base64 IPC, and all a listing needs
+    // of it is the catalog.
+    const auto listing =
+        function_listing(attachment_of(request).catalog, schema_path, filter.value_or(""));
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_functions"))
+                        .set_binary_list("items", *listing)
+                        .finish());
+}
 
-    std::vector<std::string> items;
+Dispatcher::FunctionListing Dispatcher::function_listing(const std::string& catalog,
+                                                         const SchemaPath& schema_path,
+                                                         const std::string& function_type) const {
+    auto key = std::make_tuple(catalog, schema_path, function_type);
+    {
+        std::lock_guard<std::mutex> lock(function_listings_mutex_);
+        if (const auto found = function_listings_.find(key); found != function_listings_.end()) {
+            return found->second;
+        }
+    }
+    // Built outside the lock, because building calls into every function's
+    // `metadata()`. Two first requests racing build the same bytes, and
+    // whichever lands first is the one kept.
+    auto built = build_function_listing(catalog, schema_path, function_type);
+    if (built->empty()) return built;
+    std::lock_guard<std::mutex> lock(function_listings_mutex_);
+    return function_listings_.try_emplace(std::move(key), std::move(built)).first->second;
+}
+
+Dispatcher::FunctionListing Dispatcher::build_function_listing(
+    const std::string& catalog, const SchemaPath& schema_path,
+    const std::string& function_type) const {
+    auto items = std::make_shared<std::vector<std::string>>();
+    if (function_type.empty()) {
+        // Assembled from the three typed listings rather than encoded again,
+        // so each function is encoded once however it is asked for.
+        for (const char* type : {enums::function_type::kScalar, enums::function_type::kTable,
+                                 enums::function_type::kAggregate}) {
+            const auto part = function_listing(catalog, schema_path, type);
+            items->insert(items->end(), part->begin(), part->end());
+        }
+        return items;
+    }
     // Only what is declared in this schema *and* in this attachment's catalog.
     // Advertising everything under every schema would make a two-schema
     // collision look like one flat entry with two overloads, which is what the
-    // engine then reports.
-    const auto mine = [&](const Scope& scope) { return advertised_to(scope, request); };
-    // Hidden names are still registered — the engine calls them to scan the
-    // tables they back — but they are not part of the surface a user browses.
-    const auto shown = [&](const std::string& name) { return !hidden(name); };
-    if (!filter || *filter == enums::function_type::kScalar) {
+    // engine then reports. Hidden names are still registered — the engine
+    // calls them to scan the tables they back — but they are not part of the
+    // surface a user browses.
+    const auto listed = [&](const Scope& scope, const auto& fn) {
+        return scope.schema_path == schema_path && scope.catalog == catalog && !hidden(fn->name());
+    };
+    if (function_type == enums::function_type::kScalar) {
         for (size_t i = 0; i < scalars_.size(); ++i) {
-            if (scalar_scopes_[i].schema_path != schema_path || !mine(scalar_scopes_[i]) ||
-                !shown(scalars_[i]->name())) {
-                continue;
+            if (listed(scalar_scopes_[i], scalars_[i])) {
+                items->push_back(encode_function_info(*scalars_[i], schema_path));
             }
-            items.push_back(encode_function_info(*scalars_[i], schema_path));
         }
-    }
-    if (!filter || *filter == enums::function_type::kTable) {
+    } else if (function_type == enums::function_type::kTable) {
         for (size_t i = 0; i < tables_.size(); ++i) {
-            if (table_scopes_[i].schema_path != schema_path || !mine(table_scopes_[i]) ||
-                !shown(tables_[i]->name())) {
-                continue;
+            if (listed(table_scopes_[i], tables_[i])) {
+                items->push_back(encode_table_function_info(*tables_[i], schema_path));
             }
-            items.push_back(encode_table_function_info(*tables_[i], schema_path));
         }
         for (size_t i = 0; i < table_in_outs_.size(); ++i) {
-            if (table_in_out_scopes_[i].schema_path != schema_path ||
-                !mine(table_in_out_scopes_[i]) || !shown(table_in_outs_[i]->name())) {
-                continue;
+            if (listed(table_in_out_scopes_[i], table_in_outs_[i])) {
+                items->push_back(encode_table_in_out_info(*table_in_outs_[i], schema_path));
             }
-            items.push_back(encode_table_in_out_info(*table_in_outs_[i], schema_path));
         }
         // Buffering functions are advertised under the *table* filter, not a
         // filter of their own. The engine only ever asks for scalar, table or
@@ -1368,25 +1397,18 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Req
         // something the engine knows to ask for — so listing them under their
         // own name means they are never returned and never resolve.
         for (size_t i = 0; i < bufferings_.size(); ++i) {
-            if (buffering_scopes_[i].schema_path != schema_path || !mine(buffering_scopes_[i]) ||
-                !shown(bufferings_[i]->name())) {
-                continue;
+            if (listed(buffering_scopes_[i], bufferings_[i])) {
+                items->push_back(encode_buffering_info(*bufferings_[i], schema_path));
             }
-            items.push_back(encode_buffering_info(*bufferings_[i], schema_path));
         }
-    }
-    if (!filter || *filter == enums::function_type::kAggregate) {
+    } else if (function_type == enums::function_type::kAggregate) {
         for (size_t i = 0; i < aggregates_.size(); ++i) {
-            if (aggregate_scopes_[i].schema_path != schema_path || !mine(aggregate_scopes_[i]) ||
-                !shown(aggregates_[i]->name())) {
-                continue;
+            if (listed(aggregate_scopes_[i], aggregates_[i])) {
+                items->push_back(encode_aggregate_info(*aggregates_[i], schema_path));
             }
-            items.push_back(encode_aggregate_info(*aggregates_[i], schema_path));
         }
     }
-    return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_contents_functions"))
-                        .set_binary_list("items", items)
-                        .finish());
+    return items;
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Request& request) {

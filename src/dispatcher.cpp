@@ -62,6 +62,7 @@ void Dispatcher::register_table_in(std::string catalog, SchemaPath schema_path,
     table_by_name_[fn->name()].push_back(tables_.size());
     table_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     tables_.push_back(std::move(fn));
+    forget_function_listings();
 }
 
 void Dispatcher::register_table_in_out(std::shared_ptr<TableInOutFunction> fn) {
@@ -82,6 +83,7 @@ void Dispatcher::register_table_in_out_in(std::string catalog, SchemaPath schema
     table_in_out_by_name_[fn->name()].push_back(table_in_outs_.size());
     table_in_out_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     table_in_outs_.push_back(std::move(fn));
+    forget_function_listings();
 }
 
 void Dispatcher::register_buffering(std::shared_ptr<TableBufferingFunction> fn) {
@@ -102,6 +104,7 @@ void Dispatcher::register_buffering_in(std::string catalog, SchemaPath schema_pa
     buffering_by_name_[fn->name()].push_back(bufferings_.size());
     buffering_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     bufferings_.push_back(std::move(fn));
+    forget_function_listings();
 }
 
 void Dispatcher::register_aggregate(std::shared_ptr<AggregateFunction> fn) {
@@ -122,6 +125,7 @@ void Dispatcher::register_aggregate_in(std::string catalog, SchemaPath schema_pa
     aggregate_by_name_[fn->name()].push_back(aggregates_.size());
     aggregate_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     aggregates_.push_back(std::move(fn));
+    forget_function_listings();
 }
 
 void Dispatcher::register_scalar_in(std::string catalog, std::string schema,
@@ -143,6 +147,12 @@ void Dispatcher::register_scalar_in(std::string catalog, SchemaPath schema_path,
     scalar_by_name_[fn->name()].push_back(scalars_.size());
     scalar_scopes_.push_back({std::move(catalog), std::move(schema_path)});
     scalars_.push_back(std::move(fn));
+    forget_function_listings();
+}
+
+void Dispatcher::forget_function_listings() {
+    std::lock_guard<std::mutex> lock(function_listings_mutex_);
+    function_listings_.clear();
 }
 
 namespace {

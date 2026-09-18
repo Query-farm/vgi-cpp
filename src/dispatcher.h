@@ -3,8 +3,10 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -61,7 +63,10 @@ public:
 
     // Names kept out of the advertised function surface. See
     // `Worker::hide_function`.
-    void hide_function(std::string name) { hidden_.insert(std::move(name)); }
+    void hide_function(std::string name) {
+        hidden_.insert(std::move(name));
+        forget_function_listings();
+    }
     bool hidden(const std::string& name) const { return hidden_.count(name) != 0; }
 
     void register_scalar(std::shared_ptr<ScalarFunction> fn);
@@ -307,14 +312,36 @@ private:
     static Scope scope_of(const BindParams& params);
     static Scope scope_of(const ProcessParams& params);
 
-    // Whether a function declared in `scope` belongs to the attachment this
-    // request was made under.
+    // The items of one `catalog_schema_contents_functions` answer: the
+    // encoded `FunctionInfo` of every function `catalog` declares in
+    // `schema_path` that a listing of `function_type` returns.
     //
-    // One binary may serve a second catalog — a reproducer "app" registered
-    // with `register_*_in(<other catalog>, …)` — and its functions are not
-    // part of the primary catalog's surface. Everything registered without an
-    // explicit catalog is, whatever name the attachment used.
-    bool advertised_to(const Scope& scope, const vgi_rpc::Request& request) const;
+    // `catalog` is the attachment's, not the declaring one's: one binary may
+    // serve a second catalog — a reproducer "app" registered with
+    // `register_*_in(<other catalog>, …)` — and its functions are not part of
+    // the primary catalog's surface. Everything registered without an explicit
+    // catalog is, whatever name the attachment used. `function_type` is a
+    // normalized filter
+    // (`scalar`, `table` or `aggregate`), or empty for an unfiltered listing,
+    // which is those three in that order.
+    //
+    // Built on the first request and shared by every later one. A listing is
+    // derived from the registrations alone — not from the attachment's data
+    // version, options or id — so rebuilding it per request re-derived and
+    // re-encoded every function in the schema for the same bytes: about 50 ms
+    // for the example worker's main-schema table listing, paid on every
+    // function-set load.
+    using FunctionListing = std::shared_ptr<const std::vector<std::string>>;
+    FunctionListing function_listing(const std::string& catalog, const SchemaPath& schema_path,
+                                     const std::string& function_type) const;
+    FunctionListing build_function_listing(const std::string& catalog,
+                                           const SchemaPath& schema_path,
+                                           const std::string& function_type) const;
+    // Drop every built listing, so a registration made after one was served
+    // is in the next. Registering is not synchronized with serving — nothing
+    // about the registries is — so this covers a registration made between
+    // requests. A `Worker` registers everything before it serves.
+    void forget_function_listings();
 
     // The first is the primary — the one a bare `register_*` and a bare
     // `catalog()` mean. Held indirectly so a reference handed out by
@@ -322,6 +349,16 @@ private:
     std::vector<std::unique_ptr<CatalogModel>> catalogs_;
     std::optional<split_token::SigningKey> split_token_signing_key_;
     std::set<std::string> hidden_;
+    // Built function listings, by (catalog, schema path, function type). The
+    // HTTP transport dispatches independent calls in parallel, hence the lock.
+    //
+    // Only a listing with at least one item is kept. The key comes from the
+    // request, and an empty answer — a schema that declares nothing, a type no
+    // function has — costs nothing to recompute, so keeping those would only
+    // let a caller grow this map without bound.
+    mutable std::mutex function_listings_mutex_;
+    mutable std::map<std::tuple<std::string, SchemaPath, std::string>, FunctionListing>
+        function_listings_;
     std::vector<std::shared_ptr<ScalarFunction>> scalars_;
     // Parallel to scalars_: where each one is declared.
     std::vector<Scope> scalar_scopes_;
