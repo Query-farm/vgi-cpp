@@ -12,6 +12,7 @@
 #include <cmath>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -193,6 +194,106 @@ public:
             arrow::RecordBatch::Make(params.output_schema, array->length(), {array})};
         emitted.parent_rows = std::move(parents);
         return {std::move(emitted)};
+    }
+};
+
+// The input schema a blended call was bound with. The client always sends one,
+// built from the call's positional arguments; for an ANY argument it is the
+// only place the resolved type exists.
+//
+// By value: returning a reference into `params` reads to GCC as one that may
+// dangle into the temporary `function` name, and the copy costs a refcount.
+std::shared_ptr<arrow::Schema> blended_input_schema(const vgi::BindParams& params,
+                                                    const std::string& function) {
+    if (!params.input_schema) {
+        throw std::invalid_argument(function + " requires an input schema");
+    }
+    return params.input_schema;
+}
+
+// `blended_any(value)` — a 1->1 echo of one ANY-typed input column.
+//
+// The declaration names no Arrow type, so the client has to build the worker's
+// input schema from the type DuckDB resolved for the call — a struct built per
+// row, a whole row, a list, a plain VARCHAR — rather than from the declaration.
+// The output column is bound to that resolved type, and process() hands back
+// the same array, so row count and every validity bitmap (a NULL struct and a
+// struct with a NULL field stay distinct) survive untouched.
+class BlendedAny : public vgi::TableInOutFunction {
+public:
+    std::string name() const override { return "blended_any"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return blended_metadata(
+            "Blended 1->1 echo of one ANY-typed input column (output typed from the input)",
+            {"blended", "test"});
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::any_column("value", 0,
+                                         "Input column of any type (echoed back unchanged)")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
+        const auto input = blended_input_schema(params, name());
+        if (input->num_fields() < 1) {
+            throw std::invalid_argument("blended_any requires one input column");
+        }
+        return arrow::schema({arrow::field("value", input->field(0)->type(), /*nullable=*/true)});
+    }
+
+    std::vector<vgi::EmittedBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        // By name where the client supplies it, by position otherwise, as the
+        // other fixed-arity blended fixtures read theirs.
+        auto column = batch->GetColumnByName("value");
+        if (!column && batch->num_columns() > 0) column = batch->column(0);
+        if (!column) throw std::runtime_error("blended_any: no input column");
+        return {arrow::RecordBatch::Make(params.output_schema, batch->num_rows(), {column})};
+    }
+};
+
+// `blended_any_varargs(v1, v2, …)` — the varargs form of `blended_any`.
+//
+// Every runtime column may resolve to a different concrete type, so each
+// output column takes its own type from the call rather than from the (ANY)
+// vararg element type. Named `col0..colN-1`, the names the client gives
+// varargs blended input, and read positionally for the same reason `row_sum`
+// is: a varargs parameter names no columns.
+class BlendedAnyVarargs : public vgi::TableInOutFunction {
+public:
+    std::string name() const override { return "blended_any_varargs"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        return blended_metadata(
+            "Blended 1->1 echo of N ANY-typed varargs input columns (col0..colN-1)",
+            {"blended", "test"});
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        auto values =
+            vgi::ArgSpec::any_column("values", 0, "Input columns of any types (echoed back)");
+        values.with_varargs();
+        return {std::move(values)};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
+        const auto input = blended_input_schema(params, name());
+        std::vector<std::shared_ptr<arrow::Field>> fields;
+        fields.reserve(static_cast<size_t>(input->num_fields()));
+        for (int i = 0; i < input->num_fields(); ++i) {
+            fields.push_back(arrow::field("col" + std::to_string(i), input->field(i)->type(),
+                                          /*nullable=*/true));
+        }
+        return arrow::schema(std::move(fields));
+    }
+
+    std::vector<vgi::EmittedBatch> process(
+        const vgi::ProcessParams& params,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        return {
+            arrow::RecordBatch::Make(params.output_schema, batch->num_rows(), batch->columns())};
     }
 };
 
@@ -426,6 +527,8 @@ void register_blended(vgi::Worker& worker) {
     worker.register_table_in_out(std::make_shared<GeoEncode>(/*with_altitude=*/false));
     worker.register_table_in_out(std::make_shared<GeoEncode>(/*with_altitude=*/true));
     worker.register_table_in_out(std::make_shared<BlendedExplode>());
+    worker.register_table_in_out(std::make_shared<BlendedAny>());
+    worker.register_table_in_out(std::make_shared<BlendedAnyVarargs>());
     worker.register_table_in_out(std::make_shared<RowSum>());
     worker.register_table_in_out(std::make_shared<BlendedDrop>());
     worker.register_table_in_out(std::make_shared<ProjectableBlended>());
