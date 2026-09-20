@@ -207,15 +207,9 @@ private:
                 // distinguishes `WHERE flag` from `WHERE flag IS NOT FALSE`,
                 // and `WHERE NOT flag` from `WHERE flag IS NOT TRUE`.
                 switch (i % 3) {
-                    case 0:
-                        (void)flags.Append(true);
-                        break;
-                    case 1:
-                        (void)flags.Append(false);
-                        break;
-                    default:
-                        (void)flags.AppendNull();
-                        break;
+                    case 0: (void)flags.Append(true); break;
+                    case 1: (void)flags.Append(false); break;
+                    default: (void)flags.AppendNull(); break;
                 }
                 (void)pushed.Append(filters_);
             }

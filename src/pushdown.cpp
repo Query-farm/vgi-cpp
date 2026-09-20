@@ -1032,12 +1032,10 @@ const char* op_symbol(const std::string& op) {
 // input, which is what lets this be a projection and not a change of meaning.
 //
 // A column that is not BOOLEAN is left alone rather than guessed at.
-std::optional<std::pair<std::string, bool>> boolean_column_leaf(
-    const std::shared_ptr<Spec>& spec) {
+std::optional<std::pair<std::string, bool>> boolean_column_leaf(const std::shared_ptr<Spec>& spec) {
     const auto column = [](const std::shared_ptr<Spec>& node) -> const std::string* {
-        return node && node->kind == "column" && boolean_type(node->data_type)
-                   ? &node->column_name
-                   : nullptr;
+        return node && node->kind == "column" && boolean_type(node->data_type) ? &node->column_name
+                                                                               : nullptr;
     };
     if (spec->kind == "not" && spec->children.size() == 1) {
         if (const auto* name = column(spec->children[0])) return std::make_pair(*name, false);

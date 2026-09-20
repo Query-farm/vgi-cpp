@@ -317,8 +317,8 @@ TEST_CASE("Filter v2 snapshot binds and applies typed comparison payloads", "[fi
 // type — but nothing downstream recognised it, so it rendered as a bare
 // `flag` and was invisible to `column_values`. See vgi-python 0.36.2.
 TEST_CASE("Filter v2 accepts a bare BOOLEAN column as a predicate root", "[filter-v2]") {
-    const auto bool_schema = arrow::schema(
-        {arrow::field("flag", arrow::boolean()), arrow::field("n", arrow::int64())});
+    const auto bool_schema =
+        arrow::schema({arrow::field("flag", arrow::boolean()), arrow::field("n", arrow::int64())});
     const auto predicate = [](const std::string& expression) {
         return R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":)" +
                expression + R"(}]})";
@@ -336,8 +336,7 @@ TEST_CASE("Filter v2 accepts a bare BOOLEAN column as a predicate root", "[filte
         arrow::RecordBatch::Make(bool_schema, 4, {flag_values, int64_values({1, 2, 3, 4})});
 
     SECTION("`WHERE flag` keeps only TRUE, exactly as `flag = true` does") {
-        auto filters =
-            vgi::PushdownFilters::parse(filter_batch(predicate(flag)), {}, bool_schema);
+        auto filters = vgi::PushdownFilters::parse(filter_batch(predicate(flag)), {}, bool_schema);
         // A NULL predicate is not satisfied, so the NULL row drops.
         REQUIRE(filters.apply(input)->num_rows() == 2);
         // Rendering is the half a row count cannot see: a bare `flag` is legal
@@ -373,8 +372,8 @@ TEST_CASE("Filter v2 accepts a bare BOOLEAN column as a predicate root", "[filte
 TEST_CASE("Filter v2 projects a boolean column inside a conjunction", "[filter-v2]") {
     // The shape that actually turns up: one unprojected child used to cost the
     // whole conjunction its rendering.
-    const auto bool_schema = arrow::schema(
-        {arrow::field("flag", arrow::boolean()), arrow::field("n", arrow::int64())});
+    const auto bool_schema =
+        arrow::schema({arrow::field("flag", arrow::boolean()), arrow::field("n", arrow::int64())});
     const auto document =
         R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[{"id":"p","revision":0,"mode":"required","source":"query","expression":{"node":"and","children":[{"node":"comparison","op":"gt","left":{"node":"column_ref","column_index":1,"column_name":"n"},"right":{"node":"literal","value_ref":0}},{"node":"not","expression":{"node":"column_ref","column_index":0,"column_name":"flag"}}]}}]})";
     auto filters =
