@@ -7,9 +7,11 @@
 #include <cstdlib>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <regex>
 #include <stdexcept>
 #include <unordered_set>
+#include <utility>
 
 #include <arrow/array.h>
 #include <arrow/array/builder_primitive.h>
@@ -1014,6 +1016,48 @@ const char* op_symbol(const std::string& op) {
     return "?";
 }
 
+// `WHERE flag` / `WHERE NOT flag` — a BOOLEAN column is a predicate on its own.
+//
+// DuckDB pushes such a predicate down as a bare `column_ref` rather than
+// rewriting it to `flag = true`, and the schema admits that: `coreExpression`
+// lists `columnRef` first. The decoder accepts the shape already — the boolean
+// gate asks for the resolved type — but nothing downstream recognised it, so
+// it rendered as a bare `flag` (the spelling no other VGI SDK produces) and
+// was invisible to `column_values`, which a partition-pruning worker reads.
+//
+// The projection is exact rather than approximate, including under NULLs:
+// `WHERE flag` keeps only TRUE (a NULL predicate is not satisfied) and so does
+// `flag = true`; `WHERE NOT flag` keeps only FALSE (`NOT NULL` is NULL) and so
+// does `flag = false`. Three-valued logic makes both pairs agree on every
+// input, which is what lets this be a projection and not a change of meaning.
+//
+// A column that is not BOOLEAN is left alone rather than guessed at.
+std::optional<std::pair<std::string, bool>> boolean_column_leaf(
+    const std::shared_ptr<Spec>& spec) {
+    const auto column = [](const std::shared_ptr<Spec>& node) -> const std::string* {
+        return node && node->kind == "column" && boolean_type(node->data_type)
+                   ? &node->column_name
+                   : nullptr;
+    };
+    if (spec->kind == "not" && spec->children.size() == 1) {
+        if (const auto* name = column(spec->children[0])) return std::make_pair(*name, false);
+        return std::nullopt;
+    }
+    if (const auto* name = column(spec)) return std::make_pair(*name, true);
+    return std::nullopt;
+}
+
+std::string render(const std::shared_ptr<Spec>& spec);
+
+// Render a spec in a *predicate* position — the root of a predicate, or a
+// child of `and`/`or`, which is where `other = x AND NOT flag` puts one.
+std::string render_predicate(const std::shared_ptr<Spec>& spec) {
+    if (auto leaf = boolean_column_leaf(spec)) {
+        return leaf->first + (leaf->second ? " = true" : " = false");
+    }
+    return render(spec);
+}
+
 std::string render(const std::shared_ptr<Spec>& spec) {
     if (spec->kind == "column") return spec->column_name;
     if (spec->kind == "field") return render(spec->children[0]) + "." + spec->field_name;
@@ -1026,7 +1070,7 @@ std::string render(const std::shared_ptr<Spec>& spec) {
         std::string result = "(";
         for (size_t i = 0; i < spec->children.size(); ++i) {
             if (i) result += spec->kind == "and" ? " AND " : " OR ";
-            result += render(spec->children[i]);
+            result += render_predicate(spec->children[i]);
         }
         return result + ")";
     }
@@ -1073,6 +1117,16 @@ std::shared_ptr<arrow::Array> discrete_values(const std::shared_ptr<Spec>& spec,
     if (spec->kind == "constant" && spec->op == "eq" && spec->children.size() == 2 &&
         is_direct_column(spec->children[0], column) && spec->children[1]->kind == "literal") {
         return spec->children[1]->value;
+    }
+    // `WHERE flag` pins `flag` to TRUE exactly as `flag = true` does, so a
+    // value-pruning caller sees the constant either way round.
+    if (auto leaf = boolean_column_leaf(spec); leaf && leaf->first == column) {
+        arrow::BooleanBuilder builder;
+        if (builder.Append(leaf->second).ok()) {
+            std::shared_ptr<arrow::Array> values;
+            if (builder.Finish(&values).ok()) return values;
+        }
+        return nullptr;
     }
     if (spec->kind == "in" && !spec->negated && !spec->children.empty() &&
         is_direct_column(spec->children[0], column))
@@ -1328,7 +1382,7 @@ std::string PushdownFilters::format() const {
     std::string result;
     for (const auto& spec : specs_) {
         if (!result.empty()) result += " AND ";
-        result += render(spec);
+        result += render_predicate(spec);
     }
     return result;
 }

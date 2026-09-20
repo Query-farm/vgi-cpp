@@ -133,6 +133,120 @@ private:
     };
 };
 
+// bool_filter_echo(count) -> {n, flag, pushed_filters}
+//
+// A table function with a nullable BOOLEAN column, so `WHERE flag` and
+// `WHERE NOT flag` can be driven end to end. Nothing else can express the
+// shape: FilterEcho has no boolean column, so the predicate cannot be written
+// against it at all, and the table-in-out echo path is never handed a bare
+// boolean column as a pushed predicate, so a case written there passes
+// whether or not the worker understands one.
+//
+// `pushed_filters` echoes the rendering, which covers the half a row count
+// cannot see: a shape that decodes and evaluates correctly but renders no SQL
+// shows up there as "(none)", and for a worker that builds a WHERE clause
+// from it that is silently wrong rows — DuckDB does not re-apply a predicate
+// it pushed into a table function.
+class BoolFilterEcho : public vgi::TableFunction {
+public:
+    std::string name() const override { return "bool_filter_echo"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.description = "Rows with a nullable BOOLEAN column, echoing pushed-down filters";
+        md.categories = {"generator", "diagnostic"};
+        md.filter_pushdown = true;
+        md.projection_pushdown = true;
+        md.auto_apply_filters = true;
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::constant_arg("count", 0, "int64", "Number of rows to generate")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("n", arrow::int64(), true),
+                              arrow::field("flag", arrow::boolean(), true),
+                              arrow::field("pushed_filters", arrow::utf8(), true)});
+    }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        vgi::TableCardinality estimate;
+        if (auto count = params.arguments.const_int64(0)) {
+            estimate.estimate = *count;
+            estimate.max = *count;
+        }
+        return estimate;
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        return std::make_unique<Producer>(
+            params.output_schema, std::max<int64_t>(0, params.arguments.const_int64(0).value_or(0)),
+            params.pushdown_filters.format());
+    }
+
+private:
+    class Producer : public vgi::TableProducer {
+    public:
+        Producer(std::shared_ptr<arrow::Schema> schema, int64_t rows, std::string filters)
+            : schema_(std::move(schema)), remaining_(rows), filters_(std::move(filters)) {}
+
+        std::shared_ptr<arrow::RecordBatch> next_batch() override {
+            if (remaining_ <= 0) return nullptr;
+            const int64_t n = remaining_;
+
+            arrow::Int64Builder ns;
+            arrow::BooleanBuilder flags;
+            arrow::StringBuilder pushed;
+            (void)ns.Reserve(n);
+            (void)flags.Reserve(n);
+            for (int64_t i = 0; i < n; ++i) {
+                (void)ns.Append(i);
+                // TRUE, FALSE, NULL. The NULL row is the point: it is what
+                // distinguishes `WHERE flag` from `WHERE flag IS NOT FALSE`,
+                // and `WHERE NOT flag` from `WHERE flag IS NOT TRUE`.
+                switch (i % 3) {
+                    case 0:
+                        (void)flags.Append(true);
+                        break;
+                    case 1:
+                        (void)flags.Append(false);
+                        break;
+                    default:
+                        (void)flags.AppendNull();
+                        break;
+                }
+                (void)pushed.Append(filters_);
+            }
+
+            // Built in the *bound* schema's column order, since projection
+            // pushdown may have narrowed and reordered it.
+            std::vector<std::shared_ptr<arrow::Array>> built(3);
+            (void)ns.Finish(&built[0]);
+            (void)flags.Finish(&built[1]);
+            (void)pushed.Finish(&built[2]);
+
+            static const char* kNames[] = {"n", "flag", "pushed_filters"};
+            std::vector<std::shared_ptr<arrow::Array>> columns;
+            columns.reserve(static_cast<size_t>(schema_->num_fields()));
+            for (int i = 0; i < schema_->num_fields(); ++i) {
+                const auto& wanted = schema_->field(i)->name();
+                for (size_t j = 0; j < 3; ++j) {
+                    if (wanted == kNames[j]) columns.push_back(built[j]);
+                }
+            }
+            remaining_ = 0;
+            return arrow::RecordBatch::Make(schema_, n, columns);
+        }
+
+    private:
+        std::shared_ptr<arrow::Schema> schema_;
+        int64_t remaining_;
+        std::string filters_;
+    };
+};
+
 // Rendered as the reference fixtures render it: values sorted, then joined
 // with commas. The tests compare the string, so the ordering is the contract —
 // numeric where the values are numbers, lexicographic otherwise.
@@ -888,6 +1002,7 @@ private:
 
 void register_filter_fixtures(vgi::Worker& worker) {
     worker.register_table(std::make_shared<FilterEcho>());
+    worker.register_table(std::make_shared<BoolFilterEcho>());
     worker.register_table(std::make_shared<ValuePrune>());
     worker.register_table(std::make_shared<FilteredColumnsEcho>());
     worker.register_table(std::make_shared<DictFilterEcho>());
