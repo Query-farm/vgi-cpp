@@ -88,3 +88,12 @@ identity-preserving raw or HTTP worker bridge setup.
 
 Query Farm Source-Available License, Version 1.0 — see [LICENSE](LICENSE).
 The same licence as `vgi-python` and the DuckDB extension.
+
+### Browser catalog
+
+HTTP workers serve the shared browser catalog and bundled client at `/` and
+the configured HTTP prefix. The page discovers schemas, tables, views, and
+functions through VGI RPC. `?format=json` returns worker identity. Asset routes
+use the same authentication and proxy-proof policy as RPC and support HEAD
+and ETag revalidation. The assets are embedded in the library; no runtime
+files are needed. This requires vgi-rpc-cpp 0.5.0 or newer.

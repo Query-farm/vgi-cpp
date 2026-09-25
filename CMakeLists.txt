@@ -1,6 +1,6 @@
 # © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 cmake_minimum_required(VERSION 3.20)
-project(vgi-cpp VERSION 0.4.1 LANGUAGES CXX)
+project(vgi-cpp VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,7 +27,7 @@ set(VGI_RPC_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vgi-rpc-c++"
     CACHE PATH "Sibling vgi-rpc-c++ checkout to build against")
 
 if(VGI_USE_INSTALLED_RPC)
-    find_package(vgi_rpc CONFIG REQUIRED)
+    find_package(vgi_rpc 0.5.0 CONFIG REQUIRED)
 else()
     if(NOT EXISTS "${VGI_RPC_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
@@ -49,7 +49,21 @@ find_package(ArrowCompute CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 # ── The SDK ───────────────────────────────────────────────────────────────
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(LANDING_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/landing_assets.h")
+file(WRITE "${LANDING_HEADER}" "// Generated from vendored browser assets.\n")
+foreach(ASSET IN ITEMS "landing_html:landing.html" "client_js:vgi-client.js")
+    string(REPLACE ":" ";" PARTS "${ASSET}")
+    list(GET PARTS 0 SYMBOL)
+    list(GET PARTS 1 FILENAME)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/${FILENAME}")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/${FILENAME}" CONTENT HEX)
+    string(REGEX REPLACE "(..)" "0x\\1," CONTENT "${CONTENT}")
+    file(APPEND "${LANDING_HEADER}" "static constexpr unsigned char ${SYMBOL}[] = {${CONTENT}};\n")
+endforeach()
+
 add_library(vgi
+    src/landing.cpp
     src/worker.cpp
     src/dispatcher.cpp
     src/function.cpp
@@ -82,6 +96,8 @@ target_include_directories(vgi PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 target_include_directories(vgi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(vgi PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_definitions(vgi PRIVATE VGI_SDK_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(vgi PUBLIC vgi_rpc nlohmann_json::nlohmann_json)
 if(TARGET Arrow::arrow_shared)

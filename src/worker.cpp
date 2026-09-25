@@ -17,6 +17,7 @@
 #include <vgi_rpc/server.h>
 
 #include "dispatcher.h"
+#include "landing.h"
 #include "vgi/generated/vgi_protocol_names.hpp"
 #include "vgi/generated/vgi_protocol_version.hpp"
 
@@ -325,6 +326,8 @@ void Worker::run(int argc, char** argv) {
                 vgi_rpc::HttpConfig config;
                 config.host = http_host;
                 config.port = port;
+                configure_landing(config, disp_->catalog().name, server->server_id(),
+                                  disp_->catalog().comment.value_or(""));
                 configure_signing_key(config);
                 configure_bearer_auth(config, bearer_tokens_from_env());
                 disp_->set_split_token_signing_key(config.token_key);
@@ -339,6 +342,8 @@ void Worker::run(int argc, char** argv) {
                 vgi_rpc::HttpConfig config;
                 config.host = http_host;
                 config.port = port;
+                configure_landing(config, disp_->catalog().name, server->server_id(),
+                                  disp_->catalog().comment.value_or(""));
                 configure_signing_key(config);
                 config.peer_identity_providers.push_back(vgi_rpc::iroh_forwarded_header_provider(
                     {std::move(iroh_issuer), std::move(iroh_trusted_proxies)}));
