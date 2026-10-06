@@ -81,7 +81,7 @@ jobs:
             -DVGI_RPC_SOURCE_DIR=${{ github.workspace }}/vgi-rpc-c++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build-release --target vgi-example-worker --parallel
+          cmake --build build-release --target vgi-example-worker --parallel 2
 
       - name: Resolve latest haybarn release
         env:
