@@ -273,6 +273,16 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         {"catalog_transaction_rollback", &Dispatcher::catalog_transaction_rollback},
     };
 
+    // A `catalog_*` call addressed to a memory catalog is that catalog's,
+    // whatever this dispatcher would otherwise do with it (vgi-go routes its
+    // sub-catalogs the same way: by method name, then by attachment).
+    const auto routed = [this](const std::string& name, const vgi_rpc::Request& req,
+                               std::optional<vgi_rpc::Result>* out) {
+        if (!route_memory_catalog(name, req, out)) return false;
+        trace(name + " (memory catalog)");
+        return true;
+    };
+
     for (const auto& spec : protocol_methods()) {
         const std::string name = spec.name;
         const auto& declared = declared_envelope_schema(spec);
@@ -316,17 +326,23 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         if (spec.kind == MethodKind::Void) {
             if (auto it = voids.find(name); it != voids.end()) {
                 auto handler = it->second;
-                builder.add_void(
-                    name, spec.params,
-                    [this, handler, name](const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
-                        trace(name);
-                        (this->*handler)(req);
-                    });
+                builder.add_void(name, spec.params,
+                                 [this, handler, name, routed](const vgi_rpc::Request& req,
+                                                               vgi_rpc::CallContext&) {
+                                     std::optional<vgi_rpc::Result> answer;
+                                     if (routed(name, req, &answer)) return;
+                                     trace(name);
+                                     (this->*handler)(req);
+                                 });
                 continue;
             }
             builder.add_void(
                 name, spec.params,
-                [refuse](const vgi_rpc::Request&, vgi_rpc::CallContext&) { refuse(); });
+                [refuse, name, routed](const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
+                    std::optional<vgi_rpc::Result> answer;
+                    if (routed(name, req, &answer)) return;
+                    refuse();
+                });
         } else {
             if (auto it = unary_with_context.find(name); it != unary_with_context.end()) {
                 auto handler = it->second;
@@ -341,8 +357,12 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
             if (auto it = unary.find(name); it != unary.end()) {
                 auto handler = it->second;
                 builder.add_unary(name, spec.params, declared,
-                                  [this, handler, name, declared](const vgi_rpc::Request& req,
-                                                                  vgi_rpc::CallContext&) {
+                                  [this, handler, name, declared, routed](
+                                      const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
+                                      std::optional<vgi_rpc::Result> answer;
+                                      if (routed(name, req, &answer)) {
+                                          return conform(std::move(*answer), declared, name);
+                                      }
                                       trace(name);
                                       return conform((this->*handler)(req), declared, name);
                                   });
@@ -350,7 +370,12 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
             }
             builder.add_unary(
                 name, spec.params, declared,
-                [refuse](const vgi_rpc::Request&, vgi_rpc::CallContext&) -> vgi_rpc::Result {
+                [refuse, name, declared, routed](const vgi_rpc::Request& req,
+                                                 vgi_rpc::CallContext&) -> vgi_rpc::Result {
+                    std::optional<vgi_rpc::Result> answer;
+                    if (routed(name, req, &answer)) {
+                        return conform(std::move(*answer), declared, name);
+                    }
                     refuse();
                     return vgi_rpc::Result::void_result();  // unreachable
                 });

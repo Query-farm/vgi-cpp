@@ -425,6 +425,18 @@ ResultBuilder& ResultBuilder::set_binary(const std::string& field, const std::st
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_array(const std::string& field,
+                                        const std::shared_ptr<arrow::Array>& value) {
+    const int index = field_index(field);
+    if (!value || value->length() < 1) fail("result field '" + field + "' given no value");
+    if (!value->type()->Equals(*schema_->field(index)->type())) {
+        fail("result field '" + field + "' is " + schema_->field(index)->type()->ToString() +
+             ", given " + value->type()->ToString());
+    }
+    arrays_[static_cast<size_t>(index)] = value->Slice(0, 1);
+    return *this;
+}
+
 ResultBuilder& ResultBuilder::set_bool(const std::string& field, bool value) {
     arrow::BooleanBuilder b;
     check_ok(b.Append(value), "building result field '" + field + "'");
@@ -584,7 +596,7 @@ ResultBuilder& ResultBuilder::set_secret_lookups(
 }
 
 ResultBuilder& ResultBuilder::set_schema_contents(const std::string& field,
-                                                  const std::vector<SchemaContentsRow>& rows) {
+                                                  const std::vector<SchemaContents>& rows) {
     const int index = field_index(field);
     // Against the schema's own struct type, children reached by name: field
     // order and nullability are the generator's to decide.

@@ -26,6 +26,7 @@
 
 #include "arg_schema.h"
 #include "dispatcher.h"
+#include "catalog_contents.h"
 #include "enums.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "methods.h"
@@ -649,6 +650,50 @@ std::vector<std::string> Dispatcher::encode_attach_options(const CatalogModel& m
     return items;
 }
 
+void Dispatcher::register_memory_catalog(MemoryCatalogOptions options) {
+    auto memory = std::make_shared<MemoryCatalog>(std::move(options));
+    const auto name = memory->name();
+    if (find_catalog(name)) {
+        throw std::invalid_argument("register_memory_catalog: catalog '" + name +
+                                    "' is already declared");
+    }
+    if (!memory_catalogs_.emplace(name, std::move(memory)).second) {
+        throw std::invalid_argument("register_memory_catalog: catalog '" + name +
+                                    "' is already registered");
+    }
+}
+
+bool Dispatcher::route_memory_catalog(const std::string& method, const vgi_rpc::Request& request,
+                                      std::optional<vgi_rpc::Result>* out) {
+    if (memory_catalogs_.empty() || method.rfind("catalog_", 0) != 0) return false;
+    const auto& params = request.batch();
+    std::shared_ptr<MemoryCatalog> memory;
+    if (method == "catalog_attach") {
+        if (const auto attach = wire::get_ipc(params, "request")) {
+            const auto found = memory_catalogs_.find(wire::get_string(attach, "name"));
+            if (found != memory_catalogs_.end()) memory = found->second;
+        }
+    } else {
+        // Top-level for most catalog methods; inside the `request` blob for
+        // the request-wrapped ones (catalog_table_create, ...).
+        auto sealed = wire::get_optional_binary(params, "attach_opaque_data");
+        if (!sealed && params && params->schema()->GetFieldIndex("request") >= 0) {
+            if (const auto inner = wire::get_ipc(params, "request")) {
+                sealed = wire::get_optional_binary(inner, "attach_opaque_data");
+            }
+        }
+        if (sealed) {
+            if (const auto catalog = MemoryCatalog::catalog_of(*sealed)) {
+                const auto found = memory_catalogs_.find(*catalog);
+                if (found != memory_catalogs_.end()) memory = found->second;
+            }
+        }
+    }
+    if (!memory) return false;
+    if (auto payload = memory->serve(method, params)) *out = envelope(*payload);
+    return true;
+}
+
 vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
     // Every catalog this worker serves. Discovery runs before any ATTACH, so
     // what each entry says is what the catalog *is* — not what some attachment
@@ -671,6 +716,7 @@ vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
                                         : std::optional<std::string>(model->source_url));
         items.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
     }
+    for (const auto& [name, memory] : memory_catalogs_) items.push_back(memory->catalog_info());
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_catalogs"))
                         .set_binary_list("items", std::move(items))
                         .finish());
@@ -1096,17 +1142,32 @@ vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request) {
     const auto owner = seal_attachment(attachment);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
+    const int64_t version = *current_catalog_version(request);
 
+    CatalogContentsCall call;
+    call.catalog_name = attachment.catalog;
+    call.catalog_version = version;
+    call.if_none_match = wire::get_optional_string(request.batch(), "if_none_match");
+    call.contents = [&]() { return compose_catalog_contents(request, attachment, owner, *model); };
+    return envelope(encode_catalog_contents(
+        version, answer_catalog_contents(model->catalog_contents_handler,
+                                         model->catalog_contents_etag, call)));
+}
+
+std::vector<SchemaContents> Dispatcher::compose_catalog_contents(const vgi_rpc::Request& request,
+                                                                 const Attachment& attachment,
+                                                                 const std::string& owner,
+                                                                 const CatalogModel& model) const {
     // Parents before children, otherwise in declaration order: the engine
     // creates schemas as it reads them. Stable, so a flat catalog keeps the
     // order catalog_schemas answers in.
     std::vector<const CatalogSchema*> ordered;
-    ordered.reserve(model->schemas.size());
-    for (const auto& schema : model->schemas) ordered.push_back(schema.get());
+    ordered.reserve(model.schemas.size());
+    for (const auto& schema : model.schemas) ordered.push_back(schema.get());
     std::stable_sort(ordered.begin(), ordered.end(),
                      [](const auto* a, const auto* b) { return a->path.size() < b->path.size(); });
 
-    std::vector<wire::ResultBuilder::SchemaContentsRow> rows;
+    std::vector<SchemaContents> rows;
     rows.reserve(ordered.size());
     for (const auto* schema : ordered) {
         const auto& path = schema->path;
@@ -1114,7 +1175,7 @@ vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request) {
         // the declared schema -- the same lookup the per-schema calls make.
         const auto* contents = schema_for(request, path);
 
-        wire::ResultBuilder::SchemaContentsRow row;
+        SchemaContents row;
         row.path = path;
         row.schema = encode_schema_info(attachment.catalog, owner, *schema, contents);
         if (contents) {
@@ -1141,15 +1202,7 @@ vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request) {
         // No index API in this SDK: always empty, as catalog_schema_contents_indexes.
         rows.push_back(std::move(row));
     }
-
-    // No etag: this SDK does not revalidate, so `if_none_match` is ignored and
-    // the answer is never not_modified (WIRE: an absent etag never yields it).
-    return envelope(wire::ResultBuilder(payload_schema_of("catalog_contents"))
-                        .set_int64("catalog_version", *current_catalog_version(request))
-                        .set_null("etag")
-                        .set_bool("not_modified", false)
-                        .set_schema_contents("schemas", rows)
-                        .finish());
+    return rows;
 }
 
 vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) {

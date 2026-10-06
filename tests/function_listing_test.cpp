@@ -175,6 +175,11 @@ public:
     Served(const Served&) = delete;
     Served& operator=(const Served&) = delete;
 
+    // Call a void method.
+    void call_void(const std::string& method, const std::shared_ptr<arrow::RecordBatch>& params) {
+        (void)client_->call_unary(method, params);
+    }
+
     // The payload a unary method answered: its `result` bytes, decoded.
     std::shared_ptr<arrow::RecordBatch> call(const std::string& method,
                                              const std::shared_ptr<arrow::RecordBatch>& params) {
@@ -566,4 +571,258 @@ TEST_CASE("ATTACH advertises catalog_contents unless the catalog opts out", "[ca
                   result->GetColumnByName("supports_catalog_contents"))
                   ->Value(0) == advertised);
     }
+}
+
+namespace {
+
+std::shared_ptr<arrow::RecordBatch> contents_call(Served& worker, const std::string& handle,
+                                                  const std::optional<std::string>& if_none_match) {
+    auto builder = vgi::wire::ResultBuilder(gen::CatalogContentsParamsSchema())
+                       .set_binary("attach_opaque_data", handle);
+    builder.set_optional_string("if_none_match", if_none_match);
+    return worker.call("catalog_contents", builder.finish());
+}
+
+std::optional<std::string> etag_of(const std::shared_ptr<arrow::RecordBatch>& payload) {
+    return vgi::wire::get_optional_string(payload, "etag");
+}
+
+bool not_modified_of(const std::shared_ptr<arrow::RecordBatch>& payload) {
+    return vgi::wire::get_bool(payload, "not_modified");
+}
+
+size_t schema_count(const std::shared_ptr<arrow::RecordBatch>& payload) {
+    return contents_by_path(payload).size();
+}
+
+void create_view(Served& worker, const std::string& handle, const std::string& name,
+                 const std::string& definition) {
+    worker.call_void("catalog_view_create",
+                     vgi::wire::ResultBuilder(gen::CatalogViewCreateParamsSchema())
+                         .set_binary("attach_opaque_data", handle)
+                         .set_string_list("schema_path", {"main"})
+                         .set_string("name", name)
+                         .set_string("definition", definition)
+                         .set_enum("on_conflict", "ERROR")
+                         .fill_defaults()
+                         .finish());
+}
+
+int64_t version_of(Served& worker, const std::string& handle) {
+    return vgi::wire::get_int64(
+        worker.call("catalog_version", vgi::wire::ResultBuilder(gen::CatalogVersionParamsSchema())
+                                           .set_binary("attach_opaque_data", handle)
+                                           .fill_defaults()
+                                           .finish()),
+        "version");
+}
+
+std::vector<std::string> view_names(Served& worker, const std::string& handle) {
+    std::vector<std::string> names;
+    for (const auto& item :
+         per_schema(worker, "catalog_schema_contents_views",
+                    gen::CatalogSchemaContentsViewsParamsSchema(), handle, {"main"})) {
+        names.push_back(vgi::wire::get_string(vgi::wire::decode_ipc(item), "name"));
+    }
+    return names;
+}
+
+}  // namespace
+
+TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its version",
+          "[catalog][memory]") {
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "alpha";
+    vgi::MemoryCatalogOptions options;
+    options.name = "mem";
+    dispatcher.register_memory_catalog(options);
+    Served worker(dispatcher);
+
+    const auto one = attach(worker, "mem");
+    const auto two = attach(worker, "mem");
+    REQUIRE(one != two);
+    CHECK(version_of(worker, one) == 1);
+
+    create_view(worker, one, "v", "SELECT 1 AS x");
+    CHECK(version_of(worker, one) == 2);
+    CHECK(view_names(worker, one) == Names{"v"});
+    // The second ATTACH never sees the first's objects.
+    CHECK(view_names(worker, two).empty());
+    CHECK(version_of(worker, two) == 1);
+
+    // A table definition, then the schema set and per-name lookup.
+    worker.call_void("catalog_schema_create",
+                     vgi::wire::ResultBuilder(gen::CatalogSchemaCreateParamsSchema())
+                         .set_binary("attach_opaque_data", one)
+                         .set_string_list("path", {"s2"})
+                         .set_enum("on_conflict", "ERROR")
+                         .fill_defaults()
+                         .finish());
+    const auto table_request = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+                                   .set_binary("attach_opaque_data", one)
+                                   .set_string_list("schema_path", {"main"})
+                                   .set_string("name", "t1")
+                                   .set_binary("columns", vgi::wire::encode_schema(arrow::schema(
+                                                              {arrow::field("a", arrow::int32())})))
+                                   .set_enum("on_conflict", "ERROR")
+                                   .fill_defaults()
+                                   .finish();
+    worker.call_void("catalog_table_create",
+                     vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                         .set_binary("request", vgi::wire::encode_ipc(table_request))
+                         .finish());
+    CHECK(version_of(worker, one) == 4);
+    const auto contents = contents_by_path(contents_call(worker, one, std::nullopt));
+    REQUIRE(contents.size() == 2);
+    CHECK(contents.at({"main"}).tables.size() == 1);
+    CHECK(contents.at({"main"}).views.size() == 1);
+    CHECK(contents.count({"s2"}) == 1);
+
+    // Creating it again is refused; IGNORE keeps it.
+    CHECK_THROWS(create_view(worker, one, "v", "SELECT 2 AS x"));
+
+    worker.call_void("catalog_view_drop",
+                     vgi::wire::ResultBuilder(gen::CatalogViewDropParamsSchema())
+                         .set_binary("attach_opaque_data", one)
+                         .set_string_list("schema_path", {"main"})
+                         .set_string("name", "V")
+                         .fill_defaults()
+                         .finish());
+    CHECK(view_names(worker, one).empty());
+
+    // Detached, the state is gone.
+    worker.call_void("catalog_detach", vgi::wire::ResultBuilder(gen::CatalogDetachParamsSchema())
+                                           .set_binary("attach_opaque_data", one)
+                                           .fill_defaults()
+                                           .finish());
+    CHECK_THROWS(version_of(worker, one));
+    CHECK(version_of(worker, two) == 1);
+}
+
+TEST_CASE("catalog_catalogs lists memory catalogs; declared catalogs route as before",
+          "[catalog][memory]") {
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "alpha";
+    dispatcher.register_scalar(std::make_shared<Scalar>("twice", "alpha main"));
+    vgi::MemoryCatalogOptions options;
+    options.name = "mem";
+    dispatcher.register_memory_catalog(options);
+    REQUIRE_THROWS(dispatcher.register_memory_catalog(options));
+    Served worker(dispatcher);
+
+    std::vector<std::string> names;
+    for (const auto& item : vgi::wire::get_binary_list(
+             worker.call("catalog_catalogs",
+                         vgi::wire::ResultBuilder(gen::CatalogCatalogsParamsSchema())
+                             .fill_defaults()
+                             .finish()),
+             "items")) {
+        names.push_back(vgi::wire::get_string(vgi::wire::decode_ipc(item), "name"));
+    }
+    CHECK(names == Names{"alpha", "mem"});
+
+    const auto alpha = attach(worker, "alpha");
+    CHECK(described(list(worker, alpha, {"main"}, "SCALAR_FUNCTION")) ==
+          Names{"twice: alpha main"});
+    // The memory catalog lists none of alpha's functions.
+    CHECK(list(worker, attach(worker, "mem"), {"main"}, "SCALAR_FUNCTION").empty());
+}
+
+TEST_CASE("catalog_contents revalidates: a handler's etag and the content hash",
+          "[catalog][contents]") {
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "alpha";
+    int builds = 0;
+    vgi::MemoryCatalogOptions reval;
+    reval.name = "reval";
+    reval.catalog_contents_handler = [&builds](const vgi::CatalogContentsCall& call) {
+        vgi::CatalogContentsResult result;
+        result.etag = "gen-" + std::to_string(call.catalog_version);
+        if (call.if_none_match == result.etag) {
+            result.not_modified = true;
+            return result;
+        }
+        ++builds;
+        result.schemas = call.contents();
+        return result;
+    };
+    dispatcher.register_memory_catalog(reval);
+    vgi::MemoryCatalogOptions hash;
+    hash.name = "hash";
+    hash.catalog_contents_etag = vgi::CatalogContentsEtag::ContentHash;
+    dispatcher.register_memory_catalog(hash);
+    vgi::MemoryCatalogOptions bad;
+    bad.name = "bad";
+    bad.catalog_contents_handler = [](const vgi::CatalogContentsCall&) {
+        vgi::CatalogContentsResult result;
+        result.etag = "x";
+        result.not_modified = true;  // without a matching if_none_match
+        return result;
+    };
+    dispatcher.register_memory_catalog(bad);
+    Served worker(dispatcher);
+
+    SECTION("generation etag") {
+        const auto rv = attach(worker, "reval");
+        const auto full = contents_call(worker, rv, std::nullopt);
+        CHECK(etag_of(full) == "gen-1");
+        CHECK_FALSE(not_modified_of(full));
+        CHECK(builds == 1);
+
+        const auto same = contents_call(worker, rv, std::string("gen-1"));
+        CHECK(not_modified_of(same));
+        CHECK(schema_count(same) == 0);
+        CHECK(builds == 1);  // answered without building
+
+        create_view(worker, rv, "v", "SELECT 7 AS x");
+        const auto changed = contents_call(worker, rv, std::string("gen-1"));
+        CHECK_FALSE(not_modified_of(changed));
+        CHECK(etag_of(changed) == "gen-2");
+    }
+
+    SECTION("content hash") {
+        const auto hs = attach(worker, "hash");
+        const auto full = contents_call(worker, hs, std::nullopt);
+        const auto etag = etag_of(full);
+        REQUIRE(etag);
+        CHECK(etag->size() == 64);
+        CHECK(etag->find_first_not_of("0123456789abcdef") == std::string::npos);
+
+        const auto same = contents_call(worker, hs, etag);
+        CHECK(not_modified_of(same));
+        CHECK(etag_of(same) == etag);
+
+        create_view(worker, hs, "w", "SELECT 10 AS y");
+        const auto changed = contents_call(worker, hs, etag);
+        CHECK_FALSE(not_modified_of(changed));
+        CHECK(etag_of(changed) != etag);
+
+        // A catalog with no etag ignores if_none_match.
+        const auto alpha = attach(worker, "alpha");
+        const auto plain = contents_call(worker, alpha, std::string("anything"));
+        CHECK_FALSE(not_modified_of(plain));
+        CHECK_FALSE(etag_of(plain));
+    }
+
+    SECTION("not_modified needs the matching etag") {
+        CHECK_THROWS(contents_call(worker, attach(worker, "bad"), std::nullopt));
+    }
+}
+
+TEST_CASE("catalog_contents_digest is deterministic and covers every part", "[catalog][contents]") {
+    vgi::SchemaContents schema;
+    schema.path = {"main"};
+    schema.schema = "info";
+    schema.tables = {"t"};
+    const auto digest = vgi::catalog_contents_digest({schema});
+    // Computed by vgi-python's catalog_contents_digest over the same snapshot:
+    // the content-hash etag must agree byte for byte across SDKs.
+    CHECK(digest == "c46f04af1c42014e1663526c9a195044c7eef5346e97a7d1ffad5aa95164ee0f");
+    auto moved = schema;
+    moved.tables.clear();
+    moved.views = {"t"};
+    CHECK(vgi::catalog_contents_digest({moved}) != digest);
+    // The empty answer: SHA-256 of one zero length prefix.
+    CHECK(vgi::catalog_contents_digest({}) ==
+          "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc");
 }

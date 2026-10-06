@@ -23,6 +23,7 @@
 #include "vgi/copy_from.h"
 #include "vgi/copy_to.h"
 #include "vgi/table_in_out.h"
+#include "memory_catalog.h"
 #include "split_token.h"
 
 namespace vgi {
@@ -84,6 +85,10 @@ public:
                                   std::shared_ptr<TableInOutFunction> fn);
     void register_table_in_out_in(std::string catalog, SchemaPath schema_path,
                                   std::shared_ptr<TableInOutFunction> fn);
+    // Serve a DDL-capable in-memory catalog under `options.name`
+    // (vgi/catalog.h). Each ATTACH of it is private.
+    void register_memory_catalog(MemoryCatalogOptions options);
+
     void register_aggregate(std::shared_ptr<AggregateFunction> fn);
     void register_aggregate_in(std::string catalog, std::string schema,
                                std::shared_ptr<AggregateFunction> fn);
@@ -303,6 +308,20 @@ private:
     // when there is no seal — the engine asks some of these questions before
     // any attachment exists.
     Attachment attachment_of(const vgi_rpc::Request& request) const;
+
+    // The default composition of `catalog_contents` for an attachment of a
+    // declared catalog: every schema, parents first, with all its items.
+    std::vector<SchemaContents> compose_catalog_contents(const vgi_rpc::Request& request,
+                                                         const Attachment& attachment,
+                                                         const std::string& owner,
+                                                         const CatalogModel& model) const;
+
+    // Serve a `catalog_*` call addressed to a memory catalog, when it is one:
+    // by the ATTACH name for `catalog_attach`, otherwise by the attachment the
+    // request carries. False when the request is not a memory catalog's.
+    // `out` receives the answer for a method that has one.
+    bool route_memory_catalog(const std::string& method, const vgi_rpc::Request& request,
+                              std::optional<vgi_rpc::Result>* out);
     Attachment attachment_of(const std::shared_ptr<arrow::RecordBatch>& batch) const;
 
     // The schema `name`, as this attachment sees it.
@@ -351,6 +370,8 @@ private:
     // `catalog()` mean. Held indirectly so a reference handed out by
     // `catalog(name)` survives a later addition.
     std::vector<std::unique_ptr<CatalogModel>> catalogs_;
+    // DDL-capable in-memory catalogs, by name (register_memory_catalog).
+    std::map<std::string, std::shared_ptr<MemoryCatalog>> memory_catalogs_;
     std::optional<split_token::SigningKey> split_token_signing_key_;
     std::set<std::string> hidden_;
     // Built function listings, by (catalog, schema path, function type). The

@@ -175,6 +175,10 @@ void Worker::register_copy_from(std::shared_ptr<CopyFromFunction> reader) {
     disp_->register_copy_from(std::move(reader));
 }
 
+void Worker::register_memory_catalog(MemoryCatalogOptions options) {
+    disp_->register_memory_catalog(std::move(options));
+}
+
 void Worker::register_buffering(std::shared_ptr<TableBufferingFunction> fn) {
     disp_->register_buffering(std::move(fn));
 }

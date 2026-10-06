@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -228,6 +229,81 @@ struct CatalogSchema {
     std::vector<CatalogMacro> macros;
 };
 
+// One schema's entry in a `catalog_contents` answer: its path, its encoded
+// SchemaInfo, and the encoded items of each kind.
+struct SchemaContents {
+    SchemaPath path;
+    std::string schema;
+    std::vector<std::string> tables, views, scalar_functions, aggregate_functions, table_functions,
+        scalar_macros, table_macros, indexes;
+};
+
+// What a catalog answers `catalog_contents` with.
+//
+// `not_modified` is only valid with an `etag` equal to the call's
+// `if_none_match` and no schemas -- the cheap-validator short circuit. A full
+// answer whose etag equals `if_none_match` is turned into not_modified by the
+// framework, and with no etag at all `if_none_match` is ignored.
+struct CatalogContentsResult {
+    std::vector<SchemaContents> schemas;
+    std::optional<std::string> etag;
+    bool not_modified = false;
+};
+
+// One `catalog_contents` call, as a handler sees it.
+struct CatalogContentsCall {
+    std::string catalog_name;
+    // The version the catalog reports for this attachment.
+    int64_t catalog_version = 0;
+    std::optional<std::string> if_none_match;
+    // The default composition: every schema of the attachment with all its
+    // items. A cheap validator answers not_modified without calling it.
+    std::function<std::vector<SchemaContents>()> contents;
+};
+
+// Overrides how a catalog answers `catalog_contents` -- to revalidate with an
+// etag of its own, or (a test fixture) to fail and drive the client's
+// per-schema fallback.
+using CatalogContentsHandler = std::function<CatalogContentsResult(const CatalogContentsCall&)>;
+
+// A framework-computed etag for `catalog_contents`.
+enum class CatalogContentsEtag {
+    None,
+    // SHA-256 of the answer's contents (catalog_contents_digest): every call
+    // builds the snapshot, and a matching `if_none_match` is answered
+    // not_modified.
+    ContentHash,
+};
+
+// The content-hash etag of a `catalog_contents` answer: lowercase hex SHA-256
+// over a length-prefixed encoding of every schema's path, SchemaInfo and the
+// items of each kind, in order. Byte-for-byte vgi-python's
+// `catalog_contents_digest` (and vgi-go's `CatalogContentsDigest`), so equal
+// catalogs hash alike in every SDK.
+std::string catalog_contents_digest(const std::vector<SchemaContents>& schemas);
+
+// A DDL-capable in-memory catalog (Worker::register_memory_catalog).
+//
+// Accepts CREATE / DROP SCHEMA, TABLE (definitions only: it holds no rows) and
+// VIEW. Every ATTACH is private: it starts from an empty `main` schema and
+// never sees another attachment's objects, even in one worker process. Its
+// version starts at 1, is bumped by every DDL, and is not frozen.
+//
+// State lives in the worker process that served the ATTACH, which on every
+// transport this SDK offers is the one serving the rest of that session.
+struct MemoryCatalogOptions {
+    std::string name;
+    std::optional<std::string> comment;
+    // Report catalog_version 0 ("unknown") always: a catalog that does not
+    // track its version, which a client re-checks at every transaction start.
+    bool unversioned = false;
+    // Advertise `supports_catalog_contents` at ATTACH (default on).
+    bool supports_catalog_contents = true;
+    // Answer catalog_contents this way instead of the plain snapshot.
+    CatalogContentsHandler catalog_contents_handler;
+    CatalogContentsEtag catalog_contents_etag = CatalogContentsEtag::None;
+};
+
 // The catalog a worker advertises: what `ATTACH '<name>' (TYPE vgi)` binds to.
 //
 // A worker serves one primary catalog and may serve secondaries alongside it,
@@ -285,6 +361,10 @@ struct CatalogModel {
     // read-only, so the composed answer is exactly the per-schema one.  Turn
     // it off to force the per-schema path.
     bool supports_catalog_contents = true;
+    // How `catalog_contents` is answered, when not the default composition
+    // (version-frozen, no etag). See CatalogContentsHandler.
+    CatalogContentsHandler catalog_contents_handler;
+    CatalogContentsEtag catalog_contents_etag = CatalogContentsEtag::None;
 
     // Settings this catalog introduces to the engine.
     std::vector<SettingSpec> settings;

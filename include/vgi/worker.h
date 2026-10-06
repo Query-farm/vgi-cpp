@@ -91,6 +91,11 @@ public:
     void register_aggregate_in(std::string catalog, SchemaPath schema_path,
                                std::shared_ptr<AggregateFunction> fn);
 
+    // Serve a DDL-capable in-memory catalog (see MemoryCatalogOptions in
+    // vgi/catalog.h) beside this worker's declared catalogs. Each ATTACH of it
+    // is private and starts from an empty `main` schema.
+    void register_memory_catalog(MemoryCatalogOptions options);
+
     void register_buffering(std::shared_ptr<TableBufferingFunction> fn);
 
     // A `COPY … TO (FORMAT …)` writer. Registers its handler as a buffering

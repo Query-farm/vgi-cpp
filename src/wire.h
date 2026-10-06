@@ -32,6 +32,7 @@
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
+#include "vgi/catalog.h"
 #include "vgi/types.h"
 
 namespace vgi::wire {
@@ -163,6 +164,9 @@ public:
     ResultBuilder& set_bool(const std::string& field, bool value);
     ResultBuilder& set_int64(const std::string& field, int64_t value);
     ResultBuilder& set_null(const std::string& field);
+    // A column copied as-is from another batch: its first value, which must
+    // have the result field's exact type.
+    ResultBuilder& set_array(const std::string& field, const std::shared_ptr<arrow::Array>& value);
     // Sets the value, or null when there is none. The pair appears often
     // enough that spelling it out at each site invites getting one wrong.
     ResultBuilder& set_optional_string(const std::string& field,
@@ -202,18 +206,10 @@ public:
     // The `examples` column: a list of {sql, description, expected_output}.
     ResultBuilder& set_examples(const std::string& field,
                                 const std::vector<FunctionExample>& examples);
-    // One schema's entry in a `catalog_contents` answer: its path, its
-    // encoded SchemaInfo, and the encoded items of each kind.
-    struct SchemaContentsRow {
-        std::vector<std::string> path;
-        std::string schema;
-        std::vector<std::string> tables, views, scalar_functions, aggregate_functions,
-            table_functions, scalar_macros, table_macros, indexes;
-    };
     // The `schemas` column of CatalogContentsResponse: a list of inline
     // SchemaContents structs, built against the schema's own struct type.
     ResultBuilder& set_schema_contents(const std::string& field,
-                                       const std::vector<SchemaContentsRow>& rows);
+                                       const std::vector<SchemaContents>& rows);
     // A list<{namespace: utf8, name: utf8, version: uint64}> capability field.
     ResultBuilder& set_filter_identities(
         const std::string& field,

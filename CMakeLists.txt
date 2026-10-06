@@ -72,6 +72,8 @@ add_library(vgi
     src/portable.cpp
     src/split_token.cpp
     src/catalog.cpp
+    src/catalog_contents.cpp
+    src/memory_catalog.cpp
     src/arg_schema.cpp
     src/function_dispatch.cpp
     src/arguments.cpp
