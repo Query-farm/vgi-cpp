@@ -225,6 +225,10 @@ public:
 
 }  // namespace
 
+std::shared_ptr<vgi::ScalarFunction> make_double() {
+    return std::make_shared<Double>();
+}
+
 void register_arithmetic(vgi::Worker& worker) {
     worker.register_scalar(std::make_shared<Double>());
     worker.register_scalar(std::make_shared<AddValues>());

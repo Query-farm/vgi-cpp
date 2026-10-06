@@ -146,6 +146,10 @@ public:
 
 }  // namespace
 
+std::shared_ptr<vgi::TableFunction> make_sequence() {
+    return std::make_shared<Sequence>();
+}
+
 void register_table_functions(vgi::Worker& worker) {
     worker.register_table(std::make_shared<Sequence>());
 }

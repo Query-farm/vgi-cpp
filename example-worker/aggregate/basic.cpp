@@ -232,6 +232,10 @@ private:
 
 }  // namespace
 
+std::shared_ptr<vgi::AggregateFunction> make_vgi_sum() {
+    return std::make_shared<Sum>();
+}
+
 void register_aggregates(vgi::Worker& worker) {
     worker.register_aggregate(std::make_shared<Sum>());
     worker.register_aggregate(std::make_shared<Count>());

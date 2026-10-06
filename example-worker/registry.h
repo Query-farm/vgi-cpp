@@ -24,6 +24,15 @@ void register_conformance_fixtures(vgi::Worker& worker, int argc, char** argv);
 // secret_cache_nonce / secret_cached_scalar / secret_cached_lateral: the
 // secret-dependent result-cache fixtures (cache/secret_scope.test).
 void register_secret_cache(vgi::Worker& worker);
+// The catalog_contents fixture catalogs (contents_probe, _broken, _legacy,
+// _memory, _reval, _hash): vgi-python's _test_fixtures/catalog_contents.py,
+// the cross-SDK contract the catalog_contents*.test files run against.
+void register_catalog_contents(vgi::Worker& worker);
+// Fresh instances of example-catalog functions, for fixtures that home them in
+// another catalog.
+std::shared_ptr<vgi::ScalarFunction> make_double();
+std::shared_ptr<vgi::AggregateFunction> make_vgi_sum();
+std::shared_ptr<vgi::TableFunction> make_sequence();
 void register_arithmetic(vgi::Worker& worker);
 void register_strings(vgi::Worker& worker);
 void register_seeded(vgi::Worker& worker);

@@ -116,6 +116,7 @@ int main(int argc, char** argv) {
         example::register_attach_options(worker);
     }
     if (composite) {
+        example::register_catalog_contents(worker);
         example::register_accumulate(worker);
         example::register_projection_repro(worker);
         example::register_extra_catalogs(worker);
