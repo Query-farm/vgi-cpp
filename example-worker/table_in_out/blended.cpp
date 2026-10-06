@@ -327,8 +327,10 @@ public:
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         bool absolute = false;
         if (auto flag = params.arguments.named("absolute")) {
-            const auto& flags =
-                static_cast<const arrow::BooleanArray&>(*cast_to(flag, arrow::boolean()));
+            // Keep the cast result alive: a reference into a temporary dangles once
+            // the cast actually converts (e.g. DuckDB sending a view type).
+            const auto flags_owner = cast_to(flag, arrow::boolean());
+            const auto& flags = static_cast<const arrow::BooleanArray&>(*flags_owner);
             absolute = flags.length() > 0 && !flags.IsNull(0) && flags.Value(0);
         }
 
@@ -423,8 +425,10 @@ public:
     std::vector<vgi::EmittedBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        const auto& values =
-            static_cast<const arrow::Int64Array&>(*cast_to(batch->column(0), arrow::int64()));
+        // Keep the cast result alive: a reference into a temporary dangles once
+        // the cast actually converts (e.g. DuckDB sending a view type).
+        const auto values_owner = cast_to(batch->column(0), arrow::int64());
+        const auto& values = static_cast<const arrow::Int64Array&>(*values_owner);
 
         std::vector<std::shared_ptr<arrow::Array>> columns;
         for (int i = 0; i < params.output_schema->num_fields(); ++i) {

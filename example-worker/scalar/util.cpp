@@ -9,7 +9,11 @@ namespace example {
 
 std::shared_ptr<arrow::RecordBatch> result(const vgi::ProcessParams& params,
                                            std::shared_ptr<arrow::Array> array) {
-    return arrow::RecordBatch::Make(params.output_schema, array->length(), {std::move(array)});
+    if (!array) throw std::runtime_error("scalar produced no result array");
+    // Read the length before the move: argument evaluation order is unspecified,
+    // and gcc on x86-64 evaluates right to left, moving `array` out first.
+    const int64_t length = array->length();
+    return arrow::RecordBatch::Make(params.output_schema, length, {std::move(array)});
 }
 
 std::shared_ptr<arrow::Array> cast_to(const std::shared_ptr<arrow::Array>& array,

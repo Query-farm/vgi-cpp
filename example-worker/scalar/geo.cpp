@@ -160,7 +160,9 @@ public:
             (void)out.Append(std::sqrt(dy * dy + dx * dx));
         }
         std::shared_ptr<arrow::Array> array;
-        (void)out.Finish(&array);
+        if (auto st = out.Finish(&array); !st.ok()) {
+            throw std::runtime_error("finishing the result: " + st.ToString());
+        }
         return result(params, array);
     }
 
@@ -229,7 +231,9 @@ public:
             (void)lon_builder->Append(lon_sum / static_cast<double>(counted));
         }
         std::shared_ptr<arrow::Array> array;
-        (void)out.Finish(&array);
+        if (auto st = out.Finish(&array); !st.ok()) {
+            throw std::runtime_error("finishing the result: " + st.ToString());
+        }
         return result(params, array);
     }
 

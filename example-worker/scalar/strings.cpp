@@ -50,7 +50,10 @@ std::shared_ptr<arrow::Array> as_strings(const std::shared_ptr<arrow::Array>& ar
 // Apply `fn` to every non-null string, producing a string column.
 template <typename Fn>
 std::shared_ptr<arrow::Array> map_strings(const std::shared_ptr<arrow::Array>& column, Fn fn) {
-    const auto& values = static_cast<const arrow::StringArray&>(*as_strings(column));
+    // Keep the cast result alive: a reference into a temporary dangles once
+    // the cast actually converts (e.g. DuckDB sending a view type).
+    const auto values_owner = as_strings(column);
+    const auto& values = static_cast<const arrow::StringArray&>(*values_owner);
     arrow::StringBuilder out;
     (void)out.Reserve(values.length());
     for (int64_t i = 0; i < values.length(); ++i) {

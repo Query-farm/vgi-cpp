@@ -155,7 +155,9 @@ public:
             }
         }
         std::shared_ptr<arrow::Array> array;
-        (void)out.Finish(&array);
+        if (auto st = out.Finish(&array); !st.ok()) {
+            throw std::runtime_error("finishing the result: " + st.ToString());
+        }
         return result(params, array);
     }
 };
@@ -201,7 +203,10 @@ std::shared_ptr<arrow::DataType> packet_config_type() {
 // that through a `BinaryArray&` walks 32-bit offsets over a 64-bit buffer.
 std::string const_bytes(const std::shared_ptr<arrow::Array>& array) {
     if (!array || array->length() == 0 || array->IsNull(0)) return {};
-    const auto& values = static_cast<const arrow::BinaryArray&>(*cast_to(array, arrow::binary()));
+    // Keep the cast result alive: a reference into a temporary dangles once
+    // the cast actually converts (e.g. DuckDB sending a view type).
+    const auto values_owner = cast_to(array, arrow::binary());
+    const auto& values = static_cast<const arrow::BinaryArray&>(*values_owner);
     return values.GetString(0);
 }
 
@@ -237,8 +242,10 @@ public:
         const std::string header = const_bytes(params.arguments.positional(0));
         const std::string suffix = packet_suffix(params.arguments.positional(2));
 
-        const auto& payload =
-            static_cast<const arrow::BinaryArray&>(*cast_to(batch->column(0), arrow::binary()));
+        // Keep the cast result alive: a reference into a temporary dangles once
+        // the cast actually converts (e.g. DuckDB sending a view type).
+        const auto payload_owner = cast_to(batch->column(0), arrow::binary());
+        const auto& payload = static_cast<const arrow::BinaryArray&>(*payload_owner);
 
         arrow::BinaryBuilder out;
         (void)out.Reserve(payload.length());
@@ -251,7 +258,9 @@ public:
             (void)out.Append(packet);
         }
         std::shared_ptr<arrow::Array> array;
-        (void)out.Finish(&array);
+        if (auto st = out.Finish(&array); !st.ok()) {
+            throw std::runtime_error("finishing the result: " + st.ToString());
+        }
         return result(params, array);
     }
 
@@ -264,13 +273,17 @@ private:
         auto fields = std::dynamic_pointer_cast<arrow::StructArray>(config);
         if (fields && fields->length() > 0) {
             if (auto label = fields->GetFieldByName("label")) {
-                const auto& labels =
-                    static_cast<const arrow::StringArray&>(*cast_to(label, arrow::utf8()));
+                // Keep the cast result alive: a reference into a temporary dangles once
+                // the cast actually converts (e.g. DuckDB sending a view type).
+                const auto labels_owner = cast_to(label, arrow::utf8());
+                const auto& labels = static_cast<const arrow::StringArray&>(*labels_owner);
                 if (!labels.IsNull(0)) suffix = labels.GetString(0);
             }
             if (auto declared = fields->GetFieldByName("version")) {
-                const auto& versions =
-                    static_cast<const arrow::Int64Array&>(*cast_to(declared, arrow::int64()));
+                // Keep the cast result alive: a reference into a temporary dangles once
+                // the cast actually converts (e.g. DuckDB sending a view type).
+                const auto versions_owner = cast_to(declared, arrow::int64());
+                const auto& versions = static_cast<const arrow::Int64Array&>(*versions_owner);
                 if (!versions.IsNull(0)) version = versions.Value(0);
             }
         }
