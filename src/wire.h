@@ -202,6 +202,18 @@ public:
     // The `examples` column: a list of {sql, description, expected_output}.
     ResultBuilder& set_examples(const std::string& field,
                                 const std::vector<FunctionExample>& examples);
+    // One schema's entry in a `catalog_contents` answer: its path, its
+    // encoded SchemaInfo, and the encoded items of each kind.
+    struct SchemaContentsRow {
+        std::vector<std::string> path;
+        std::string schema;
+        std::vector<std::string> tables, views, scalar_functions, aggregate_functions,
+            table_functions, scalar_macros, table_macros, indexes;
+    };
+    // The `schemas` column of CatalogContentsResponse: a list of inline
+    // SchemaContents structs, built against the schema's own struct type.
+    ResultBuilder& set_schema_contents(const std::string& field,
+                                       const std::vector<SchemaContentsRow>& rows);
     // A list<{namespace: utf8, name: utf8, version: uint64}> capability field.
     ResultBuilder& set_filter_identities(
         const std::string& field,

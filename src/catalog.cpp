@@ -546,7 +546,8 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      .set_optional_string("resolved_data_version", resolved_data)
                      .set_optional_string("resolved_implementation_version", resolved_impl)
                      .set_binary_list("settings", encode_settings(model))
-                     .set_binary_list("secret_types", encode_secret_types(model));
+                     .set_binary_list("secret_types", encode_secret_types(model))
+                     .set_bool("supports_catalog_contents", model.supports_catalog_contents);
     if (model.comment) {
         batch.set_string("comment", *model.comment);
     } else {
@@ -1087,6 +1088,67 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
                         .set_binary_list("items", items)
+                        .finish());
+}
+
+vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request) {
+    const auto attachment = attachment_of(request);
+    const auto owner = seal_attachment(attachment);
+    const auto* model = find_catalog(attachment.catalog);
+    if (!model) model = &catalog();
+
+    // Parents before children, otherwise in declaration order: the engine
+    // creates schemas as it reads them. Stable, so a flat catalog keeps the
+    // order catalog_schemas answers in.
+    std::vector<const CatalogSchema*> ordered;
+    ordered.reserve(model->schemas.size());
+    for (const auto& schema : model->schemas) ordered.push_back(schema.get());
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [](const auto* a, const auto* b) { return a->path.size() < b->path.size(); });
+
+    std::vector<wire::ResultBuilder::SchemaContentsRow> rows;
+    rows.reserve(ordered.size());
+    for (const auto* schema : ordered) {
+        const auto& path = schema->path;
+        // What this attachment is shown, which for a versioned catalog is not
+        // the declared schema -- the same lookup the per-schema calls make.
+        const auto* contents = schema_for(request, path);
+
+        wire::ResultBuilder::SchemaContentsRow row;
+        row.path = path;
+        row.schema = encode_schema_info(attachment.catalog, owner, *schema, contents);
+        if (contents) {
+            for (const auto& table : contents->tables) {
+                row.tables.push_back(
+                    encode_table_info(table, path, resolve_version(table, {}, {})));
+            }
+            for (const auto& view : contents->views) {
+                row.views.push_back(encode_view_info(view, path));
+            }
+            for (const auto& macro : contents->macros) {
+                (macro.table_macro ? row.table_macros : row.scalar_macros)
+                    .push_back(encode_macro_info(macro, path));
+            }
+        }
+        // The cached per-schema listings, so a function is encoded once
+        // however the engine asks for it.
+        row.scalar_functions =
+            *function_listing(attachment.catalog, path, enums::function_type::kScalar);
+        row.aggregate_functions =
+            *function_listing(attachment.catalog, path, enums::function_type::kAggregate);
+        row.table_functions =
+            *function_listing(attachment.catalog, path, enums::function_type::kTable);
+        // No index API in this SDK: always empty, as catalog_schema_contents_indexes.
+        rows.push_back(std::move(row));
+    }
+
+    // No etag: this SDK does not revalidate, so `if_none_match` is ignored and
+    // the answer is never not_modified (WIRE: an absent etag never yields it).
+    return envelope(wire::ResultBuilder(payload_schema_of("catalog_contents"))
+                        .set_int64("catalog_version", *current_catalog_version(request))
+                        .set_null("etag")
+                        .set_bool("not_modified", false)
+                        .set_schema_contents("schemas", rows)
                         .finish());
 }
 

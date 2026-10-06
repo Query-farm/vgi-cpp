@@ -156,6 +156,10 @@ public:
 
     vgi_rpc::Result catalog_attach(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_schemas(const vgi_rpc::Request& request);
+    // The whole catalog in one call (protocol 2.1.0): every schema and every
+    // object in it, composed from the same encoders the per-schema listings
+    // use, so each item is byte-for-byte what those would have answered.
+    vgi_rpc::Result catalog_contents(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_schema_get(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_schema_contents_functions(const vgi_rpc::Request& request);
     vgi_rpc::Result catalog_schema_contents_tables(const vgi_rpc::Request& request);

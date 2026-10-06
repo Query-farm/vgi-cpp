@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -30,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include <arrow/array.h>
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
@@ -405,4 +407,163 @@ TEST_CASE("combine accepts an empty state_ids list", "[buffering]") {
     CHECK(reduction->combined[0].empty());
     CHECK(vgi::wire::get_binary_list(reply, "finalize_state_ids") ==
           std::vector<std::string>{execution_id});
+}
+
+namespace {
+
+// One schema's SchemaContents from a catalog_contents payload, by path.
+struct ContentsRow {
+    std::vector<std::string> tables, views, scalar_functions, aggregate_functions, table_functions,
+        scalar_macros, table_macros, indexes;
+    std::string schema;
+};
+
+std::vector<std::string> binary_list_at(const std::shared_ptr<arrow::Array>& column, int64_t row) {
+    const auto list = std::static_pointer_cast<arrow::ListArray>(column);
+    const auto values = std::static_pointer_cast<arrow::BinaryArray>(list->values());
+    std::vector<std::string> out;
+    for (int64_t i = list->value_offset(row); i < list->value_offset(row + 1); ++i) {
+        out.push_back(values->GetString(i));
+    }
+    return out;
+}
+
+std::map<std::vector<std::string>, ContentsRow> contents_by_path(
+    const std::shared_ptr<arrow::RecordBatch>& payload) {
+    const auto schemas =
+        std::static_pointer_cast<arrow::ListArray>(payload->GetColumnByName("schemas"));
+    const auto rows = std::static_pointer_cast<arrow::StructArray>(schemas->values());
+    std::map<std::vector<std::string>, ContentsRow> out;
+    for (int64_t r = schemas->value_offset(0); r < schemas->value_offset(1); ++r) {
+        const auto path_list =
+            std::static_pointer_cast<arrow::ListArray>(rows->GetFieldByName("path"));
+        const auto path_values = std::static_pointer_cast<arrow::StringArray>(path_list->values());
+        std::vector<std::string> path;
+        for (int64_t i = path_list->value_offset(r); i < path_list->value_offset(r + 1); ++i) {
+            path.push_back(path_values->GetString(i));
+        }
+        ContentsRow row;
+        row.schema = std::static_pointer_cast<arrow::BinaryArray>(rows->GetFieldByName("schema"))
+                         ->GetString(r);
+        row.tables = binary_list_at(rows->GetFieldByName("tables"), r);
+        row.views = binary_list_at(rows->GetFieldByName("views"), r);
+        row.scalar_functions = binary_list_at(rows->GetFieldByName("scalar_functions"), r);
+        row.aggregate_functions = binary_list_at(rows->GetFieldByName("aggregate_functions"), r);
+        row.table_functions = binary_list_at(rows->GetFieldByName("table_functions"), r);
+        row.scalar_macros = binary_list_at(rows->GetFieldByName("scalar_macros"), r);
+        row.table_macros = binary_list_at(rows->GetFieldByName("table_macros"), r);
+        row.indexes = binary_list_at(rows->GetFieldByName("indexes"), r);
+        out[path] = std::move(row);
+    }
+    return out;
+}
+
+std::vector<std::string> per_schema(Served& worker, const std::string& method,
+                                    const std::shared_ptr<arrow::Schema>& params_schema,
+                                    const std::string& handle, const vgi::SchemaPath& path,
+                                    const std::string& type = "") {
+    auto builder = vgi::wire::ResultBuilder(params_schema)
+                       .set_binary("attach_opaque_data", handle)
+                       .set_string_list("path", path);
+    if (params_schema->GetFieldIndex("type") >= 0) builder.set_enum("type", type);
+    return vgi::wire::get_binary_list(worker.call(method, builder.fill_defaults().finish()),
+                                      "items");
+}
+
+}  // namespace
+
+TEST_CASE("catalog_contents answers exactly what the per-schema listings do",
+          "[catalog][contents]") {
+    // The engine trusts either path to describe the same catalog
+    // (catalog_contents_conformance.test compares them): every item in the
+    // one-call answer must be the per-schema answer's item, byte for byte.
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "alpha";
+    dispatcher.register_scalar(std::make_shared<Scalar>("twice", "main scalar"));
+    dispatcher.register_table(std::make_shared<Table>("rows", "main table"));
+    dispatcher.register_aggregate(std::make_shared<Aggregate>("total", "main aggregate"));
+    dispatcher.register_scalar_in("alpha", "side", std::make_shared<Scalar>("twice", "side"));
+    vgi::CatalogMacro scalar_macro;
+    scalar_macro.name = "add_one";
+    scalar_macro.parameters = {"x"};
+    scalar_macro.definition = "x + 1";
+    dispatcher.catalog().schema("main").macros.push_back(scalar_macro);
+    vgi::CatalogMacro table_macro;
+    table_macro.name = "one_row";
+    table_macro.definition = "SELECT 1 AS n";
+    table_macro.table_macro = true;
+    dispatcher.catalog().schema("main").macros.push_back(table_macro);
+
+    Served worker(dispatcher);
+    const auto handle = attach(worker, "alpha");
+
+    const auto params = vgi::wire::ResultBuilder(gen::CatalogContentsParamsSchema())
+                            .set_binary("attach_opaque_data", handle)
+                            .set_null("if_none_match")
+                            .finish();
+    const auto payload = worker.call("catalog_contents", params);
+    CHECK_FALSE(
+        std::static_pointer_cast<arrow::BooleanArray>(payload->GetColumnByName("not_modified"))
+            ->Value(0));
+    CHECK(payload->GetColumnByName("etag")->IsNull(0));
+
+    const auto contents = contents_by_path(payload);
+    const auto schema_items = vgi::wire::get_binary_list(
+        worker.call("catalog_schemas", vgi::wire::ResultBuilder(gen::CatalogSchemasParamsSchema())
+                                           .set_binary("attach_opaque_data", handle)
+                                           .fill_defaults()
+                                           .finish()),
+        "items");
+    REQUIRE(contents.size() == schema_items.size());
+
+    for (const auto& path : {vgi::SchemaPath{"main"}, vgi::SchemaPath{"side"}}) {
+        INFO(path.back());
+        REQUIRE(contents.count(path) == 1);
+        const auto& row = contents.at(path);
+        const auto fn = [&](const std::string& type) {
+            return per_schema(worker, "catalog_schema_contents_functions",
+                              gen::CatalogSchemaContentsFunctionsParamsSchema(), handle, path,
+                              type);
+        };
+        CHECK(row.scalar_functions == fn("SCALAR_FUNCTION"));
+        CHECK(row.aggregate_functions == fn("AGGREGATE_FUNCTION"));
+        CHECK(row.table_functions == fn("TABLE_FUNCTION"));
+        CHECK(row.tables == per_schema(worker, "catalog_schema_contents_tables",
+                                       gen::CatalogSchemaContentsTablesParamsSchema(), handle,
+                                       path));
+        CHECK(row.views == per_schema(worker, "catalog_schema_contents_views",
+                                      gen::CatalogSchemaContentsViewsParamsSchema(), handle, path));
+        CHECK(row.scalar_macros == per_schema(worker, "catalog_schema_contents_macros",
+                                              gen::CatalogSchemaContentsMacrosParamsSchema(),
+                                              handle, path, "SCALAR_MACRO"));
+        CHECK(row.table_macros == per_schema(worker, "catalog_schema_contents_macros",
+                                             gen::CatalogSchemaContentsMacrosParamsSchema(), handle,
+                                             path, "TABLE_MACRO"));
+        CHECK(row.indexes.empty());
+        CHECK(std::find(schema_items.begin(), schema_items.end(), row.schema) !=
+              schema_items.end());
+    }
+    CHECK(contents.at({"main"}).scalar_macros.size() == 1);
+    CHECK(contents.at({"main"}).table_macros.size() == 1);
+    CHECK(contents.at({"side"}).scalar_functions.size() == 1);
+}
+
+TEST_CASE("ATTACH advertises catalog_contents unless the catalog opts out", "[catalog][contents]") {
+    for (const bool advertised : {true, false}) {
+        vgi::Dispatcher dispatcher;
+        dispatcher.catalog().name = "alpha";
+        dispatcher.catalog().supports_catalog_contents = advertised;
+        Served worker(dispatcher);
+        const auto request = vgi::wire::ResultBuilder(gen::CatalogAttachRequestSchema())
+                                 .set_string("name", "alpha")
+                                 .fill_defaults()
+                                 .finish();
+        const auto result =
+            worker.call("catalog_attach", vgi::wire::ResultBuilder(gen::CatalogAttachParamsSchema())
+                                              .set_binary("request", vgi::wire::encode_ipc(request))
+                                              .finish());
+        CHECK(std::static_pointer_cast<arrow::BooleanArray>(
+                  result->GetColumnByName("supports_catalog_contents"))
+                  ->Value(0) == advertised);
+    }
 }

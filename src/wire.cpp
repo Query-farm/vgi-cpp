@@ -583,6 +583,68 @@ ResultBuilder& ResultBuilder::set_secret_lookups(
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_schema_contents(const std::string& field,
+                                                  const std::vector<SchemaContentsRow>& rows) {
+    const int index = field_index(field);
+    // Against the schema's own struct type, children reached by name: field
+    // order and nullability are the generator's to decide.
+    const auto& list_type = schema_->field(index)->type();
+    std::unique_ptr<arrow::ArrayBuilder> raw;
+    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), list_type, &raw),
+             "building schema contents field '" + field + "'");
+    auto* list = dynamic_cast<arrow::ListBuilder*>(raw.get());
+    if (!list) fail("result field '" + field + "' is not a list");
+    auto* entry = dynamic_cast<arrow::StructBuilder*>(list->value_builder());
+    if (!entry) fail("result field '" + field + "' is not a list of structs");
+
+    // The struct type held by value, for the reason string_child gives.
+    const auto entry_type = entry->type();
+    const auto& struct_type = static_cast<const arrow::StructType&>(*entry_type);
+    const auto child = [&](const char* name) -> arrow::ArrayBuilder* {
+        const int i = struct_type.GetFieldIndex(name);
+        if (i < 0) fail(std::string("SchemaContents has no field '") + name + "'");
+        return entry->field_builder(i);
+    };
+    const auto append_list = [&](const char* name, const std::vector<std::string>& values,
+                                 bool utf8) {
+        auto* items = dynamic_cast<arrow::ListBuilder*>(child(name));
+        if (!items) fail(std::string("SchemaContents field '") + name + "' is not a list");
+        check_ok(items->Append(), std::string("opening SchemaContents.") + name);
+        for (const auto& value : values) {
+            if (utf8) {
+                auto* b = dynamic_cast<arrow::StringBuilder*>(items->value_builder());
+                if (!b) fail(std::string("SchemaContents.") + name + " is not list<utf8>");
+                check_ok(b->Append(value), std::string("appending SchemaContents.") + name);
+            } else {
+                auto* b = dynamic_cast<arrow::BinaryBuilder*>(items->value_builder());
+                if (!b) fail(std::string("SchemaContents.") + name + " is not list<binary>");
+                check_ok(b->Append(value), std::string("appending SchemaContents.") + name);
+            }
+        }
+    };
+
+    check_ok(list->Append(), "opening schema contents field '" + field + "'");
+    for (const auto& row : rows) {
+        check_ok(entry->Append(), "opening a SchemaContents struct");
+        append_list("path", row.path, true);
+        auto* schema = dynamic_cast<arrow::BinaryBuilder*>(child("schema"));
+        if (!schema) fail("SchemaContents.schema is not binary");
+        check_ok(schema->Append(row.schema), "appending SchemaContents.schema");
+        append_list("tables", row.tables, false);
+        append_list("views", row.views, false);
+        append_list("scalar_functions", row.scalar_functions, false);
+        append_list("aggregate_functions", row.aggregate_functions, false);
+        append_list("table_functions", row.table_functions, false);
+        append_list("scalar_macros", row.scalar_macros, false);
+        append_list("table_macros", row.table_macros, false);
+        append_list("indexes", row.indexes, false);
+    }
+    std::shared_ptr<arrow::Array> array;
+    check_ok(list->Finish(&array), "finishing schema contents field '" + field + "'");
+    arrays_[static_cast<size_t>(index)] = std::move(array);
+    return *this;
+}
+
 ResultBuilder& ResultBuilder::set_examples(const std::string& field,
                                            const std::vector<FunctionExample>& examples) {
     const int index = field_index(field);

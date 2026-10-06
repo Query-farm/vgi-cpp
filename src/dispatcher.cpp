@@ -252,6 +252,7 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         {"catalog_macro_get", &Dispatcher::catalog_macro_get},
         {"catalog_index_get", &Dispatcher::catalog_index_get},
         {"catalog_schemas", &Dispatcher::catalog_schemas},
+        {"catalog_contents", &Dispatcher::catalog_contents},
         {"catalog_schema_get", &Dispatcher::catalog_schema_get},
         {"catalog_schema_contents_functions", &Dispatcher::catalog_schema_contents_functions},
         {"catalog_schema_contents_tables", &Dispatcher::catalog_schema_contents_tables},

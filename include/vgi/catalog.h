@@ -278,6 +278,14 @@ struct CatalogModel {
     // back on every call the transaction covers.
     bool supports_transactions = false;
 
+    // Whether ATTACH advertises `supports_catalog_contents`, so the engine
+    // loads the whole catalog with one `catalog_contents` call instead of
+    // `catalog_schemas` plus a `catalog_schema_contents_*` call per schema and
+    // kind.  On by default: a catalog here is declared up front and served
+    // read-only, so the composed answer is exactly the per-schema one.  Turn
+    // it off to force the per-schema path.
+    bool supports_catalog_contents = true;
+
     // Settings this catalog introduces to the engine.
     std::vector<SettingSpec> settings;
     // Secret types this catalog introduces.

@@ -36,6 +36,11 @@ int main(int argc, char** argv) {
     } else if (catalog.name == "versioned_tables") {
         example::declare_versioned_tables(catalog);
     }
+    // The per-schema discovery path stays reachable: with this set the worker
+    // does not advertise catalog_contents, the shape an older worker has.
+    if (const char* off = std::getenv("VGI_WORKER_DISABLE_CATALOG_CONTENTS"); off && *off) {
+        catalog.supports_catalog_contents = false;
+    }
     worker.set_catalog(std::move(catalog));
 
     example::register_arithmetic(worker);

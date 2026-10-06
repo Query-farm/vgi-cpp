@@ -21,12 +21,17 @@ Run after regenerating the headers, then format (the output is not):
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 from collections import Counter
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VGI_PYTHON = pathlib.Path.home() / "Development" / "vgi-python"
+# Overridable, like scripts/regenerate_protocol.sh: the two must read the same
+# vgi-python tree or the method table and the schemas disagree.
+VGI_PYTHON = pathlib.Path(
+    os.environ.get("VGI_PYTHON", str(pathlib.Path.home() / "Development" / "vgi-python"))
+)
 
 
 def main() -> None:

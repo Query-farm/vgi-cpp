@@ -121,6 +121,8 @@ const std::vector<MethodSpec>& protocol_methods() {
         {"catalog_schema_contents_functions", MethodKind::Result,
          gen::CatalogSchemaContentsFunctionsParamsSchema(),
          gen::CatalogSchemaContentsFunctionsResultSchema(), false},  // -> FunctionsResponse
+        {"catalog_contents", MethodKind::Result, gen::CatalogContentsParamsSchema(),
+         gen::CatalogContentsResultSchema(), false},  // -> CatalogContentsResponse
         {"catalog_copy_from_formats", MethodKind::Result, gen::CatalogCopyFromFormatsParamsSchema(),
          gen::CatalogCopyFromFormatsResultSchema(), false},  // -> CopyFromFormatsResponse
         {"catalog_table_get", MethodKind::Result, gen::CatalogTableGetParamsSchema(),
