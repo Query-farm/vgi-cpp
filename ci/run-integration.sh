@@ -90,6 +90,12 @@ fi
 # run everywhere.
 WIN_SKIP=()
 
+# catalog_contents{,_ddl,_versions,_revalidation}.test attach the contents_*
+# fixture catalogs (probe, reval, memory, hash) that every other SDK worker now
+# serves (vgi 47b1f88). The C++ worker does not serve them yet: it needs
+# multi-catalog routing, a DDL-capable memory catalog and etag revalidation
+# (see vgi-go 6e2e1ca). Skipped until that port lands; the generic
+# catalog_contents_conformance.test still runs on every lane.
 echo "Staging preprocessed tests into $STAGE (transport=$TRANSPORT, windows=$WINDOWS) ..."
 mkdir -p "$STAGE/test/sql/integration"
 if ! ( cd "$INTEGRATION" || exit 1
@@ -97,6 +103,8 @@ if ! ( cd "$INTEGRATION" || exit 1
        -not -path '*/writable/*' -not -path '*/simple_writable/*' \
        -not -name 'nested_type_combinations.test' \
        -not -name 'expression_filter.test' \
+       -not -name 'catalog_contents.test' -not -name 'catalog_contents_ddl.test' \
+       -not -name 'catalog_contents_versions.test' -not -name 'catalog_contents_revalidation.test' \
        ${HTTP_SKIP[@]+"${HTTP_SKIP[@]}"} ${WIN_SKIP[@]+"${WIN_SKIP[@]}"} | while read -r f; do
     mkdir -p "$STAGE/test/sql/integration/$(dirname "$f")" || exit 1
     awk -v http="$AWK_HTTP" -f "$HERE/preprocess-require.awk" "$f" \
