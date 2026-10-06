@@ -81,6 +81,9 @@ It drives `~/Development/vgi`'s `unittest` binary against the release worker.
 directory, and `VGI_CPP_TEST_CACHE` at a scratch directory — the last matters
 when two runs go at once, since they would otherwise share one log.
 
+See [Hosted protocols and Identity](docs/hosted-protocols.md) for serving
+other vgi-rpc protocols beside `vgi.v2` and for hosting `vgi_rpc.Identity.v1`.
+
 See [Iroh operations](docs/iroh.md) for the in-process C ABI client and
 identity-preserving raw or HTTP worker bridge setup.
 

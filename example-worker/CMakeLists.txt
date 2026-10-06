@@ -4,6 +4,7 @@
 # worker is.
 add_executable(vgi-example-worker
     main.cpp
+    conformance_fixtures.cpp
     scalar/util.cpp
     scalar/arithmetic.cpp
     scalar/strings.cpp

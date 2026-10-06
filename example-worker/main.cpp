@@ -115,6 +115,9 @@ int main(int argc, char** argv) {
         example::register_extra_catalogs(worker);
     }
 
+    // The cross-SDK vgi-rpc fixtures, hosted beside vgi.v2 on every transport.
+    example::register_conformance_fixtures(worker, argc, argv);
+
     // Serves until the engine disconnects; does not return.
     worker.run(argc, argv);
 }

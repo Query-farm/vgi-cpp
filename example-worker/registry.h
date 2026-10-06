@@ -17,6 +17,10 @@ class Worker;
 
 namespace example {
 
+// conformance.Secondary.v1 through Worker::set_hosted_protocols, and -- with
+// --conformance-identity / VGI_FIXTURE_IDENTITY=1 -- the vgi-rpc Identity
+// conformance policy on --http.  Test-only.
+void register_conformance_fixtures(vgi::Worker& worker, int argc, char** argv);
 void register_arithmetic(vgi::Worker& worker);
 void register_strings(vgi::Worker& worker);
 void register_seeded(vgi::Worker& worker);

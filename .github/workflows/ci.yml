@@ -57,10 +57,14 @@ jobs:
       # The SDK is built from source as a subdirectory, not from an installed
       # copy: the two move together, and an installed one goes stale silently.
       # CMakeLists.txt looks for it beside this repo by default.
+      #
+      # Pinned to a release: this SDK uses ProtocolBuilder/add_protocol, the
+      # error model and AuthUnavailableError, which first shipped in v0.6.0.
       - name: Check out vgi-rpc-cpp
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
+          ref: v0.6.0
           path: vgi-rpc-c++
 
       - name: Clone and bootstrap vcpkg
@@ -117,6 +121,44 @@ jobs:
           python3 -m pip install --quiet 'vgi-rpc[http]' || true
           test -x build/example-worker/vgi-example-worker
           echo "worker built: $(build/example-worker/vgi-example-worker --help 2>&1 | head -1 || true)"
+
+      # vgi-rpc's hosted-protocols group: the worker hosts vgi.v2 and, through
+      # Worker::set_hosted_protocols, conformance.Secondary.v1 -- on stdio,
+      # a unix socket and HTTP -- and over HTTP opts into vgi_rpc.Identity.v1
+      # with the conformance fixture policy.
+      - name: Setup Python (reference requires 3.13)
+        if: runner.os == 'Linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Hosted protocols (vgi-rpc-test-hosted)
+        if: runner.os == 'Linux'
+        # The reference is cloned from main, unpinned -- the same pattern
+        # vgi-rpc-cpp's CI uses: a reference change that breaks this SDK is
+        # meant to turn it red the day it lands.
+        run: |
+          git clone --depth 1 https://github.com/Query-farm/vgi-rpc-python.git ../vgi-rpc-ref
+          python -m venv ../hosted-venv
+          ../hosted-venv/bin/python -m pip install --quiet '../vgi-rpc-ref[http,conformance]' pytest pytest-timeout
+          export PATH="$PWD/../hosted-venv/bin:$PATH"
+          W="$PWD/build/example-worker/vgi-example-worker"
+          vgi-rpc-test-hosted --cmd "$W" --expect vgi.v2,conformance.Secondary.v1
+          SOCK=/tmp/vgi-hosted.sock
+          "$W" --unix "$SOCK" & UNIX_PID=$!
+          for _ in $(seq 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
+          vgi-rpc-test-hosted --unix "$SOCK" --expect vgi.v2,conformance.Secondary.v1
+          kill "$UNIX_PID"
+          "$W" --http --host 127.0.0.1 --port 0 --conformance-identity \
+            --introspect-principals conformance-introspector > /tmp/vgi-hosted-http.log 2>&1 & HTTP_PID=$!
+          PORT=""
+          for _ in $(seq 100); do
+            PORT=$(grep -m1 -o 'PORT:[0-9]*' /tmp/vgi-hosted-http.log | cut -d: -f2 || true)
+            [ -n "$PORT" ] && break; sleep 0.1
+          done
+          vgi-rpc-test-hosted --url "http://127.0.0.1:$PORT" \
+            --expect vgi.v2,conformance.Secondary.v1 --identity
+          kill "$HTTP_PID"
 
   # The integration suite is the definition of done for this repo, and it needs
   # the DuckDB extension built from ~/Development/vgi — a large, separate build

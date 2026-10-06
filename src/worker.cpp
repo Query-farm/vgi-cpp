@@ -2,9 +2,11 @@
 #include "vgi/worker.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,6 +17,7 @@
 #include <vgi_rpc/identity.h>
 #include <vgi_rpc/iroh_identity.h>
 #include <vgi_rpc/server.h>
+#include <vgi_rpc/token_identity.h>
 
 #include "dispatcher.h"
 #include "landing.h"
@@ -214,16 +217,55 @@ void Worker::register_table_in_out_in(std::string catalog, SchemaPath schema_pat
     disp_->register_table_in_out_in(std::move(catalog), std::move(schema_path), std::move(fn));
 }
 
-void Worker::run(int argc, char** argv) {
-    // Arrow's compute kernels register themselves from a translation unit
-    // nothing here references, so linking statically drops it and `add`,
-    // `multiply` and friends are simply absent from the registry at runtime —
-    // while `cast`, which lives elsewhere, keeps working. That asymmetry makes
-    // it read like a missing feature flag rather than a linker artifact.
-    if (auto status = arrow::compute::Initialize(); !status.ok()) {
-        throw std::runtime_error("cannot initialize Arrow compute: " + status.ToString());
-    }
+void Worker::set_hosted_protocols(HostedProtocolsHook hook) {
+    hosted_protocols_ = std::move(hook);
+}
 
+void Worker::set_resolve_token(vgi_rpc::ResolveTokenHook hook) {
+    resolve_token_ = std::move(hook);
+}
+
+void Worker::set_mint_grant(vgi_rpc::MintGrantHook hook) {
+    mint_grant_ = std::move(hook);
+}
+
+void Worker::set_introspect_principals(std::vector<std::string> principals) {
+    introspect_principals_ = std::move(principals);
+}
+
+void Worker::configure_http(std::function<void(vgi_rpc::HttpConfig&)> hook) {
+    configure_http_ = std::move(hook);
+}
+
+namespace {
+
+std::vector<std::string> split_principals(const std::string& raw) {
+    std::vector<std::string> out;
+    size_t begin = 0;
+    while (begin <= raw.size()) {
+        const auto end = raw.find(',', begin);
+        auto item = raw.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+        const auto first = item.find_first_not_of(" \t");
+        const auto last = item.find_last_not_of(" \t");
+        if (first != std::string::npos) out.push_back(item.substr(first, last - first + 1));
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return out;
+}
+
+bool valid_routing_key(const std::string& name) {
+    if (name.empty() || name.size() > 255) return false;
+    const auto lead = static_cast<unsigned char>(name[0]);
+    if (!(std::isalpha(lead) || lead == '_')) return false;
+    return std::all_of(name.begin() + 1, name.end(),
+                       [](unsigned char c) { return std::isalnum(c) || c == '_' || c == '.'; });
+}
+
+}  // namespace
+
+std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
+                                                      const std::vector<std::string>& args) {
     // The `bad_protocol` fixture advertises an incompatible version through
     // this override, so the engine's ATTACH fails with a clear mismatch rather
     // than somewhere later in the query.
@@ -236,14 +278,108 @@ void Worker::run(int argc, char** argv) {
     // other name answers ProtocolNotSupported to every client that exists.
     // Only the version is overridable: `bad_protocol` must reach the version
     // gate it exists to test, which a renamed protocol never would.
-    builder.protocol(std::string(gen::VGI_PROTOCOL_NAME))
+    const std::string primary_name(gen::VGI_PROTOCOL_NAME);
+    builder.protocol(primary_name)
         .protocol_version(override_version && *override_version
                               ? std::string(override_version)
                               : std::string(gen::VGI_PROTOCOL_VERSION));
     if (!server_id_.empty()) builder.server_id(server_id_);
     disp_->install(builder);
 
-    auto server = builder.build();
+    // The worker's hosted protocols: the same set on every transport, so the
+    // hook is consulted here, in the one builder, and nowhere else.  vgi-rpc
+    // validates these too, but its messages name `add_protocol` rather than
+    // the worker hook that supplied the protocol; checking first lets the
+    // error say what to fix.
+    if (hosted_protocols_) {
+        const std::string owner = "Worker::set_hosted_protocols hook";
+        std::vector<vgi_rpc::ProtocolBuilder> hosted = hosted_protocols_();
+        std::set<std::string> seen;
+        for (size_t i = 0; i < hosted.size(); ++i) {
+            const std::string& name = hosted[i].name();
+            const std::string where = owner + ", entry " + std::to_string(i);
+            if (name.rfind(vgi_rpc::kReservedProtocolPrefix, 0) == 0) {
+                throw std::invalid_argument(
+                    where + ": '" + name + "' claims the reserved '" +
+                    vgi_rpc::kReservedProtocolPrefix +
+                    "' prefix. Framework protocols are not supplied through this hook: "
+                    "reflection is hosted automatically, and vgi_rpc.Identity.v1 is enabled "
+                    "with Worker::set_resolve_token / Worker::set_mint_grant.");
+            }
+            if (!valid_routing_key(name)) {
+                throw std::invalid_argument(where + ": '" + name +
+                                            "' is not a valid protocol name "
+                                            "([A-Za-z_][A-Za-z0-9_.]*, at most 255 bytes)");
+            }
+            if (name == primary_name) {
+                throw std::invalid_argument(where + ": '" + name +
+                                            "' is the worker's own protocol; give the hosted "
+                                            "protocol a distinct name");
+            }
+            if (!seen.insert(name).second) {
+                throw std::invalid_argument(owner + " lists protocol '" + name +
+                                            "' twice; the name is the routing key, so each "
+                                            "hosted protocol needs a distinct one");
+            }
+        }
+        for (auto& protocol : hosted) builder.add_protocol(std::move(protocol));
+    }
+
+    // vgi_rpc.Identity.v1, on the transport that authenticates callers.  Its
+    // allowlist is a list of principals, which stdio, unix and TCP do not
+    // have, so it is not hosted there.  Absent unless a hook is set: hosted
+    // and refusing would still be an oracle a dependency upgrade grew.
+    if (transport == Transport::HTTP && (resolve_token_ || mint_grant_)) {
+        vgi_rpc::IdentityOptions options;
+        options.resolve_token = resolve_token_;
+        options.mint_grant = mint_grant_;
+        if (resolve_token_) {
+            std::vector<std::string> principals;
+            if (introspect_principals_) {
+                principals = *introspect_principals_;
+            } else {
+                for (size_t i = 0; i + 1 < args.size(); ++i) {
+                    if (args[i] == "--introspect-principals")
+                        principals = split_principals(args[i + 1]);
+                }
+                if (principals.empty()) {
+                    const char* env = std::getenv("VGI_INTROSPECT_PRINCIPALS");
+                    if (env != nullptr) principals = split_principals(env);
+                }
+            }
+            principals.erase(std::remove_if(principals.begin(), principals.end(),
+                                            [](const std::string& p) { return p.empty(); }),
+                             principals.end());
+            if (principals.empty()) {
+                // Fail closed and loud.  There is no permissive default: a
+                // worker that resolves credentials and forgot the allowlist
+                // must not start.
+                throw std::invalid_argument(
+                    "this worker sets a resolve_token hook, which hosts the vgi_rpc.Identity.v1 "
+                    "protocol, but no introspector allowlist was configured. Set "
+                    "VGI_INTROSPECT_PRINCIPALS (comma-separated), pass --introspect-principals, "
+                    "or call Worker::set_introspect_principals. There is no permissive default "
+                    "on purpose: introspection is a separate capability from authentication, "
+                    "and allowing every authenticated caller lets any user resolve any other "
+                    "user's credential to its owner.");
+            }
+            options.introspect_principals = std::move(principals);
+        }
+        builder.identity(std::make_shared<vgi_rpc::IdentityImpl>(std::move(options)));
+    }
+
+    return builder.build();
+}
+
+void Worker::run(int argc, char** argv) {
+    // Arrow's compute kernels register themselves from a translation unit
+    // nothing here references, so linking statically drops it and `add`,
+    // `multiply` and friends are simply absent from the registry at runtime —
+    // while `cast`, which lives elsewhere, keeps working. That asymmetry makes
+    // it read like a missing feature flag rather than a linker artifact.
+    if (auto status = arrow::compute::Initialize(); !status.ok()) {
+        throw std::runtime_error("cannot initialize Arrow compute: " + status.ToString());
+    }
 
     // Transport from argv, matching the Rust and Python workers so one
     // wrapper script can drive any of them.
@@ -254,6 +390,16 @@ void Worker::run(int argc, char** argv) {
     const auto refuse = [](const std::string& message) {
         std::fprintf(stderr, "vgi worker: %s\n", message.c_str());
         std::exit(2);
+    };
+    // A server that cannot be built -- a malformed hosted protocol, Identity
+    // without an allowlist -- is a startup error, reported and refused.
+    const auto build_or_refuse = [&](Transport transport) {
+        try {
+            return build_server(transport, args);
+        } catch (const std::exception& error) {
+            refuse(error.what());
+        }
+        return std::unique_ptr<vgi_rpc::Server>();
     };
     std::string iroh_upstream;
     std::string iroh_issuer;
@@ -294,6 +440,7 @@ void Worker::run(int argc, char** argv) {
         if (iroh_trusted_proxies.empty()) iroh_trusted_proxies.push_back("127.0.0.1");
         try {
             const auto [host, port] = parse_tcp_bind(iroh_upstream, "--iroh-raw-upstream");
+            auto server = build_server(Transport::TCP, args);
             if (!is_loopback_bind(host)) {
                 refuse("--iroh-raw-upstream must bind loopback; expose only the Iroh bridge");
             }
@@ -313,7 +460,7 @@ void Worker::run(int argc, char** argv) {
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--unix") {
             if (i + 1 >= args.size()) refuse("--unix needs a socket path");
-            server->serve_unix(args[i + 1]);
+            build_or_refuse(Transport::UNIX)->serve_unix(args[i + 1]);
             std::exit(0);
         }
         if (args[i] == "--http") {
@@ -322,6 +469,7 @@ void Worker::run(int argc, char** argv) {
                 if (configured_http_port >= 0) refuse("use either --http PORT or --port, not both");
                 port = parse_http_port(args[i + 1]);
             }
+            auto server = build_or_refuse(Transport::HTTP);
             if (iroh_issuer.empty()) {
                 vgi_rpc::HttpConfig config;
                 config.host = http_host;
@@ -330,6 +478,7 @@ void Worker::run(int argc, char** argv) {
                                   disp_->catalog().comment.value_or(""));
                 configure_signing_key(config);
                 configure_bearer_auth(config, bearer_tokens_from_env());
+                if (configure_http_) configure_http_(config);
                 disp_->set_split_token_signing_key(config.token_key);
                 server->serve_http(config);
             } else {
@@ -350,6 +499,7 @@ void Worker::run(int argc, char** argv) {
                 config.peer_authentication_policy = iroh_observe
                                                         ? vgi_rpc::observe_peer_identity
                                                         : vgi_rpc::peer_identity_primary("iroh");
+                if (configure_http_) configure_http_(config);
                 disp_->set_split_token_signing_key(config.token_key);
                 server->serve_http(config);
             }
@@ -359,7 +509,7 @@ void Worker::run(int argc, char** argv) {
 
     // stdout is the Arrow-IPC channel; anything a worker wants to say goes to
     // stderr or it corrupts the stream.
-    server->run();
+    build_or_refuse(Transport::PIPE)->run();
     std::exit(0);
 }
 

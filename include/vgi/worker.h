@@ -1,9 +1,15 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
+
+#include <vgi_rpc/http_config.h>
+#include <vgi_rpc/server.h>
+#include <vgi_rpc/token_identity.h>
 
 #include "vgi/catalog.h"
 #include "vgi/function.h"
@@ -100,12 +106,96 @@ public:
     void register_buffering_in(std::string catalog, SchemaPath schema_path,
                                std::shared_ptr<TableBufferingFunction> fn);
 
+    // Additional vgi-rpc protocols this worker hosts beside `vgi.v2`.
+    //
+    // The hook returns `(protocol, implementation)` pairs -- here one
+    // `vgi_rpc::ProtocolBuilder` each: the protocol's wire name and version,
+    // and the handlers that implement it.  It is called **once**, when
+    // `run()` builds the server, and its answer is hosted on **every**
+    // transport the worker serves (stdio, `--unix`, `--http`, the Iroh
+    // upstream), after `vgi.v2` and in the order returned -- so
+    // `vgi_rpc.Reflection.v1/list_protocols` reports `vgi.v2` first, then
+    // these.  It may consult configuration or the environment, but the set is
+    // fixed for the life of the process, so reflection output and protocol
+    // hashes stay stable.
+    //
+    // The protocol is the unit of optionality: there is no way to host part
+    // of a protocol.  A capability that may be absent is its own protocol,
+    // returned here or not.
+    //
+    // Requests are routed on their `vgi_rpc.protocol` key, so a hosted
+    // protocol never changes how a `vgi.v2` request is dispatched.
+    //
+    // Each name must be a valid routing key, distinct from `vgi.v2` and from
+    // every other entry, and outside the reserved `vgi_rpc.` prefix --
+    // reflection is hosted automatically, and `vgi_rpc.Identity.v1` is
+    // enabled with `set_resolve_token` / `set_mint_grant`.  A violation is a
+    // startup error naming this hook.
+    using HostedProtocolsHook = std::function<std::vector<vgi_rpc::ProtocolBuilder>()>;
+    void set_hosted_protocols(HostedProtocolsHook hook);
+
+    // Host `vgi_rpc.Identity.v1`'s `introspect_token`: resolve an opaque
+    // bearer credential to the identity it authenticates as, for a reverse
+    // proxy that must know the caller before it can authorize anything.
+    //
+    // Absent unless set -- not hosted-and-refusing -- so upgrading the SDK
+    // never grows a credential-to-identity oracle on an existing worker.
+    // Hosted over `--http` only: its allowlist is a list of *principals*,
+    // which stdio, unix sockets and TCP do not have.
+    //
+    // Requires an allowlist of principals permitted to ask
+    // (`set_introspect_principals`, `--introspect-principals`, or
+    // `VGI_INTROSPECT_PRINCIPALS`).  There is no permissive default, and an
+    // HTTP worker that sets this hook without one **refuses to start**:
+    // authenticating and introspecting are different capabilities, and "any
+    // authenticated caller" lets any user resolve any other user's credential
+    // to its owner.
+    //
+    // Return an empty optional for "the store answered and this credential is
+    // unknown".  For "the answer is not knowable" -- a backing store is down,
+    // a timeout, a 5xx from a remote authority -- throw
+    // `vgi_rpc::AuthUnavailableError(detail, retry_after)`, the same error
+    // an authenticator throws for a 503.  The framework translates it into
+    // `identity_unavailable` carrying your `retry_after` as `RetryInfo`, so a
+    // caller can tell an outage from a refusal and knows when to ask again.
+    // Never throw `std::invalid_argument` for an outage: it reaches the wire
+    // as a `ValueError`, which a caller reads as "your input was wrong".
+    void set_resolve_token(vgi_rpc::ResolveTokenHook hook);
+
+    // Host `vgi_rpc.Identity.v1`'s `issue_grant`: mint a standing delegation
+    // credential for the *calling* user (there is no subject parameter).
+    // Hosted over `--http` only, absent unless set.  The same rule as above
+    // for transient failures: throw `vgi_rpc::AuthUnavailableError`.
+    void set_mint_grant(vgi_rpc::MintGrantHook hook);
+
+    // Principals permitted to call `introspect_token`.  When unset, `run()`
+    // reads `--introspect-principals a,b` and then `VGI_INTROSPECT_PRINCIPALS`.
+    void set_introspect_principals(std::vector<std::string> principals);
+
+    // Adjust the HTTP configuration `run()` builds for `--http`, after its own
+    // settings (landing page, signing key, bearer auth) are applied.
+    void configure_http(std::function<void(vgi_rpc::HttpConfig&)> hook);
+
     // Serve, selecting the transport from argv.  Never returns.
     [[noreturn]] void run(int argc, char** argv);
 
 private:
+    // The transports `run()` serves.  Only HTTP changes what is hosted.
+    enum class Transport { PIPE, UNIX, TCP, HTTP };
+
+    // The one place this worker's server is built, for every transport: the
+    // vgi.v2 protocol, the hosted protocols, and -- on HTTP, when a hook is
+    // set -- vgi_rpc.Identity.v1.  Reflection is hosted by vgi-rpc itself.
+    std::unique_ptr<vgi_rpc::Server> build_server(Transport transport,
+                                                  const std::vector<std::string>& args);
+
     std::unique_ptr<Dispatcher> disp_;
     std::string server_id_;
+    HostedProtocolsHook hosted_protocols_;
+    vgi_rpc::ResolveTokenHook resolve_token_;
+    vgi_rpc::MintGrantHook mint_grant_;
+    std::optional<std::vector<std::string>> introspect_principals_;
+    std::function<void(vgi_rpc::HttpConfig&)> configure_http_;
 };
 
 }  // namespace vgi
