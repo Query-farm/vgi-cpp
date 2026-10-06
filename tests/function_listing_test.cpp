@@ -343,3 +343,66 @@ TEST_CASE("a function registered after a listing is served is in the next one",
     CHECK(described(list(worker, handle, {"main"}, "SCALAR_FUNCTION")) ==
           Names{"second: alpha main"});
 }
+
+namespace {
+
+// A whole-input reduction that records what combine was handed.
+class Reduction final : public vgi::TableBufferingFunction {
+public:
+    std::string name() const override { return "reduce"; }
+    vgi::FunctionMetadata metadata() const override { return {}; }
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::table("data", 0, "Input table")};
+    }
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("n", arrow::int64())});
+    }
+    std::string process(const vgi::ProcessParams& params,
+                        const std::shared_ptr<arrow::RecordBatch>&) override {
+        return params.execution_id;
+    }
+    std::vector<std::string> combine(const vgi::ProcessParams& params,
+                                     const std::vector<std::string>& state_ids) override {
+        combined.push_back(state_ids);
+        return {params.execution_id};
+    }
+    std::unique_ptr<vgi::TableProducer> finalize_producer(const vgi::ProcessParams&,
+                                                          const std::string&) override {
+        return nullptr;
+    }
+
+    std::vector<std::vector<std::string>> combined;
+};
+
+}  // namespace
+
+TEST_CASE("combine accepts an empty state_ids list", "[buffering]") {
+    // Since vgi 63eb257 the extension runs combine and finalize when a
+    // table-buffering function's input is empty at runtime: no Sink thread
+    // ever ran, so combine is sent an EMPTY state_ids list.  That has to reach
+    // the function as an empty list -- not an error, and not skipped -- and
+    // what it returns has to go back as the ids to finalize, so a reduction
+    // such as sum_all_columns can answer with its zero row.
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "alpha";
+    const auto reduction = std::make_shared<Reduction>();
+    dispatcher.register_buffering(reduction);
+    Served worker(dispatcher);
+
+    const std::string execution_id = "exec-empty-input";
+    const auto request = vgi::wire::ResultBuilder(gen::TableBufferingCombineRequestSchema())
+                             .set_string("function_name", "reduce")
+                             .set_binary("execution_id", execution_id)
+                             .set_binary_list("state_ids", {})
+                             .fill_defaults()
+                             .finish();
+    const auto params = vgi::wire::ResultBuilder(gen::TableBufferingCombineParamsSchema())
+                            .set_binary("request", vgi::wire::encode_ipc(request))
+                            .finish();
+    const auto reply = worker.call("table_buffering_combine", params);
+
+    REQUIRE(reduction->combined.size() == 1);
+    CHECK(reduction->combined[0].empty());
+    CHECK(vgi::wire::get_binary_list(reply, "finalize_state_ids") ==
+          std::vector<std::string>{execution_id});
+}
