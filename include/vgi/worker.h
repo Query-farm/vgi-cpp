@@ -165,6 +165,13 @@ public:
     // caller can tell an outage from a refusal and knows when to ask again.
     // Never throw `std::invalid_argument` for an outage: it reaches the wire
     // as a `ValueError`, which a caller reads as "your input was wrong".
+    //
+    // The `--http` worker also consults this hook for bearer credentials
+    // nothing earlier accepted (after `VGI_BEARER_TOKENS` and sealed grants):
+    // an identity authenticates the request as `domain = "token"`, an empty
+    // optional is a 401, and `AuthUnavailableError` a 503 with your
+    // `Retry-After`.  It never sees a `vgig1.` grant, a JWS, or a token over
+    // 4096 bytes.
     void set_resolve_token(vgi_rpc::ResolveTokenHook hook);
 
     // Host `vgi_rpc.Identity.v1`'s `issue_grant`: mint a standing delegation
@@ -172,6 +179,20 @@ public:
     // Hosted over `--http` only, absent unless set.  The same rule as above
     // for transient failures: throw `vgi_rpc::AuthUnavailableError`.
     void set_mint_grant(vgi_rpc::MintGrantHook hook);
+
+    // Sealed grants (vgi-rpc WIRE_PROTOCOL §16, "Accepting identity
+    // credentials").  With grant keys configured, `issue_grant` mints sealed
+    // `vgig1.` grants (unless `set_mint_grant` supplied a minter of your own)
+    // and the `--http` worker accepts them back as `Authorization: Bearer`
+    // credentials, authenticating as the grant's owner.  No keys, no change.
+    //
+    // When unset, `run()` reads `--grant-key KEY` (repeatable; the first
+    // mints, every key verifies) and then `VGI_RPC_GRANT_KEYS`
+    // (comma-separated), with `VGI_RPC_GRANT_AUDIENCE` and
+    // `VGI_RPC_GRANT_MAX_TTL_SECONDS` either way.  Keys are standard base64
+    // of exactly 32 bytes; a malformed one refuses to start the worker.
+    // `std::nullopt` turns grants off regardless of argv and environment.
+    void set_grant_keys(std::optional<vgi_rpc::GrantKeys> keys);
 
     // Principals permitted to call `introspect_token`.  When unset, `run()`
     // reads `--introspect-principals a,b` and then `VGI_INTROSPECT_PRINCIPALS`.
@@ -200,6 +221,8 @@ private:
     vgi_rpc::ResolveTokenHook resolve_token_;
     vgi_rpc::MintGrantHook mint_grant_;
     std::optional<std::vector<std::string>> introspect_principals_;
+    bool grant_keys_explicit_ = false;
+    std::optional<vgi_rpc::GrantKeys> grant_keys_;
     std::function<void(vgi_rpc::HttpConfig&)> configure_http_;
 };
 

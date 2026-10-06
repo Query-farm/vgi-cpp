@@ -164,11 +164,21 @@ void register_conformance_fixtures(vgi::Worker& worker, int argc, char** argv) {
         [] { return std::vector<vgi_rpc::ProtocolBuilder>{secondary_protocol()}; });
 
     bool identity = false;
+    bool principal_header = false;
     if (const char* env = std::getenv("VGI_FIXTURE_IDENTITY"); env && std::string(env) == "1") {
         identity = true;
     }
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--conformance-identity") identity = true;
+        // The fixture's header authentication alone, with no identity hooks:
+        // with `--grant-key`, the framework is then the minter, and a caller
+        // with a fresh X-Conformance-Auth-Time can mint a sealed grant.
+        if (std::string(argv[i]) == "--conformance-principal-header") principal_header = true;
+    }
+    if (principal_header && !identity) {
+        worker.configure_http(
+            [](vgi_rpc::HttpConfig& config) { config.sticky_header_auth = true; });
+        return;
     }
     if (!identity) return;
     worker.set_resolve_token(resolve_token);

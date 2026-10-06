@@ -92,6 +92,56 @@ again. `vgi_rpc::IdentityUnavailableError` is also accepted.
 Never throw `std::invalid_argument` for an outage. It reaches the wire as a
 `ValueError`, which callers read as "your input was wrong; do not retry".
 
+## Grants as bearer credentials
+
+`issue_grant` mints a credential for unattended automation to present later as
+an ordinary bearer. With **grant keys** configured the worker both mints and
+accepts them, with no storage and no hook of your own:
+
+```bash
+# 32-byte keys, standard base64. The first mints; every key verifies.
+export VGI_RPC_GRANT_KEYS="$(openssl rand -base64 32)"
+export VGI_RPC_GRANT_AUDIENCE=prod-reports          # optional, default ""
+export VGI_RPC_GRANT_MAX_TTL_SECONDS=86400          # optional, default 7 days
+my-worker --http 8080
+# or: my-worker --http 8080 --grant-key KEY [--grant-key OLD_KEY]
+```
+
+- **Opt-in.** No key, no change. With keys, `vgi_rpc.Identity.v1` is hosted on
+  `--http` with `issue_grant`, and vgi-rpc mints sealed `vgig1.` grants unless
+  you call `set_mint_grant`. A malformed or duplicate key, or a non-positive
+  lifetime, **refuses to start** the worker. `Worker::set_grant_keys` sets them
+  in code (`std::nullopt` turns grants off whatever argv and the environment
+  say).
+- **Minting needs a fresh login.** The caller must carry an `auth_time` claim
+  newer than 15 minutes, which a static `VGI_BEARER_TOKENS` token does not.
+  A grant itself carries none, so a grant can never mint another grant.
+- **Accepting.** A request with `Authorization: Bearer <grant>` authenticates
+  as the grant's owner: `domain = "grant"`, the owner's principal, and claims
+  `{grant_id, scopes, purpose}`. A tampered, wrong-key, wrong-audience or
+  expired grant is a `401` (`VGI-Auth-Reason: invalid_credential`, or
+  `expired_credential`).
+- **Rotation and revocation.** Put the new key first and keep the old one after
+  it until every grant it minted has expired. Grants are not individually
+  revocable: expiry is the revocation, and removing a key revokes everything it
+  minted.
+
+The `--http` worker authenticates in this order: `VGI_BEARER_TOKENS`, then
+sealed grants, then your `resolve_token` hook (when set). Only a token with
+the exact `vgig1.` prefix reaches the grant verifier, and one that does not
+verify stops there: it is never handed to `resolve_token`. A token
+`resolve_token` resolves authenticates as `domain = "token"`; an unknown one is
+a `401`, and an outage (`AuthUnavailableError`) a `503` with your
+`Retry-After`. Without `VGI_BEARER_TOKENS`, a request with no `Authorization`
+header stays anonymous.
+
+The Iroh bridge (`--iroh-issuer`) authenticates from forwarded peer evidence.
+Accepting a grant beside it would bypass that requirement, so a worker with
+grant keys or `resolve_token` refuses to start there.
+
+`--access-log PATH` writes vgi-rpc's JSON-lines access log, whose `principal`
+and `auth_domain` fields show how each call was authenticated.
+
 ## Checking a worker
 
 vgi-rpc's hosted-protocols group checks all of the above on every transport:
@@ -110,4 +160,6 @@ The example worker hosts `conformance.Secondary.v1` through the hook. With
 `--introspect-principals conformance-introspector`, it also
 hosts Identity under vgi-rpc's conformance fixture policy, including its
 spoofable `X-Conformance-Principal` header authentication. That flag is for
-tests only.
+tests only. `--conformance-principal-header` turns on only that header
+authentication, with no identity hooks, so `--grant-key` exercises the
+framework's own minter (`tests/grant_auth_test.cpp`).

@@ -79,24 +79,20 @@ std::map<std::string, std::string> bearer_tokens_from_env() {
 void configure_bearer_auth(vgi_rpc::HttpConfig& config,
                            const std::map<std::string, std::string>& tokens) {
     if (tokens.empty()) return;
-    config.peer_identity_providers.push_back(
-        [tokens](const vgi_rpc::PeerResolutionContext& context) {
-            const auto authorization = context.header("authorization");
-            constexpr const char* kPrefix = "Bearer ";
-            if (!authorization || authorization->rfind(kPrefix, 0) != 0) {
-                throw vgi_rpc::PeerIdentityRejected("missing bearer credential");
-            }
-            const auto found =
-                tokens.find(authorization->substr(std::char_traits<char>::length(kPrefix)));
-            if (found == tokens.end()) {
-                throw vgi_rpc::PeerIdentityRejected("invalid bearer credential");
-            }
-            return vgi_rpc::PeerIdentityResult::available(vgi_rpc::PeerIdentity(
-                "bearer", "authorization", vgi_rpc::IdentityAssurance::CONFIGURED_PROXY,
-                "vgi-worker", "http", vgi_rpc::PeerSubjectKind::USER, found->second,
-                vgi_rpc::SubjectStability::STABLE, /*subject_verified=*/true));
-        });
-    config.peer_authentication_policy = vgi_rpc::peer_identity_primary("bearer");
+    // The deployment's own bearer authenticator, first in vgi-rpc's chain:
+    // a token it does not know falls through to sealed grants and
+    // resolve_token (when configured) rather than ending in a 401 here, and a
+    // request that nothing accepts -- or that carries no credential -- is 401.
+    config.bearer_authenticate =
+        [tokens](const std::string& token) -> std::optional<vgi_rpc::AuthContext> {
+        const auto found = tokens.find(token);
+        if (found == tokens.end()) return std::nullopt;
+        vgi_rpc::AuthContext auth;
+        auth.domain = "bearer";
+        auth.authenticated = true;
+        auth.principal = found->second;
+        return auth;
+    };
 }
 
 void configure_signing_key(vgi_rpc::HttpConfig& config) {
@@ -233,6 +229,12 @@ void Worker::set_mint_grant(vgi_rpc::MintGrantHook hook) {
     mint_grant_ = std::move(hook);
 }
 
+void Worker::set_grant_keys(std::optional<vgi_rpc::GrantKeys> keys) {
+    if (keys) keys->validate();
+    grant_keys_ = std::move(keys);
+    grant_keys_explicit_ = true;
+}
+
 void Worker::set_introspect_principals(std::vector<std::string> principals) {
     introspect_principals_ = std::move(principals);
 }
@@ -256,6 +258,29 @@ std::vector<std::string> split_principals(const std::string& raw) {
         begin = end + 1;
     }
     return out;
+}
+
+// Grant keys from `--grant-key KEY` (repeatable, the first mints), else from
+// `VGI_RPC_GRANT_KEYS`; audience and lifetime come from the environment either
+// way.  A malformed key throws, which refuses to start the worker.
+std::optional<vgi_rpc::GrantKeys> grant_keys_from(const std::vector<std::string>& args) {
+    std::vector<std::string> keys;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] != "--grant-key") continue;
+        if (i + 1 >= args.size()) throw std::invalid_argument("--grant-key needs a base64 key");
+        keys.push_back(args[++i]);
+    }
+    if (keys.empty()) return vgi_rpc::GrantKeys::from_env();
+    // Reuse the environment reader for audience and lifetime, so the two
+    // spellings cannot drift on how those are parsed.
+    std::string joined;
+    for (const auto& key : keys) joined += (joined.empty() ? "" : ",") + key;
+    return vgi_rpc::GrantKeys::from_env([&joined](const char* name) -> std::optional<std::string> {
+        if (std::string(name) == vgi_rpc::kGrantKeysEnv) return joined;
+        const char* value = std::getenv(name);
+        if (value == nullptr) return std::nullopt;
+        return std::string(value);
+    });
 }
 
 bool valid_routing_key(const std::string& name) {
@@ -333,10 +358,26 @@ std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
     // allowlist is a list of principals, which stdio, unix and TCP do not
     // have, so it is not hosted there.  Absent unless a hook is set: hosted
     // and refusing would still be an oracle a dependency upgrade grew.
-    if (transport == Transport::HTTP && (resolve_token_ || mint_grant_)) {
+    // Sealed grants.  Resolved on every transport, so a malformed key refuses
+    // to start the worker wherever it runs, but used only over HTTP -- the one
+    // transport with callers to mint for and bearers to accept.
+    const std::optional<vgi_rpc::GrantKeys> grant_keys =
+        grant_keys_explicit_ ? grant_keys_ : grant_keys_from(args);
+    builder.grant_keys(transport == Transport::HTTP ? grant_keys : std::nullopt);
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] != "--access-log") continue;
+        if (i + 1 >= args.size()) throw std::invalid_argument("--access-log needs a path");
+        builder.access_log(args[i + 1]);
+    }
+
+    if (transport == Transport::HTTP && (resolve_token_ || mint_grant_ || grant_keys)) {
         vgi_rpc::IdentityOptions options;
         options.resolve_token = resolve_token_;
+        // With keys and no minter of the worker's own, vgi-rpc mints sealed
+        // grants -- with the same keys the HTTP transport verifies with.
         options.mint_grant = mint_grant_;
+        options.grant_keys = grant_keys;
         if (resolve_token_) {
             std::vector<std::string> principals;
             if (introspect_principals_) {
@@ -484,7 +525,13 @@ void Worker::run(int argc, char** argv) {
                 configure_bearer_auth(config, bearer_tokens_from_env());
                 if (configure_http_) configure_http_(config);
                 disp_->set_split_token_signing_key(config.token_key);
-                server->serve_http(config);
+                // A configuration vgi-rpc refuses -- bearer alternatives beside
+                // a peer-evidence policy -- is a startup error, reported.
+                try {
+                    server->serve_http(config);
+                } catch (const std::exception& error) {
+                    refuse(error.what());
+                }
             } else {
                 if (!is_loopback_bind(http_host)) {
                     refuse(
@@ -505,7 +552,13 @@ void Worker::run(int argc, char** argv) {
                                                         : vgi_rpc::peer_identity_primary("iroh");
                 if (configure_http_) configure_http_(config);
                 disp_->set_split_token_signing_key(config.token_key);
-                server->serve_http(config);
+                // A configuration vgi-rpc refuses -- bearer alternatives beside
+                // a peer-evidence policy -- is a startup error, reported.
+                try {
+                    server->serve_http(config);
+                } catch (const std::exception& error) {
+                    refuse(error.what());
+                }
             }
             std::exit(0);
         }

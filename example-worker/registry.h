@@ -19,7 +19,9 @@ namespace example {
 
 // conformance.Secondary.v1 through Worker::set_hosted_protocols, and -- with
 // --conformance-identity / VGI_FIXTURE_IDENTITY=1 -- the vgi-rpc Identity
-// conformance policy on --http.  Test-only.
+// conformance policy on --http; with --conformance-principal-header, only the
+// fixture's X-Conformance-Principal authentication (for sealed-grant tests
+// with --grant-key).  Test-only.
 void register_conformance_fixtures(vgi::Worker& worker, int argc, char** argv);
 // secret_cache_nonce / secret_cached_scalar / secret_cached_lateral: the
 // secret-dependent result-cache fixtures (cache/secret_scope.test).
