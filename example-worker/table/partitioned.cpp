@@ -706,6 +706,102 @@ private:
     }
 };
 
+// `country_partitioned_sales`' contract with the partition column moved from
+// index 0 to index 3.
+std::shared_ptr<arrow::Schema> trailing_partition_schema() {
+    return arrow::schema({arrow::field("seq", arrow::int64(), /*nullable=*/true),
+                          arrow::field("label", arrow::utf8(), /*nullable=*/true),
+                          arrow::field("sales", arrow::int64(), /*nullable=*/true),
+                          vgi::partition_field("country", arrow::utf8())});
+}
+
+// Same values as CountryChunks, plus `seq` (the row within its country) and a
+// `label`, built by name against the projected schema.
+class TrailingCountryChunks : public PartitionedChunks {
+public:
+    using PartitionedChunks::PartitionedChunks;
+
+protected:
+    std::shared_ptr<arrow::Array> column(const std::string& name, const Chunk& chunk, int64_t from,
+                                         int64_t rows) const override {
+        const int64_t offset = from - chunk.start;
+        if (name == "country") return repeated_string(rows, kCountries[chunk.id]);
+        if (name == "seq") return int64_column(rows, [&](int64_t i) { return offset + i; });
+        if (name == "label") {
+            arrow::StringBuilder b;
+            for (int64_t i = 0; i < rows; ++i) {
+                (void)b.Append(std::string(kCountries[chunk.id]) + "-" +
+                               std::to_string(offset + i));
+            }
+            return b.Finish().ValueOrDie();
+        }
+        const int64_t base = chunk.id * 1000000 + offset;
+        return int64_column(rows, [&](int64_t i) { return base + i; });
+    }
+};
+
+// `trailing_partition_sales(rows_per_country)` — country_partitioned_sales with
+// `country` declared LAST rather than first. Every other partitioned fixture
+// declares its partition column at index 0, which makes the planner's
+// worker-schema indices and the sink's scan-local indices accidentally agree;
+// `GROUP BY country` here projects country and sales, so the sink asks about
+// scan-local 0 against declared 3. Also the data.trailing_partition_sales
+// table, because a catalog table installs its scan function on a different
+// path than a direct call (table/partition_columns.test). Mirrors
+// vgi-python's TrailingPartitionSalesFunction and vgi-go's.
+//
+// Projection pushdown is deliberate: without it the projection above the scan
+// carries base-column indices that DuckDB 1.5's CanUsePartitionedAggregate
+// maps a second time (duckdb/duckdb#24327) and the planner crashes.
+class TrailingPartitionSales : public vgi::TableFunction {
+public:
+    std::string name() const override { return "trailing_partition_sales"; }
+
+    vgi::FunctionMetadata metadata() const override {
+        auto md = fixture_metadata(
+            "Per-country sales rows, one Arrow batch per country, with the SINGLE_VALUE "
+            "partition column declared LAST in the schema instead of first.",
+            {"generator", "partitioning"});
+        md.partition_kind = vgi::partition_kinds::kSingleValuePartitions;
+        md.projection_pushdown = true;
+        md.examples = {
+            {"SELECT country, SUM(sales) FROM trailing_partition_sales(100) GROUP BY "
+             "country",
+             "Partitioned aggregate over a non-leading partition column", std::nullopt}};
+        return md;
+    }
+
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::constant_arg("rows_per_country", 0, "int64",
+                                           "Rows to emit per country partition")};
+    }
+
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return trailing_partition_schema();
+    }
+
+    int64_t max_workers(const vgi::ProcessParams&) const override { return 4; }
+
+    vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
+        vgi::TableCardinality estimate;
+        if (auto rows = params.arguments.const_int64(0)) {
+            estimate.estimate = *rows * kCountryCount;
+            estimate.max = *rows * kCountryCount;
+        }
+        return estimate;
+    }
+
+    void on_init(const vgi::ProcessParams& params) const override {
+        push_partitions(params, kCountryCount,
+                        std::max<int64_t>(1, params.arguments.const_int64(0).value_or(1)));
+    }
+
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
+        return std::make_unique<TrailingCountryChunks>(
+            params.output_schema, params.storage, params.execution_id, trailing_partition_schema());
+    }
+};
+
 std::shared_ptr<arrow::Schema> region_year_schema() {
     return arrow::schema({vgi::partition_field("region", arrow::utf8()),
                           vgi::partition_field("year", arrow::int64()),
@@ -938,6 +1034,7 @@ void register_partitioned(vgi::Worker& worker) {
     worker.register_table(std::make_shared<PartitionedBatchIndexMarked>());
     worker.register_table(std::make_shared<FilterEchoPartitioned>());
     worker.register_table(std::make_shared<CountryPartitionedSales>());
+    worker.register_table(std::make_shared<TrailingPartitionSales>());
     worker.register_table(std::make_shared<RegionYearPartitioned>());
     worker.register_table(std::make_shared<PartitionedWithExplicitOverride>());
     worker.register_table(std::make_shared<RangePartitioned>(

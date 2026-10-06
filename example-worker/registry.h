@@ -21,6 +21,9 @@ namespace example {
 // --conformance-identity / VGI_FIXTURE_IDENTITY=1 -- the vgi-rpc Identity
 // conformance policy on --http.  Test-only.
 void register_conformance_fixtures(vgi::Worker& worker, int argc, char** argv);
+// secret_cache_nonce / secret_cached_scalar / secret_cached_lateral: the
+// secret-dependent result-cache fixtures (cache/secret_scope.test).
+void register_secret_cache(vgi::Worker& worker);
 void register_arithmetic(vgi::Worker& worker);
 void register_strings(vgi::Worker& worker);
 void register_seeded(vgi::Worker& worker);

@@ -14,6 +14,7 @@
 #include <arrow/type.h>
 #include <arrow/util/key_value_metadata.h>
 
+#include <vgi/partition.h>
 #include <vgi/worker.h>
 
 #include "registry.h"
@@ -353,12 +354,37 @@ void declare_catalog(vgi::Worker& worker) {
         numbers.column_statistics = {sequence_statistics("value", 100)};
         data.tables.push_back(std::move(numbers));
     }
+    {
+        // The partitioned-aggregate fixture reached as a CATALOG TABLE, whose
+        // scan function the engine builds on a different path than a direct
+        // call; with its partition column declared last
+        // (table/partition_columns.test).
+        auto trailing = backed_by("trailing_partition_sales", "trailing_partition_sales",
+                                  // The partition marker rides the table's own
+                                  // column, since the engine resolves partition
+                                  // columns from the table schema on this path.
+                                  arrow::schema({arrow::field("seq", arrow::int64()),
+                                                 arrow::field("label", arrow::utf8()),
+                                                 arrow::field("sales", arrow::int64()),
+                                                 vgi::partition_field("country", arrow::utf8())}),
+                                  "Per-country sales, SINGLE_VALUE partition column declared "
+                                  "last; GROUP BY country must plan as PARTITIONED_AGGREGATE");
+        trailing.scan_arguments = vgi::serialize_scan_arguments({int64_arg(100)});
+        data.tables.push_back(std::move(trailing));
+    }
     data.tables.push_back(backed_by("cacheable_numbers", "cacheable_numbers",
                                     columns({{"n", arrow::int64()}}),
                                     "Cacheable 10-row result advertising vgi.cache.ttl"));
     data.tables.push_back(
         backed_by("cache_nonce", "cache_nonce", columns({{"nonce", arrow::int64()}}),
                   "One-row cacheable result whose value changes per real invocation"));
+    // A secret-dependent cacheable table (cache/secret_scope.test). vgi-python
+    // inline-binds it; this SDK takes the bind-RPC path, which the test
+    // accepts for an SDK without inline bind.
+    data.tables.push_back(
+        backed_by("secret_cache_nonce", "secret_cache_nonce",
+                  columns({{"secret_string", arrow::utf8()}, {"nonce", arrow::int64()}}),
+                  "One-row cacheable result keyed on the vgi_example secret"));
     data.tables.push_back(backed_by("cache_no_store", "cache_no_store",
                                     columns({{"n", arrow::int64()}}),
                                     "Advertises vgi.cache.no_store — must never be cached"));

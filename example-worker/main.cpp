@@ -78,6 +78,7 @@ int main(int argc, char** argv) {
     example::register_generators(worker);
     example::register_secret_scalars(worker);
     example::register_secret_table_in_out(worker);
+    example::register_secret_cache(worker);
     if (composite) example::register_same_name_exchange(worker);
     example::register_substream_finalize(worker);
     example::register_unnest_tensor_rows(worker);

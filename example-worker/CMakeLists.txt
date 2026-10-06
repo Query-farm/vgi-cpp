@@ -5,6 +5,7 @@
 add_executable(vgi-example-worker
     main.cpp
     conformance_fixtures.cpp
+    secret_cache.cpp
     scalar/util.cpp
     scalar/arithmetic.cpp
     scalar/strings.cpp
