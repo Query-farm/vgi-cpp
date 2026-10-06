@@ -3,10 +3,17 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 #include <arrow/array.h>
 #include <arrow/io/memory.h>
@@ -117,7 +124,25 @@ public:
     std::string process(const vgi::ProcessParams& params,
                         const std::shared_ptr<arrow::RecordBatch>& batch) override {
         if (failure_ == Failure::Process) {
-            throw std::invalid_argument("Intentional exception during process()");
+            // crash_on_process kills its own worker, as the canonical fixture
+            // does: table_buffering_worker_crash.test and _pool_recovery.test
+            // assert the engine sees the response stream end ("RPC response
+            // stream EOF") and recovers on a fresh worker. Throwing instead
+            // answered with an ordinary error, which those tests reject.
+            // Gated upstream on VGI_TEST_DEDICATED_WORKER, so a shared worker
+            // is never asked to do this.
+#ifdef _WIN32
+            std::abort();
+#else
+            ::kill(::getpid(), SIGKILL);
+#endif
+            // kill(2) on oneself returns before the kernel tears the task
+            // down. Returning would race the framework writing a response --
+            // a schema, a truncated batch, or a whole zero-row answer, any of
+            // which changes what the engine sees (measured at 23% in the Go
+            // fixture). Park so this worker never writes another byte.
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            throw std::runtime_error("crash_on_process: SIGKILL did not terminate the worker");
         }
         if (failure_ == Failure::Hang) {
             // Slept in short spans rather than one long one so the process
