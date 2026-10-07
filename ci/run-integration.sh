@@ -83,16 +83,8 @@ if [ "$TRANSPORT" = "http" ]; then
   # database_worker/package.test runs here too: VGI_TEST_WORKER is a URL on
   # this lane, so the package re-execs VGI_DATABASE_PACKAGE_WORKER (exported
   # below for every lane) instead.
-  # cache/identity_isolation.test attaches the shared worker as alice and as
-  # bob through OPTIONAL bearer tokens, and every other file attaches it with no
-  # token. vgi-rpc-cpp (0.8.2) cannot serve both from one server: with
-  # HttpConfig::bearer_authenticate set, a request with no Authorization header
-  # is a 401 (resolve_http_identity), so the fixture's test bearers
-  # (VGI_FIXTURE_TEST_BEARERS) would refuse the rest of the suite. Excluded
-  # until the port can leave a header-less request anonymous.
   HTTP_SKIP=(
     -not -name 'projection_pushdown_repro.test'
-    -not -path './cache/identity_isolation.test'
   )
 fi
 # The native-branch fixtures (multi_branch_*, required_filters_native)
@@ -240,10 +232,12 @@ case "$TRANSPORT" in
     # launcher-only tests must skip here). bearer_auth runs separately below.
     # (The *required*-token server for bearer_auth/* boots below.)
     #
-    # No optional-bearer identities here: this SDK's HTTP auth is the required
-    # VGI_BEARER_TOKENS kind only, so the result cache's alice/bob isolation
-    # test does not apply to it.
-    boot_http_worker "$VGI_WORKER_BIN" "VGI_WORKER_CATALOG_NAME=example"
+    # Optional bearer identities (VGI_OPTIONAL_BEARER_TOKENS), as the vgi-python
+    # and vgi-rust fixtures serve them: cache/identity_isolation.test attaches
+    # this worker as alice and as bob, and every other file attaches it with no
+    # token, which stays anonymous.
+    boot_http_worker "$VGI_WORKER_BIN" "VGI_WORKER_CATALOG_NAME=example" \
+      "VGI_OPTIONAL_BEARER_TOKENS=vgi-test-alice=alice,vgi-test-bob=bob"
     export VGI_TEST_WORKER="http://localhost:${BOOTED_PORT}"
     # Lets HTTP-only tests (bearer/OAuth identity, which subprocess can't carry)
     # gate themselves via `require-env VGI_HTTP_TRANSPORT` instead of skipping.

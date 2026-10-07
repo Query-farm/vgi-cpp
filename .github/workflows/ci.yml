@@ -64,7 +64,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: v0.8.0
+          ref: v0.8.3
           path: vgi-rpc-c++
 
       - name: Clone and bootstrap vcpkg

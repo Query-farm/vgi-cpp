@@ -1266,6 +1266,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
 
     ProcessParams params;
     params.output_schema = output_schema;
+    if (context.auth().authenticated) params.auth_principal = context.auth().principal;
     // Constant arguments were evaluated at bind and ride along on every call,
     // which is why a const parameter never appears in the input batch.
     params.arguments = bind_params.arguments;

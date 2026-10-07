@@ -27,7 +27,7 @@ set(VGI_RPC_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vgi-rpc-c++"
     CACHE PATH "Sibling vgi-rpc-c++ checkout to build against")
 
 if(VGI_USE_INSTALLED_RPC)
-    find_package(vgi_rpc 0.8.0 CONFIG REQUIRED)
+    find_package(vgi_rpc 0.8.3 CONFIG REQUIRED)
 else()
     if(NOT EXISTS "${VGI_RPC_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR

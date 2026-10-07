@@ -161,6 +161,10 @@ struct ProcessParams {
     // reasoning: the path comes from the statement, not from an option.
     std::optional<std::string> copy_from_format;
     std::optional<std::string> copy_from_path;
+    // The caller's authenticated principal (a bearer, a grant, ...), or absent
+    // for an anonymous caller. Only the HTTP transport identifies callers; on
+    // stdio and unix the OS vouches for them, and this is always absent.
+    std::optional<std::string> auth_principal;
     // Where a message to the client goes. Always set, and a no-op on the
     // calls the transport gives no channel for, so a function may call it
     // without asking which call it is in.

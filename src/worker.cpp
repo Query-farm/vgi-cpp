@@ -56,9 +56,12 @@ bool is_loopback_bind(const std::string& host) {
     return host == "127.0.0.1" || host == "::1" || host == "localhost";
 }
 
-std::map<std::string, std::string> bearer_tokens_from_env() {
+// `token=principal,…` from `variable`, or empty when it is unset or blank. A
+// value that does not parse refuses to start rather than quietly serving
+// everyone.
+std::map<std::string, std::string> bearer_tokens_from_env(const char* variable) {
     std::map<std::string, std::string> tokens;
-    const char* configured = std::getenv("VGI_BEARER_TOKENS");
+    const char* configured = std::getenv(variable);
     if (!configured || !*configured) return tokens;
     std::string entries(configured);
     size_t begin = 0;
@@ -67,8 +70,8 @@ std::map<std::string, std::string> bearer_tokens_from_env() {
         const auto entry = entries.substr(begin, end == std::string::npos ? end : end - begin);
         const auto separator = entry.find('=');
         if (separator == std::string::npos || separator == 0 || separator + 1 == entry.size()) {
-            throw std::invalid_argument(
-                "VGI_BEARER_TOKENS must contain comma-separated token=principal entries");
+            throw std::invalid_argument(std::string(variable) +
+                                        " must contain comma-separated token=principal entries");
         }
         tokens.emplace(entry.substr(0, separator), entry.substr(separator + 1));
         if (end == std::string::npos) break;
@@ -77,23 +80,48 @@ std::map<std::string, std::string> bearer_tokens_from_env() {
     return tokens;
 }
 
-void configure_bearer_auth(vgi_rpc::HttpConfig& config,
-                           const std::map<std::string, std::string>& tokens) {
-    if (tokens.empty()) return;
-    // The deployment's own bearer authenticator, first in vgi-rpc's chain:
-    // a token it does not know falls through to sealed grants and
-    // resolve_token (when configured) rather than ending in a 401 here, and a
-    // request that nothing accepts -- or that carries no credential -- is 401.
-    config.bearer_authenticate =
-        [tokens](const std::string& token) -> std::optional<vgi_rpc::AuthContext> {
-        const auto found = tokens.find(token);
-        if (found == tokens.end()) return std::nullopt;
-        vgi_rpc::AuthContext auth;
-        auth.domain = "bearer";
-        auth.authenticated = true;
-        auth.principal = found->second;
-        return auth;
-    };
+vgi_rpc::AuthContext bearer_principal(const std::string& principal) {
+    vgi_rpc::AuthContext auth;
+    auth.domain = "bearer";
+    auth.authenticated = true;
+    auth.principal = principal;
+    return auth;
+}
+
+// The bearer authenticator, from one of two variables (the vgi-python and
+// vgi-rust semantics):
+//
+//   VGI_BEARER_TOKENS           required: a request with no credential, or
+//                               one nothing accepts, is 401.
+//   VGI_OPTIONAL_BEARER_TOKENS  optional: a known token is its principal; no
+//                               token, or an unknown one, is anonymous --
+//                               never a 401. One server can then serve the
+//                               anonymous suite and alice/bob side by side.
+//
+// VGI_BEARER_TOKENS wins when both are set. Either way a token this
+// authenticator does not know falls through to sealed grants and
+// resolve_token (when configured) -- in optional mode only a sealed-grant
+// shaped one does, so a grant still authenticates as its owner.
+void configure_bearer_auth(vgi_rpc::HttpConfig& config) {
+    if (auto tokens = bearer_tokens_from_env("VGI_BEARER_TOKENS"); !tokens.empty()) {
+        config.bearer_authenticate =
+            [tokens](const std::string& token) -> std::optional<vgi_rpc::AuthContext> {
+            const auto found = tokens.find(token);
+            if (found == tokens.end()) return std::nullopt;
+            return bearer_principal(found->second);
+        };
+        return;
+    }
+    if (auto tokens = bearer_tokens_from_env("VGI_OPTIONAL_BEARER_TOKENS"); !tokens.empty()) {
+        config.bearer_optional = true;
+        config.bearer_authenticate =
+            [tokens](const std::string& token) -> std::optional<vgi_rpc::AuthContext> {
+            const auto found = tokens.find(token);
+            if (found != tokens.end()) return bearer_principal(found->second);
+            if (token.rfind(vgi_rpc::kGrantTokenPrefix, 0) == 0) return std::nullopt;
+            return vgi_rpc::AuthContext::anonymous();
+        };
+    }
 }
 
 void configure_signing_key(vgi_rpc::HttpConfig& config) {
@@ -553,7 +581,7 @@ void Worker::run(int argc, char** argv) {
                 configure_landing(config, disp_->catalog().name, server->server_id(),
                                   disp_->catalog().comment.value_or(""));
                 configure_signing_key(config);
-                configure_bearer_auth(config, bearer_tokens_from_env());
+                configure_bearer_auth(config);
                 if (configure_http_) configure_http_(config);
                 disp_->set_split_token_signing_key(config.token_key);
                 // HTTP authenticates callers: attach and transaction values

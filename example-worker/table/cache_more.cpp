@@ -475,10 +475,10 @@ public:
     }
 
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
-        // Always anonymous: the SDK does not surface the resolved auth
-        // principal, and bearer identity only exists over HTTP anyway.
-        return std::make_unique<OneShot>(
-            arrow::RecordBatch::Make(params.output_schema, 1, {utf8_column({"anonymous"})}));
+        // `anonymous` unless the transport identified the caller, which only
+        // HTTP does (a bearer, or a grant).
+        return std::make_unique<OneShot>(arrow::RecordBatch::Make(
+            params.output_schema, 1, {utf8_column({params.auth_principal.value_or("anonymous")})}));
     }
 };
 

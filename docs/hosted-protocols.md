@@ -135,6 +135,12 @@ a `401`, and an outage (`AuthUnavailableError`) a `503` with your
 `Retry-After`. Without `VGI_BEARER_TOKENS`, a request with no `Authorization`
 header stays anonymous.
 
+`VGI_OPTIONAL_BEARER_TOKENS` (same `token=principal,…` format) takes its place
+for a server that serves anonymous and bearer-identified callers side by side,
+as the vgi-python and vgi-rust fixtures do. A known token is its principal, and
+no token or an unknown one is anonymous, never a `401`. A `vgig1.` token still
+goes to the grant verifier. `VGI_BEARER_TOKENS` wins when both are set.
+
 The Iroh bridge (`--iroh-issuer`) authenticates from forwarded peer evidence.
 Accepting a grant beside it would bypass that requirement, so a worker with
 grant keys or `resolve_token` refuses to start there.

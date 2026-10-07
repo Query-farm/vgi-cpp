@@ -152,7 +152,11 @@ start_http_worker() { # name catalog [extra-env...]
 HTTP_ENV=()
 if [[ "${VGI_HTTP:-0}" == "1" ]]; then
   echo "[harness] starting HTTP workers..."
-  start_http_worker example example || exit 1
+  # Optional test bearers, as the vgi-python and vgi-rust fixtures serve them:
+  # cache/identity_isolation.test attaches this worker as alice and as bob,
+  # and every other file attaches it with no token.
+  start_http_worker example example \
+    VGI_OPTIONAL_BEARER_TOKENS=vgi-test-alice=alice,vgi-test-bob=bob || exit 1
   H_EXAMPLE=$STARTED_HTTP_URL
   start_http_worker versioned versioned || exit 1
   H_VERSIONED=$STARTED_HTTP_URL
