@@ -295,8 +295,8 @@ TEST_CASE("http: without grant keys nothing changes", "[grants][http]") {
                              .protocol_version(kVersion)
                              .build()
                              .list_protocols();
-    for (const auto& protocol : listing.protocols) {
-        CHECK(protocol.protocol != vgi_rpc::kIdentityProtocolName);
+    for (const auto& protocol : listing) {
+        CHECK(protocol.name != vgi_rpc::kIdentityProtocolName);
     }
 }
 

@@ -496,6 +496,9 @@ void Worker::run(int argc, char** argv) {
             options.peer_authentication_policy = iroh_observe
                                                      ? vgi_rpc::observe_peer_identity
                                                      : vgi_rpc::peer_identity_primary("iroh");
+            // Each call carries the forwarded peer's identity, so the opaque
+            // values are sealed and bound to it, under a key of this process.
+            disp_->set_opaque_key(vgi_rpc::crypto::random_key());
             server->serve_tcp(host, port, options);
         } catch (const std::exception& error) {
             refuse(error.what());
@@ -525,6 +528,9 @@ void Worker::run(int argc, char** argv) {
                 configure_bearer_auth(config, bearer_tokens_from_env());
                 if (configure_http_) configure_http_(config);
                 disp_->set_split_token_signing_key(config.token_key);
+                // HTTP authenticates callers: attach and transaction values
+                // are sealed under the same key, bound to the caller.
+                disp_->set_opaque_key(config.token_key);
                 // A configuration vgi-rpc refuses -- bearer alternatives beside
                 // a peer-evidence policy -- is a startup error, reported.
                 try {
@@ -552,6 +558,9 @@ void Worker::run(int argc, char** argv) {
                                                         : vgi_rpc::peer_identity_primary("iroh");
                 if (configure_http_) configure_http_(config);
                 disp_->set_split_token_signing_key(config.token_key);
+                // HTTP authenticates callers: attach and transaction values
+                // are sealed under the same key, bound to the caller.
+                disp_->set_opaque_key(config.token_key);
                 // A configuration vgi-rpc refuses -- bearer alternatives beside
                 // a peer-evidence policy -- is a startup error, reported.
                 try {

@@ -194,7 +194,14 @@ Each of these cost real debugging time, and none is guessable from the code:
   which attachment they belong to.** This SDK seals the catalog, the resolved
   data version, a per-ATTACH id and the merged ATTACH options into it. One
   binary serves several catalogs, and two of them may declare the same
-  function in the same schema.
+  function in the same schema. On HTTP that value -- and
+  `transaction_opaque_data` -- is AEAD-sealed and bound to the caller (the
+  transaction also to its attach), and opened once at the RPC boundary
+  (`src/opaque_seal.h`); anything that fails to open is the one
+  `<field> not recognized` (INVALID_ARGUMENT, kind
+  `opaque_data_not_recognized`). Unsealed (stdio, unix), secret options stay out of
+  the value and in `FunctionStorage`. Never log either value: log
+  `opaque::short_hash`.
 - **An exchange tick must answer with exactly one data batch**, even a
   zero-row one. A tick that emits nothing leaves the caller waiting on a reply
   that never comes, and the query hangs rather than failing.

@@ -165,22 +165,23 @@ std::set<std::string> catalog_names(const std::shared_ptr<arrow::RecordBatch>& r
 }
 
 // What `list_protocols` reports is what the routing key is matched against.
-void require_hosts_vgi(const vgi_rpc::ProtocolListing& listing) {
+void require_hosts_vgi(const std::vector<vgi_rpc::HostedProtocol>& listing) {
     std::set<std::string> hosted;
     std::string hosted_list;
-    for (const auto& protocol : listing.protocols) {
-        hosted.insert(protocol.protocol);
-        hosted_list += " " + protocol.protocol;
+    for (const auto& protocol : listing) {
+        hosted.insert(protocol.name);
+        hosted_list += " " + protocol.name;
     }
     INFO("hosted protocols:" << hosted_list);
     REQUIRE(hosted.count(kProtocol) == 1);
     REQUIRE(hosted.count(vgi_rpc::kReflectionProtocolName) == 1);
 
-    const auto* application = listing.application();
-    REQUIRE(application != nullptr);
-    CHECK(application->protocol == kProtocol);
-    CHECK(application->protocol_version == kVersion);
-    CHECK_FALSE(application->protocol_hash.empty());
+    // The application protocol leads the server's order.
+    REQUIRE_FALSE(listing.empty());
+    const auto& application = listing.front();
+    CHECK(application.name == kProtocol);
+    CHECK(application.version == kVersion);
+    CHECK_FALSE(application.hash.empty());
 }
 
 // Reflection describes exactly the VgiProtocol surface -- every method the
@@ -236,7 +237,7 @@ void require_raw_refuses(const std::function<vgi_rpc::RpcClient()>& connect) {
 TEST_CASE("stdio: the worker hosts the VGI wire name", "[protocol][stdio]") {
     auto client = vgi_rpc::RpcClient::spawn({kWorker}, raw_options(kProtocol));
     require_hosts_vgi(client.list_protocols());
-    require_describes_the_protocol(client.describe(kProtocol));
+    require_describes_the_protocol(client.describe_protocol(kProtocol));
     CHECK(catalog_names(client.call_unary("catalog_catalogs", no_params()).batch).count("example"));
 }
 
@@ -252,7 +253,7 @@ TEST_CASE("unix: the worker hosts the VGI wire name", "[protocol][unix]") {
 
     auto client = vgi_rpc::RpcClient::connect_unix(socket, raw_options(kProtocol));
     require_hosts_vgi(client.list_protocols());
-    require_describes_the_protocol(client.describe(kProtocol));
+    require_describes_the_protocol(client.describe_protocol(kProtocol));
     CHECK(catalog_names(client.call_unary("catalog_catalogs", no_params()).batch).count("example"));
     client.close();
 
@@ -269,7 +270,7 @@ TEST_CASE("http: the worker serves {prefix}/vgi.v2/{method}", "[protocol][http]"
                             .protocol_version(kVersion)
                             .build();
     require_hosts_vgi(client.list_protocols());
-    require_describes_the_protocol(client.describe(kProtocol));
+    require_describes_the_protocol(client.describe_protocol(kProtocol));
     const auto response =
         client.call("catalog_catalogs", vgi_rpc::AnnotatedBatch::data(no_params()));
     CHECK(catalog_names(response.batch).count("example"));

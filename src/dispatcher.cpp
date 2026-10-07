@@ -1,5 +1,6 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include "dispatcher.h"
+#include "opaque_seal.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -178,6 +179,10 @@ void trace(const std::string& method) {
 
 }  // namespace
 
+void trace_line(const std::string& line) {
+    trace(line);
+}
+
 // The primary always exists, so `catalog()` needs no null check and a worker
 // that never calls `set_catalog` still serves a default-named one.
 Dispatcher::Dispatcher() {
@@ -295,7 +300,9 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
             // only placeholders — the factory returns the real pair.
             builder.add_exchange(
                 name, spec.params, arrow::schema({}), arrow::schema({}),
-                [this, name](const vgi_rpc::Request& req, vgi_rpc::CallContext& ctx) {
+                [this, name](const vgi_rpc::Request& incoming, vgi_rpc::CallContext& ctx) {
+                    opaque::Call call(opaque_key_, ctx.auth());
+                    const auto req = call.open(incoming);
                     trace(name);
                     return this->init(req, ctx);
                 },
@@ -327,8 +334,10 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
             if (auto it = voids.find(name); it != voids.end()) {
                 auto handler = it->second;
                 builder.add_void(name, spec.params,
-                                 [this, handler, name, routed](const vgi_rpc::Request& req,
-                                                               vgi_rpc::CallContext&) {
+                                 [this, handler, name, routed](const vgi_rpc::Request& incoming,
+                                                               vgi_rpc::CallContext& ctx) {
+                                     opaque::Call call(opaque_key_, ctx.auth());
+                                     const auto req = call.open(incoming);
                                      std::optional<vgi_rpc::Result> answer;
                                      if (routed(name, req, &answer)) return;
                                      trace(name);
@@ -336,19 +345,23 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
                                  });
                 continue;
             }
-            builder.add_void(
-                name, spec.params,
-                [refuse, name, routed](const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
-                    std::optional<vgi_rpc::Result> answer;
-                    if (routed(name, req, &answer)) return;
-                    refuse();
-                });
+            builder.add_void(name, spec.params,
+                             [this, refuse, name, routed](const vgi_rpc::Request& incoming,
+                                                          vgi_rpc::CallContext& ctx) {
+                                 opaque::Call call(opaque_key_, ctx.auth());
+                                 const auto req = call.open(incoming);
+                                 std::optional<vgi_rpc::Result> answer;
+                                 if (routed(name, req, &answer)) return;
+                                 refuse();
+                             });
         } else {
             if (auto it = unary_with_context.find(name); it != unary_with_context.end()) {
                 auto handler = it->second;
                 builder.add_unary(name, spec.params, declared,
-                                  [this, handler, name, declared](const vgi_rpc::Request& req,
+                                  [this, handler, name, declared](const vgi_rpc::Request& incoming,
                                                                   vgi_rpc::CallContext& ctx) {
+                                      opaque::Call call(opaque_key_, ctx.auth());
+                                      const auto req = call.open(incoming);
                                       trace(name);
                                       return conform((this->*handler)(req, ctx), declared, name);
                                   });
@@ -358,7 +371,9 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
                 auto handler = it->second;
                 builder.add_unary(name, spec.params, declared,
                                   [this, handler, name, declared, routed](
-                                      const vgi_rpc::Request& req, vgi_rpc::CallContext&) {
+                                      const vgi_rpc::Request& incoming, vgi_rpc::CallContext& ctx) {
+                                      opaque::Call call(opaque_key_, ctx.auth());
+                                      const auto req = call.open(incoming);
                                       std::optional<vgi_rpc::Result> answer;
                                       if (routed(name, req, &answer)) {
                                           return conform(std::move(*answer), declared, name);
@@ -368,17 +383,19 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
                                   });
                 continue;
             }
-            builder.add_unary(
-                name, spec.params, declared,
-                [refuse, name, declared, routed](const vgi_rpc::Request& req,
-                                                 vgi_rpc::CallContext&) -> vgi_rpc::Result {
-                    std::optional<vgi_rpc::Result> answer;
-                    if (routed(name, req, &answer)) {
-                        return conform(std::move(*answer), declared, name);
-                    }
-                    refuse();
-                    return vgi_rpc::Result::void_result();  // unreachable
-                });
+            builder.add_unary(name, spec.params, declared,
+                              [this, refuse, name, declared, routed](
+                                  const vgi_rpc::Request& incoming,
+                                  vgi_rpc::CallContext& ctx) -> vgi_rpc::Result {
+                                  opaque::Call call(opaque_key_, ctx.auth());
+                                  const auto req = call.open(incoming);
+                                  std::optional<vgi_rpc::Result> answer;
+                                  if (routed(name, req, &answer)) {
+                                      return conform(std::move(*answer), declared, name);
+                                  }
+                                  refuse();
+                                  return vgi_rpc::Result::void_result();  // unreachable
+                              });
         }
     }
 }

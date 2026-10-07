@@ -184,9 +184,23 @@ private:
     };
 };
 
+// `attach_options_required`: the cross-SDK catalog whose `api_key` the caller
+// must supply and which is a credential (required + secret), beside `region`.
+void register_attach_options_required(vgi::Worker& worker) {
+    auto& model = worker.catalog("attach_options_required");
+    model.comment = "Catalog declaring a required, secret ATTACH option";
+    vgi::AttachOptionSpec api_key{"api_key", "API key", arrow::utf8(), nullptr, /*required=*/true};
+    api_key.secret = true;
+    vgi::AttachOptionSpec region{"region", "Region", arrow::utf8(),
+                                 one<arrow::StringBuilder>("us-east-1"), /*required=*/false};
+    model.attach_options = {api_key, region};
+    model.schema("main");
+}
+
 }  // namespace
 
 void register_attach_options(vgi::Worker& worker) {
+    register_attach_options_required(worker);
     auto& model = worker.catalog(kCatalog);
     model.comment = "Catalog declaring one ATTACH option per wire type";
     model.attach_options = option_specs();

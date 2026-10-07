@@ -194,6 +194,10 @@ struct AttachOptionSpec {
     // default and `required` is a contradiction and is refused.
     std::shared_ptr<arrow::Array> default_value;
     bool required = false;
+    // The option carries a credential (an API key, a token, a password).
+    // Clients mask it, and the engine redacts it from `duckdb_databases()` and
+    // never logs it. A secret option should normally have no default.
+    bool secret = false;
 };
 
 // A DuckDB setting this catalog introduces.

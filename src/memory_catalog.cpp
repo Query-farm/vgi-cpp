@@ -1,5 +1,6 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include "memory_catalog.h"
+#include "opaque_seal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -46,15 +47,10 @@ std::string upper(std::string value) {
     return value;
 }
 
+// From the OS CSPRNG: the token makes an ATTACH private, so it must not be
+// predictable.
 std::string random_token() {
-    static thread_local std::mt19937_64 engine{std::random_device{}()};
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string out;
-    for (int i = 0; i < 2; ++i) {
-        auto bits = engine();
-        for (int j = 0; j < 16; ++j, bits >>= 4) out.push_back(kHex[bits & 0xf]);
-    }
-    return out;
+    return opaque::random_id();
 }
 
 // CREATE's on_conflict for an existing object: replace it (true), keep it
@@ -137,7 +133,7 @@ std::vector<const MemoryCatalog::Schema*> MemoryCatalog::sorted_schemas(const St
 std::string MemoryCatalog::schema_item(const std::string& attach, const Schema& schema) const {
     auto builder = wire::ResultBuilder(gen::SchemaInfoSchema())
                        .set_string_list("path", schema.path)
-                       .set_binary("attach_opaque_data", attach);
+                       .set_binary("attach_opaque_data", opaque::echo_attach(attach));
     builder.set_optional_string("comment", schema.comment);
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
@@ -176,7 +172,7 @@ std::shared_ptr<arrow::RecordBatch> MemoryCatalog::attach(
         attaches_[attach] = std::move(st);
     }
     auto builder = wire::ResultBuilder(payload_schema_of("catalog_attach"));
-    builder.set_binary("attach_opaque_data", attach)
+    builder.set_binary("attach_opaque_data", opaque::seal_attach_out(attach))
         .set_int64("catalog_version", version)
         .set_bool("catalog_version_frozen", false)
         .set_bool("attach_opaque_data_required", true)

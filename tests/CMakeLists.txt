@@ -38,3 +38,20 @@ target_compile_definitions(grant_auth_test PRIVATE
     VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
 add_dependencies(grant_auth_test vgi-example-worker)
 catch_discover_tests(grant_auth_test)
+
+# Sealed attach / transaction values: the envelope, the boundary that opens
+# them, and a Dispatcher in-process, unsealed and sealed.
+add_executable(opaque_seal_test opaque_seal_test.cpp)
+target_link_libraries(opaque_seal_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(opaque_seal_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+catch_discover_tests(opaque_seal_test)
+
+# The same over HTTP against the built example worker: replay, tamper,
+# plaintext, cross-attach transaction, and nothing raw in the log.
+add_executable(opaque_seal_e2e_test opaque_seal_e2e_test.cpp)
+target_link_libraries(opaque_seal_e2e_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(opaque_seal_e2e_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(opaque_seal_e2e_test PRIVATE
+    VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
+add_dependencies(opaque_seal_e2e_test vgi-example-worker)
+catch_discover_tests(opaque_seal_e2e_test)

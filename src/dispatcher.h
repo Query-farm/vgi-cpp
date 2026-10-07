@@ -1,6 +1,7 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #pragma once
 
+#include <array>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -37,6 +38,10 @@ std::function<void(LogLevel, const std::string&)> client_log_sink(vgi_rpc::CallC
 // The `init` stream's header schema (`GlobalInitResponse`). Defined in
 // function_dispatch.cpp; registration needs it, and so does the handler.
 const std::shared_ptr<arrow::Schema>& global_init_response_schema();
+
+// One `VGI_TRACE` line on stderr. Never an opaque value: log its
+// `opaque::short_hash` instead.
+void trace_line(const std::string& line);
 
 // A fresh execution id. Opaque to the engine, which only echoes it back.
 std::string next_execution_id();
@@ -118,6 +123,11 @@ public:
     void set_split_token_signing_key(split_token::SigningKey key) {
         split_token_signing_key_ = std::move(key);
     }
+
+    // The key `attach_opaque_data` / `transaction_opaque_data` are sealed
+    // under: the HTTP signing key, on HTTP. Without one (stdio, unix) the
+    // values pass through unsealed and carry no secret attach option.
+    void set_opaque_key(std::optional<std::array<uint8_t, 32>> key) { opaque_key_ = key; }
 
     using UnaryHandler = vgi_rpc::Result (Dispatcher::*)(const vgi_rpc::Request&);
     // The few handlers that need the call's own channel back to the client.
@@ -303,7 +313,13 @@ private:
         // catalog declares none.
         std::shared_ptr<arrow::RecordBatch> options;
     };
-    static std::string seal_attachment(const Attachment& attachment);
+    // The plaintext attach value. On a transport that does not seal it, the
+    // catalog's secret options are left out and kept server-side.
+    std::string seal_attachment(const Attachment& attachment) const;
+    // What a response echoes as `attach_opaque_data`: the value the caller sent.
+    std::string handle_of(const Attachment& attachment) const;
+    // Put back the secret options an unsealed value left server-side.
+    void restore_secret_options(Attachment& attachment) const;
     // The attachment a request belongs to. Falls back to the primary catalog
     // when there is no seal — the engine asks some of these questions before
     // any attachment exists.
@@ -373,6 +389,7 @@ private:
     // DDL-capable in-memory catalogs, by name (register_memory_catalog).
     std::map<std::string, std::shared_ptr<MemoryCatalog>> memory_catalogs_;
     std::optional<split_token::SigningKey> split_token_signing_key_;
+    std::optional<std::array<uint8_t, 32>> opaque_key_;
     std::set<std::string> hidden_;
     // Built function listings, by (catalog, schema path, function type). The
     // HTTP transport dispatches independent calls in parallel, hence the lock.

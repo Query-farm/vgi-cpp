@@ -30,6 +30,9 @@
 #include "enums.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "methods.h"
+#include <vgi_rpc/arrow_utils.h>
+
+#include "opaque_seal.h"
 #include "wire.h"
 
 namespace vgi {
@@ -78,14 +81,13 @@ std::shared_ptr<arrow::RecordBatch> merge_attach_options(
     return arrow::RecordBatch::Make(arrow::schema(fields), 1, values);
 }
 
-// A fresh id per ATTACH. Random rather than a counter: a worker pool spreads
-// one query's calls over several processes, and two of them would otherwise
-// mint the same id for different attachments.
+// A fresh id per ATTACH, from the OS CSPRNG. Random rather than a counter: a
+// worker pool spreads one query's calls over several processes, and two of
+// them would otherwise mint the same id for different attachments. And not a
+// seeded PRNG: the id lives inside the attach value, and keys the attachment's
+// state, so it must not be predictable.
 std::string next_attachment_id() {
-    static std::mt19937_64 generator{std::random_device{}()};
-    std::ostringstream out;
-    out << std::hex << generator() << generator();
-    return out.str();
+    return opaque::random_id();
 }
 
 namespace gen = ::vgi::generated;
@@ -522,6 +524,10 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
 
     Attachment attachment{model.name, resolved_data.value_or(""), name, next_attachment_id(),
                           merge_attach_options(model, attach)};
+    const auto attach_value = opaque::seal_attach_out(seal_attachment(attachment));
+    // The short hash, never the value: on HTTP the value is the caller's
+    // sealed handle, and unsealed it is plaintext options.
+    trace_line("catalog_attach " + model.name + " attach=" + opaque::short_hash(attach_value));
 
     auto batch = wire::ResultBuilder(payload_schema_of("catalog_attach"))
                      // Opaque to the engine, which only stores and echoes it.
@@ -530,7 +536,8 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
                      // which attachment they belong to, and one worker may
                      // serve several catalogs whose schemas and function names
                      // collide.
-                     .set_binary("attach_opaque_data", seal_attachment(attachment))
+                     // Sealed for this caller on HTTP; see opaque_seal.h.
+                     .set_binary("attach_opaque_data", attach_value)
                      .set_bool("supports_transactions", model.supports_transactions)
                      .set_bool("supports_time_travel", supports_time_travel(model))
                      .set_bool("catalog_version_frozen", true)
@@ -585,13 +592,12 @@ vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
     // pool hands a different worker to each RPC of one transaction, so two
     // transactions that collided on an id would read each other's state
     // through the shared store.
-    static std::atomic<uint64_t> counter{0};
-    const auto id = std::to_string(static_cast<uint64_t>(vgi::portable::current_process_id())) +
-                    '-' + std::to_string(counter.fetch_add(1)) + '-' +
-                    std::to_string(static_cast<uint64_t>(
-                        std::chrono::steady_clock::now().time_since_epoch().count()));
+    // From the OS CSPRNG, so it is unique across processes and unpredictable;
+    // sealed on HTTP for this caller and bound to the attach it was begun
+    // under.
+    const auto id = opaque::random_id();
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_transaction_begin"))
-                        .set_binary("transaction_opaque_data", id)
+                        .set_binary("transaction_opaque_data", opaque::seal_transaction_out(id))
                         .finish());
 }
 
@@ -620,6 +626,9 @@ std::vector<std::string> Dispatcher::encode_attach_options(const CatalogModel& m
         arrow::field("type", arrow::binary(), /*nullable=*/false),
         arrow::field("default_value", arrow::binary(), /*nullable=*/true),
         arrow::field("required", arrow::boolean(), /*nullable=*/true),
+        // Appended after `required`, nullable, so a reader that predates it
+        // reads its absence as "not secret".
+        arrow::field("secret", arrow::boolean(), /*nullable=*/true),
     });
 
     std::vector<std::string> items;
@@ -638,7 +647,8 @@ std::vector<std::string> Dispatcher::encode_attach_options(const CatalogModel& m
                            .set_string("name", option.name)
                            .set_string("description", option.description)
                            .set_binary("type", wire::encode_schema(value_schema))
-                           .set_bool("required", option.required);
+                           .set_bool("required", option.required)
+                           .set_bool("secret", option.secret);
         if (option.default_value) {
             builder.set_binary("default_value", wire::encode_ipc(arrow::RecordBatch::Make(
                                                     value_schema, 1, {option.default_value})));
@@ -1125,7 +1135,7 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
     // handle, and a client that took one from a SchemaInfo and sent it back
     // would fail `attachment_of`'s field-count check.
     const auto attachment = attachment_of(request);
-    const auto owner = seal_attachment(attachment);
+    const auto owner = handle_of(attachment);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
@@ -1139,7 +1149,7 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
 
 vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request) {
     const auto attachment = attachment_of(request);
-    const auto owner = seal_attachment(attachment);
+    const auto owner = handle_of(attachment);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     const int64_t version = *current_catalog_version(request);
@@ -1209,7 +1219,7 @@ vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) 
     const auto wanted = wire::get_schema_path(request.batch(), "path");
     std::vector<std::string> items;
     const auto attachment = attachment_of(request);
-    const auto owner = seal_attachment(attachment);
+    const auto owner = handle_of(attachment);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
@@ -1387,14 +1397,57 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
                                 .finish());
 }
 
-std::string Dispatcher::seal_attachment(const Attachment& attachment) {
-    // The options ride base64-encoded, because the seal is split on NUL and an
-    // IPC stream is full of them.
+namespace {
+
+// Where an unsealed attach value keeps its secret options instead: the shared
+// per-uid store, under the attachment's (CSPRNG) id. Only on OS-owned
+// transports, where the value is not sealed.
+constexpr const char* kAttachSecretsScope = "vgi.attach_secrets";
+
+bool is_secret_option(const CatalogModel* model, const std::string& name) {
+    if (!model) return false;
+    for (const auto& option : model->attach_options) {
+        if (option.secret && option.name == name) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+std::string Dispatcher::seal_attachment(const Attachment& attachment) const {
+    std::shared_ptr<arrow::RecordBatch> carried = attachment.options;
+    const auto* call = opaque::current();
+    const bool sealed = call && call->sealing();
+    if (carried && !sealed) {
+        // No AEAD on this transport, so no secret option may ride in the
+        // value: it stays server-side, keyed by the attachment id.
+        const auto* model = find_catalog(attachment.catalog);
+        std::vector<int> secret, plain;
+        for (int i = 0; i < carried->num_columns(); ++i) {
+            (is_secret_option(model, carried->schema()->field(i)->name()) ? secret : plain)
+                .push_back(i);
+        }
+        if (!secret.empty()) {
+            default_storage()->kv_put(
+                kAttachSecretsScope, attachment.id,
+                wire::encode_ipc(vgi_rpc::unwrap(carried->SelectColumns(secret))));
+            carried = vgi_rpc::unwrap(carried->SelectColumns(plain));
+        }
+    }
+    // The options ride base64-encoded, because the value is split on NUL and
+    // an IPC stream is full of them.
     const std::string options =
-        attachment.options ? arrow::util::base64_encode(wire::encode_ipc(attachment.options))
-                           : std::string{};
+        carried ? arrow::util::base64_encode(wire::encode_ipc(carried)) : std::string{};
     return attachment.catalog + '\0' + attachment.data_version + '\0' + attachment.alias + '\0' +
            attachment.id + '\0' + options;
+}
+
+std::string Dispatcher::handle_of(const Attachment& attachment) const {
+    // A SchemaInfo's handle is what a client would send back: the value it
+    // sent, never a freshly built one (which would be plaintext on HTTP).
+    const auto* call = opaque::current();
+    if (call && call->attach_as_sent()) return *call->attach_as_sent();
+    return seal_attachment(attachment);
 }
 
 Dispatcher::Attachment Dispatcher::attachment_of(
@@ -1403,22 +1456,28 @@ Dispatcher::Attachment Dispatcher::attachment_of(
     attachment.catalog = catalog().name;
     if (!batch) return attachment;
 
-    const auto sealed = wire::get_optional_binary(batch, "attach_opaque_data");
-    if (!sealed || sealed->empty()) return attachment;
+    const auto value = wire::get_optional_binary(batch, "attach_opaque_data");
+    if (!value || value->empty()) return attachment;
 
     std::vector<std::string> fields;
-    for (size_t start = 0; start <= sealed->size();) {
-        const auto separator = sealed->find('\0', start);
+    for (size_t start = 0; start <= value->size();) {
+        const auto separator = value->find('\0', start);
         if (separator == std::string::npos) {
-            fields.push_back(sealed->substr(start));
+            fields.push_back(value->substr(start));
             break;
         }
-        fields.push_back(sealed->substr(start, separator - start));
+        fields.push_back(value->substr(start, separator - start));
         start = separator + 1;
     }
-    // Anything that is not the five-field seal is not ours — an older client,
-    // or a catalog we do not serve — and the primary is the honest answer.
-    if (fields.size() != 5 || !find_catalog(fields[0])) return attachment;
+    if (fields.size() != 5 || !find_catalog(fields[0])) {
+        // Opened from a seal this worker made, it is always ours: anything
+        // else on a sealing transport is refused, never read as the primary.
+        const auto* call = opaque::current();
+        if (call && call->sealing()) opaque::reject("attach_opaque_data");
+        // Unsealed, it may be an older client's, or a catalog we do not
+        // serve, and the primary is the honest answer.
+        return attachment;
+    }
 
     attachment.catalog = fields[0];
     attachment.data_version = fields[1];
@@ -1427,7 +1486,43 @@ Dispatcher::Attachment Dispatcher::attachment_of(
     if (!fields[4].empty()) {
         attachment.options = wire::decode_ipc(wire::base64_decode(fields[4]));
     }
+    restore_secret_options(attachment);
     return attachment;
+}
+
+void Dispatcher::restore_secret_options(Attachment& attachment) const {
+    const auto* model = find_catalog(attachment.catalog);
+    if (!model || attachment.id.empty()) return;
+    bool wants = false;
+    for (const auto& option : model->attach_options) {
+        if (option.secret &&
+            !(attachment.options && attachment.options->GetColumnByName(option.name))) {
+            wants = true;
+        }
+    }
+    if (!wants) return;
+    const auto stored = default_storage()->kv_get(kAttachSecretsScope, attachment.id);
+    if (!stored) return;
+    const auto secrets = wire::decode_ipc(*stored);
+    // Back in declared order, as the merge produced them.
+    arrow::FieldVector fields;
+    std::vector<std::shared_ptr<arrow::Array>> columns;
+    for (const auto& option : model->attach_options) {
+        std::shared_ptr<arrow::Array> column;
+        std::shared_ptr<arrow::Field> field;
+        for (const auto& source : {attachment.options, secrets}) {
+            if (column || !source) continue;
+            const int index = source->schema()->GetFieldIndex(option.name);
+            if (index >= 0) {
+                column = source->column(index);
+                field = source->schema()->field(index);
+            }
+        }
+        if (!column) continue;
+        fields.push_back(field);
+        columns.push_back(column);
+    }
+    attachment.options = arrow::RecordBatch::Make(arrow::schema(fields), 1, std::move(columns));
 }
 
 Dispatcher::Attachment Dispatcher::attachment_of(const vgi_rpc::Request& request) const {

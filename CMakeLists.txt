@@ -71,6 +71,7 @@ add_library(vgi
     src/wire.cpp
     src/portable.cpp
     src/split_token.cpp
+    src/opaque_seal.cpp
     src/catalog.cpp
     src/catalog_contents.cpp
     src/memory_catalog.cpp
