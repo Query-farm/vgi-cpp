@@ -32,6 +32,10 @@ if [[ "${1:-}" == "--no-build" ]]; then BUILD=0; shift; fi
 FULL_RUN=0
 if [[ $# -eq 0 ]]; then FULL_RUN=1; fi
 
+# Every run names the tree it reads with --test-dir. Without it the unittest
+# binary resolves test paths against the source tree it was *built* from, not
+# $VGI_EXT: point VGI_EXT at a newer checkout and the suite silently runs the
+# old files (a new .test simply never appears), while the run reads green.
 # Fail on every unexpected error rather than skipping it: given no
 # --test-config the sqllogictest runner turns any error containing "HTTP" into
 # a SKIP, which on the HTTP lane is every worker error. The config ships with
@@ -187,14 +191,14 @@ echo "[harness] running: ${ARGS[*]}"
   VGI_VERSIONED_TABLES_WORKER="$W_VERSIONED_TABLES" \
   VGI_ATTACH_OPTIONS_WORKER="$W_ATTACH_OPTIONS" \
   VGI_BAD_PROTOCOL_WORKER="$W_BAD_PROTOCOL" \
-  "$UNITTEST" --test-config "$TEST_CONFIG" "${ARGS[@]}" ) > "$CACHE/run.log" 2>&1
+  "$UNITTEST" --test-dir "$VGI_EXT" --test-config "$TEST_CONFIG" "${ARGS[@]}" ) > "$CACHE/run.log" 2>&1
 RC=$?
 
 if [[ $FULL_RUN == 1 ]]; then
   ( cd "$VGI_EXT" && env \
     VGI_TEST_WORKER="$H_BEARER" \
     VGI_TEST_BEARER_TOKEN="test-secret-token" \
-    "$UNITTEST" --test-config "$TEST_CONFIG" "test/sql/integration/bearer_auth/*" ) >> "$CACHE/run.log" 2>&1
+    "$UNITTEST" --test-dir "$VGI_EXT" --test-config "$TEST_CONFIG" "test/sql/integration/bearer_auth/*" ) >> "$CACHE/run.log" 2>&1
   RC=$(( RC | $? ))
 fi
 

@@ -260,6 +260,10 @@ case "$TRANSPORT" in
     echo "::error::unknown TRANSPORT=$TRANSPORT (expected stdio|launch|http)"; exit 1 ;;
 esac
 
+# Every invocation also passes --test-dir (the stage, which is the cwd from here
+# on). The cwd alone does not decide where the runner reads tests from: a
+# locally built unittest resolves them against its own build tree, and a stale
+# tree reads green.
 cd "$STAGE" || {
   echo "::error::cannot enter integration stage: $STAGE" >&2
   exit 1
@@ -285,7 +289,7 @@ INSTALL parquet FROM core;
 statement ok
 INSTALL spatial FROM core;
 EOF
-"$HAYBARN_UNITTEST" "test/_warm.test" >/dev/null 2>&1 || \
+"$HAYBARN_UNITTEST" --test-dir "$PWD" "test/_warm.test" >/dev/null 2>&1 || \
   echo "::warning::extension warm-up did not fully succeed; individual require gates remain authoritative"
 rm -f "$STAGE/test/_warm.test"
 
@@ -333,7 +337,7 @@ esac
 run_unittest() {
   local log unittest_rc=0
   log="$(mktemp)"
-  "$HAYBARN_UNITTEST" --test-config "$TEST_CONFIG" "$@" 2>&1 | tee "$log"
+  "$HAYBARN_UNITTEST" --test-dir "$PWD" --test-config "$TEST_CONFIG" "$@" 2>&1 | tee "$log"
   # Read PIPESTATUS immediately: any command in between (including `|| true`)
   # overwrites it and would silently swallow every real test failure.
   unittest_rc="${PIPESTATUS[0]}"
