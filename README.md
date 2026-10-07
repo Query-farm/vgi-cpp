@@ -60,7 +60,7 @@ class UpperCase : public vgi::ScalarFunction {
 int main(int argc, char** argv) {
     vgi::Worker worker;
     worker.register_scalar(std::make_shared<UpperCase>());
-    worker.run(argc, argv);  // stdio, --unix <path>, or --http
+    worker.run(argc, argv);  // stdio, --unix <path> [--idle-timeout SEC], or --http
 }
 ```
 

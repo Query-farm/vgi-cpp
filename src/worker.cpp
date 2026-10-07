@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <map>
@@ -516,8 +518,25 @@ void Worker::run(int argc, char** argv) {
         }
         return static_cast<int>(parsed);
     };
+    // The launcher worker contract (vgi_rpc.launcher in the reference)
+    // spawns `<worker> --unix PATH --idle-timeout SEC` and relies on the
+    // worker to exit after SEC seconds with no client connected.  Seconds in
+    // plain decimal ("300", "0.25"); 0 disables, as in the reference.
+    vgi_rpc::UnixServerOptions unix_options;
+    const auto parse_idle_timeout = [&refuse](const std::string& value) {
+        char* end = nullptr;
+        const double seconds = std::strtod(value.c_str(), &end);
+        if (value.empty() || end == value.c_str() || *end != '\0' || !std::isfinite(seconds) ||
+            seconds < 0 || seconds > 1e9) {
+            refuse("--idle-timeout needs a non-negative number of seconds, got '" + value + "'");
+        }
+        return std::chrono::milliseconds(std::llround(seconds * 1000.0));
+    };
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--iroh-raw-upstream") {
+        if (args[i] == "--idle-timeout") {
+            if (i + 1 >= args.size()) refuse("--idle-timeout needs a number of seconds");
+            unix_options.idle_timeout = parse_idle_timeout(args[++i]);
+        } else if (args[i] == "--iroh-raw-upstream") {
             if (i + 1 >= args.size()) refuse("--iroh-raw-upstream needs [HOST:]PORT");
             iroh_upstream = args[++i];
         } else if (args[i] == "--iroh-issuer") {
@@ -564,7 +583,7 @@ void Worker::run(int argc, char** argv) {
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--unix") {
             if (i + 1 >= args.size()) refuse("--unix needs a socket path");
-            build_or_refuse(Transport::UNIX)->serve_unix(args[i + 1]);
+            build_or_refuse(Transport::UNIX)->serve_unix(args[i + 1], unix_options);
             std::exit(0);
         }
         if (args[i] == "--http") {

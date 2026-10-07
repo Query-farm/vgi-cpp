@@ -74,3 +74,13 @@ target_compile_definitions(attach_ticket_e2e_test PRIVATE
     VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
 add_dependencies(attach_ticket_e2e_test vgi-example-worker)
 catch_discover_tests(attach_ticket_e2e_test)
+
+# The launcher worker contract: launched with --unix and --idle-timeout, the
+# built example worker exits once idle, and refuses a malformed timeout.
+add_executable(launcher_idle_test launcher_idle_test.cpp)
+target_link_libraries(launcher_idle_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(launcher_idle_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(launcher_idle_test PRIVATE
+    VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
+add_dependencies(launcher_idle_test vgi-example-worker)
+catch_discover_tests(launcher_idle_test)
