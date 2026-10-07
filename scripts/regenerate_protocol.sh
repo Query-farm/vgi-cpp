@@ -33,6 +33,12 @@ run vgi.codegen.cpp_protocol_version > "$ROOT/include/vgi/generated/vgi_protocol
 # rename that missed it was a silent misroute -- the worker answered on a name
 # no client sent, and nothing failed until integration.
 run vgi.codegen.cpp_protocol_name    > "$ROOT/include/vgi/generated/vgi_protocol_names.hpp"
+# The vgi.v2 registry: `VgiService` (every method, UNIMPLEMENTED by default)
+# and `VGI_METHODS`, the table Dispatcher::install registers. Worker-internal,
+# so under src/. Its banner is left as generated: vgi-python's
+# scripts/regen_generated.py writes the same file and its drift test compares
+# it byte for byte.
+run vgi.codegen.cpp_registry         > "$ROOT/src/generated/vgi_service.hpp"
 
 # Rewrite the provenance banner. Two reasons, both real:
 #

@@ -97,7 +97,7 @@ vgi_rpc::Result empty_envelope() {
 
 }  // namespace
 
-vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request, vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_bind: empty request");
 
@@ -141,7 +141,8 @@ vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request) {
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::aggregate_update(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_update(const vgi_rpc::Request& request,
+                                             vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_update: empty request");
 
@@ -174,7 +175,8 @@ vgi_rpc::Result Dispatcher::aggregate_update(const vgi_rpc::Request& request) {
     return empty_envelope();
 }
 
-vgi_rpc::Result Dispatcher::aggregate_combine(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_combine(const vgi_rpc::Request& request,
+                                              vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_combine: empty request");
 
@@ -206,7 +208,8 @@ vgi_rpc::Result Dispatcher::aggregate_combine(const vgi_rpc::Request& request) {
     return empty_envelope();
 }
 
-vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request,
+                                               vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_finalize: empty request");
 
@@ -252,7 +255,8 @@ vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request) 
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::aggregate_streaming_open(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_streaming_open(const vgi_rpc::Request& request,
+                                                     vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_streaming_open: empty request");
 
@@ -282,7 +286,8 @@ vgi_rpc::Result Dispatcher::aggregate_streaming_open(const vgi_rpc::Request& req
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::aggregate_streaming_chunk(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_streaming_chunk(const vgi_rpc::Request& request,
+                                                      vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_streaming_chunk: empty request");
 
@@ -335,7 +340,8 @@ vgi_rpc::Result Dispatcher::aggregate_streaming_chunk(const vgi_rpc::Request& re
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::aggregate_streaming_close(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_streaming_close(const vgi_rpc::Request& request,
+                                                      vgi_rpc::CallContext&) {
     // Must not raise; the session's state is the only thing to release.
     try {
         if (auto dto = wire::get_ipc(request.batch(), "request")) {
@@ -347,7 +353,8 @@ vgi_rpc::Result Dispatcher::aggregate_streaming_close(const vgi_rpc::Request& re
     return empty_envelope();
 }
 
-vgi_rpc::Result Dispatcher::aggregate_window_init(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_window_init(const vgi_rpc::Request& request,
+                                                  vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_window_init: empty request");
 
@@ -376,19 +383,22 @@ vgi_rpc::Result Dispatcher::aggregate_window_init(const vgi_rpc::Request& reques
     return empty_envelope();
 }
 
-vgi_rpc::Result Dispatcher::aggregate_window(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_window(const vgi_rpc::Request& request,
+                                             vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_window: empty request");
     return window_result(dto, /*batched=*/false);
 }
 
-vgi_rpc::Result Dispatcher::aggregate_window_batch(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_window_batch(const vgi_rpc::Request& request,
+                                                   vgi_rpc::CallContext&) {
     auto dto = wire::get_ipc(request.batch(), "request");
     if (!dto) throw std::runtime_error("aggregate_window_batch: empty request");
     return window_result(dto, /*batched=*/true);
 }
 
-vgi_rpc::Result Dispatcher::aggregate_window_destructor(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_window_destructor(const vgi_rpc::Request& request,
+                                                        vgi_rpc::CallContext&) {
     // Must not raise; a stored partition is large, so failing to release it
     // matters more than the error would.
     try {
@@ -485,7 +495,8 @@ vgi_rpc::Result Dispatcher::window_result(const std::shared_ptr<arrow::RecordBat
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::aggregate_destructor(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::aggregate_destructor(const vgi_rpc::Request& request,
+                                                 vgi_rpc::CallContext&) {
     // The protocol requires this call not to raise, and *everything* below can
     // — decoding the request, reading a field, decoding the group batch. The
     // try has to wrap all of it, not just the erase, or a malformed request

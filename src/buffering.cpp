@@ -121,7 +121,8 @@ vgi_rpc::Result Dispatcher::table_buffering_combine(const vgi_rpc::Request& requ
                            .finish());
 }
 
-vgi_rpc::Result Dispatcher::table_buffering_destructor(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::table_buffering_destructor(const vgi_rpc::Request& request,
+                                                       vgi_rpc::CallContext&) {
     // Release the execution's shared state. Best effort and never raising:
     // the protocol requires that, and a failure here would abort a query that
     // has already produced its answer.

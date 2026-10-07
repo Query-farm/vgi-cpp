@@ -928,7 +928,7 @@ BindParams Dispatcher::read_bind_request(
     return params;
 }
 
-vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request, vgi_rpc::CallContext&) {
     auto bind_call = wire::get_ipc(request.batch(), "request");
     if (!bind_call) throw std::runtime_error("bind: empty request");
 
@@ -1118,7 +1118,8 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request,
             .finish());
 }
 
-vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& request,
+                                                       vgi_rpc::CallContext&) {
     auto cardinality_request = wire::get_ipc(request.batch(), "request");
     if (!cardinality_request) throw std::runtime_error("cardinality: empty request");
 
@@ -1161,7 +1162,8 @@ vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& r
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& request,
+                                                      vgi_rpc::CallContext&) {
     auto statistics_request = wire::get_ipc(request.batch(), "request");
     if (!statistics_request) throw std::runtime_error("statistics: empty request");
 
@@ -1195,7 +1197,8 @@ vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& re
     return vgi_rpc::Result::value(result.finish());
 }
 
-vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Request& request,
+                                                             vgi_rpc::CallContext&) {
     auto profile_request = wire::get_ipc(request.batch(), "request");
     if (!profile_request) throw std::runtime_error("dynamic_to_string: empty request");
 

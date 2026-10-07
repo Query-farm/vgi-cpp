@@ -55,6 +55,20 @@ That wraps the four `python -m vgi.codegen.cpp_*` generators, passes
 `--namespace vgi::generated`, and prints the resulting `VGI_PROTOCOL_VERSION`
 and `VGI_PROTOCOL_NAME`.
 
+The vgi.v2 **method registry** is generated too: `src/generated/vgi_service.hpp`
+(`vgi.codegen.cpp_registry`, also written by vgi-python's
+`scripts/regen_generated.py`, whose drift test compares it byte for byte). It
+holds `generated::VgiService`, one virtual per vgi.v2 method whose default
+answers UNIMPLEMENTED (`method_not_implemented`, "<method> is not implemented
+by this worker"), and `generated::VGI_METHODS`, the table binding each wire
+name to its params / result / payload / header schema factories and its
+member. `Dispatcher` derives from `VgiService` and overrides what it serves;
+`Dispatcher::install` walks the table and names no method (except to redeem an
+attach ticket on `catalog_attach`). A method added to the reference appears
+here as an UNIMPLEMENTED stub on regeneration, so the reflection hash cannot
+drift. The read-only DDL refusals are `Dispatcher` overrides, not defaults.
+Worker-internal, so it lives under `src/`, not the public include tree.
+
 Two things to know:
 
 - **The generators default to `duckdb::vgi::generated`**, because their first
@@ -138,7 +152,7 @@ clang-format, Google style with 4-space indent and a 100-column limit — the
 two deviations this codebase already had by hand. The script pins the major
 version, because clang-format's output changes between releases and two
 contributors on different versions reformat each other's files on every
-commit. `include/vgi/generated/` is excluded; formatting it only guarantees
+commit. `include/vgi/generated/` and `src/generated/` are excluded; formatting it only guarantees
 the next regeneration produces a diff.
 
 ## Testing philosophy
@@ -168,10 +182,10 @@ Each of these cost real debugging time, and none is guessable from the code:
 
 - **Every non-void method answers `{result: binary}`.** The generated "result
   schema" describes what is *inside* those bytes, not the response batch. The
-  column is non-nullable unless the return is `bytes | None`
-  (`MethodSpec::optional_result`); handlers build in the nullable
-  `envelope_schema()` and dispatcher.cpp re-declares the answer under
-  `declared_envelope_schema()`. Nullability and field order are part of the
+  column is non-nullable unless the return is `bytes | None` (the generated
+  table's `result`, `ResultEnvelopeSchema` / `OptionalResultEnvelopeSchema`);
+  handlers build in the nullable `envelope_schema()` and dispatcher.cpp
+  re-declares the answer under the method's registered `result`. Nullability and field order are part of the
   protocol description reflection hashes, and the hash matches vgi-python's.
 - **`arguments` and `output_schema` are IPC-serialized *schemas*, not
   batches.** A parameter list is fields plus metadata; `vgi_const` above all,

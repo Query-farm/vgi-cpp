@@ -459,7 +459,7 @@ std::vector<std::string> Dispatcher::encode_global_functions(const CatalogModel&
     return items;
 }
 
-vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request, vgi_rpc::CallContext&) {
     // The request dataclass rides in one binary column as a self-describing
     // IPC stream; the params schema is only ever {request: binary}.
     auto attach = wire::get_ipc(request.batch(), "request");
@@ -579,13 +579,14 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request) {
     return envelope(batch.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_version(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_version(const vgi_rpc::Request& request,
+                                            vgi_rpc::CallContext&) {
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_version"))
                         .set_int64("version", *current_catalog_version(request))
                         .finish());
 }
 
-void Dispatcher::catalog_detach(const vgi_rpc::Request&) {
+void Dispatcher::catalog_detach(const vgi_rpc::Request&, vgi_rpc::CallContext&) {
     // Nothing is freed here on purpose. Per-attachment state — a function's
     // collections, keyed on `attachment_id` — is not the dispatcher's to
     // reclaim: `FunctionStorage` is scoped by opaque strings the function
@@ -602,7 +603,8 @@ std::optional<int64_t> Dispatcher::current_catalog_version(const vgi_rpc::Reques
     return 1;
 }
 
-vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
+vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&,
+                                                      vgi_rpc::CallContext&) {
     // Minted here rather than by the engine, and unique across processes: the
     // pool hands a different worker to each RPC of one transaction, so two
     // transactions that collided on an id would read each other's state
@@ -616,7 +618,8 @@ vgi_rpc::Result Dispatcher::catalog_transaction_begin(const vgi_rpc::Request&) {
                         .finish());
 }
 
-void Dispatcher::catalog_transaction_commit(const vgi_rpc::Request& request) {
+void Dispatcher::catalog_transaction_commit(const vgi_rpc::Request& request,
+                                            vgi_rpc::CallContext&) {
     // Committing ends the transaction, so whatever it remembered goes with it.
     // Rollback is the same discard: the scope holds only what the transaction
     // itself put there, and nothing is written through to storage the engine
@@ -625,8 +628,9 @@ void Dispatcher::catalog_transaction_commit(const vgi_rpc::Request& request) {
     if (id && !id->empty()) default_storage()->clear(transaction_scope(*id));
 }
 
-void Dispatcher::catalog_transaction_rollback(const vgi_rpc::Request& request) {
-    catalog_transaction_commit(request);
+void Dispatcher::catalog_transaction_rollback(const vgi_rpc::Request& request,
+                                              vgi_rpc::CallContext& context) {
+    catalog_transaction_commit(request, context);
 }
 
 // One IPC entry per declared ATTACH option.
@@ -719,7 +723,7 @@ bool Dispatcher::route_memory_catalog(const std::string& method, const vgi_rpc::
     return true;
 }
 
-vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&) {
+vgi_rpc::Result Dispatcher::catalog_catalogs(const vgi_rpc::Request&, vgi_rpc::CallContext&) {
     // Every catalog this worker serves. Discovery runs before any ATTACH, so
     // what each entry says is what the catalog *is* — not what some attachment
     // resolved it to.
@@ -919,7 +923,8 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(const vgi_rpc::Request& request,
+                                                                vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
 
@@ -940,7 +945,8 @@ vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(const vgi_rpc::R
     return vgi_rpc::Result::value(result.finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request,
+                                              vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
 
@@ -980,7 +986,8 @@ std::string Dispatcher::encode_view_info(const CatalogView& view, const SchemaPa
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_view_get(const vgi_rpc::Request& request,
+                                             vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
@@ -1078,7 +1085,8 @@ std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_macro_get(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_macro_get(const vgi_rpc::Request& request,
+                                              vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
     std::vector<std::string> items;
@@ -1092,7 +1100,7 @@ vgi_rpc::Result Dispatcher::catalog_macro_get(const vgi_rpc::Request& request) {
                         .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&) {
+vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&, vgi_rpc::CallContext&) {
     return empty_items("catalog_index_get");
 }
 
@@ -1143,7 +1151,8 @@ std::string Dispatcher::encode_schema_info(const std::string& owner, const std::
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request,
+                                            vgi_rpc::CallContext&) {
     std::vector<std::string> items;
 
     // The full seal, not the bare catalog name: `attach_opaque_data` is a
@@ -1162,7 +1171,8 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request) {
                         .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request,
+                                             vgi_rpc::CallContext&) {
     const auto attachment = attachment_of(request);
     const auto owner = handle_of(attachment);
     const auto* model = find_catalog(attachment.catalog);
@@ -1230,7 +1240,8 @@ std::vector<SchemaContents> Dispatcher::compose_catalog_contents(const vgi_rpc::
     return rows;
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request,
+                                               vgi_rpc::CallContext&) {
     const auto wanted = wire::get_schema_path(request.batch(), "path");
     std::vector<std::string> items;
     const auto attachment = attachment_of(request);
@@ -1544,7 +1555,8 @@ Dispatcher::Attachment Dispatcher::attachment_of(const vgi_rpc::Request& request
     return attachment_of(request.batch());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_schema_contents_functions(const vgi_rpc::Request& request,
+                                                              vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch(), "path");
     const auto filter = normalize_function_type(wire::get_enum(request.batch(), "type"));
     // The seal is read once here rather than once per registration: it
@@ -1636,7 +1648,8 @@ Dispatcher::FunctionListing Dispatcher::build_function_listing(
     return items;
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Request& request,
+                                                           vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch(), "path");
     std::vector<std::string> items;
     if (const auto* schema = schema_for(request, schema_path)) {
@@ -1654,7 +1667,8 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_tables(const vgi_rpc::Reques
                         .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request& request,
+                                                          vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch(), "path");
     std::vector<std::string> items;
     if (const auto* schema = schema_for(request, schema_path)) {
@@ -1667,7 +1681,8 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request
                         .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Request& request,
+                                                            vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
 
@@ -1699,7 +1714,8 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Reque
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Request& request,
+                                                            vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch());
     const auto name = wire::get_string(request.batch(), "name");
 
@@ -1787,7 +1803,8 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
                                       .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Request& request) {
+vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Request& request,
+                                                           vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch(), "path");
     // The engine scans the two macro kinds in separate calls, and the kind it
     // wants is in `type`. Answering with all of them on a kind-scoped request
@@ -1810,11 +1827,13 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_macros(const vgi_rpc::Reques
                         .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_schema_contents_indexes(const vgi_rpc::Request&) {
+vgi_rpc::Result Dispatcher::catalog_schema_contents_indexes(const vgi_rpc::Request&,
+                                                            vgi_rpc::CallContext&) {
     return empty_items("catalog_schema_contents_indexes");
 }
 
-vgi_rpc::Result Dispatcher::catalog_copy_from_formats(const vgi_rpc::Request&) {
+vgi_rpc::Result Dispatcher::catalog_copy_from_formats(const vgi_rpc::Request&,
+                                                      vgi_rpc::CallContext&) {
     // Both directions ride this one method — `direction` distinguishes them —
     // which is why its name mentions only "from".
     //

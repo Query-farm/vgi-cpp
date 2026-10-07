@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <stdexcept>
+#include <variant>
 
 #include "methods.h"
 
@@ -262,72 +263,20 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
     }
 
     // Every method of the protocol is registered, including the ones with no
-    // implementation yet.
+    // implementation: the generated `VgiService` answers those UNIMPLEMENTED.
     //
-    // Registering the whole surface up front is deliberate. A method that is
-    // absent and a method that is present but unimplemented fail in very
-    // different ways: the first surfaces as `method_not_implemented` from the
-    // RPC layer, which the engine may treat as an optional capability the
-    // worker declined, and the query then fails somewhere else entirely. The
-    // second says exactly which method was reached. It also makes
-    // `vgi_rpc.Reflection.v1`'s `describe` an honest inventory of the
-    // protocol surface.
-    // Implemented handlers, by method name. Anything absent from this map is
-    // still registered — see the note above — but refuses when called.
-    const std::unordered_map<std::string, UnaryHandler> unary = {
-        {"bind", &Dispatcher::bind},
-        {"table_function_cardinality", &Dispatcher::table_function_cardinality},
-        {"table_function_statistics", &Dispatcher::table_function_statistics},
-        {"table_function_dynamic_to_string", &Dispatcher::table_function_dynamic_to_string},
-        {"aggregate_bind", &Dispatcher::aggregate_bind},
-        {"aggregate_update", &Dispatcher::aggregate_update},
-        {"aggregate_combine", &Dispatcher::aggregate_combine},
-        {"aggregate_finalize", &Dispatcher::aggregate_finalize},
-        {"aggregate_destructor", &Dispatcher::aggregate_destructor},
-        {"aggregate_streaming_open", &Dispatcher::aggregate_streaming_open},
-        {"aggregate_streaming_chunk", &Dispatcher::aggregate_streaming_chunk},
-        {"aggregate_streaming_close", &Dispatcher::aggregate_streaming_close},
-        {"aggregate_window_init", &Dispatcher::aggregate_window_init},
-        {"aggregate_window", &Dispatcher::aggregate_window},
-        {"aggregate_window_batch", &Dispatcher::aggregate_window_batch},
-        {"aggregate_window_destructor", &Dispatcher::aggregate_window_destructor},
-        {"table_buffering_destructor", &Dispatcher::table_buffering_destructor},
-        {"catalog_attach", &Dispatcher::catalog_attach},
-        {"catalog_transaction_begin", &Dispatcher::catalog_transaction_begin},
-        {"catalog_version", &Dispatcher::catalog_version},
-        {"catalog_catalogs", &Dispatcher::catalog_catalogs},
-        {"catalog_table_get", &Dispatcher::catalog_table_get},
-        {"catalog_table_column_statistics_get", &Dispatcher::catalog_table_column_statistics_get},
-        {"catalog_table_scan_function_get", &Dispatcher::catalog_table_scan_function_get},
-        {"catalog_table_scan_branches_get", &Dispatcher::catalog_table_scan_branches_get},
-        {"catalog_view_get", &Dispatcher::catalog_view_get},
-        {"catalog_macro_get", &Dispatcher::catalog_macro_get},
-        {"catalog_index_get", &Dispatcher::catalog_index_get},
-        {"catalog_schemas", &Dispatcher::catalog_schemas},
-        {"catalog_contents", &Dispatcher::catalog_contents},
-        {"catalog_schema_get", &Dispatcher::catalog_schema_get},
-        {"catalog_schema_contents_functions", &Dispatcher::catalog_schema_contents_functions},
-        {"catalog_schema_contents_tables", &Dispatcher::catalog_schema_contents_tables},
-        {"catalog_schema_contents_views", &Dispatcher::catalog_schema_contents_views},
-        {"catalog_schema_contents_macros", &Dispatcher::catalog_schema_contents_macros},
-        {"catalog_schema_contents_indexes", &Dispatcher::catalog_schema_contents_indexes},
-        {"catalog_copy_from_formats", &Dispatcher::catalog_copy_from_formats},
-    };
-    // The handlers that also take the call's log channel.
-    const std::unordered_map<std::string, UnaryContextHandler> unary_with_context = {
-        {"table_function_plan", &Dispatcher::table_function_plan},
-        {"table_buffering_process", &Dispatcher::table_buffering_process},
-        {"table_buffering_combine", &Dispatcher::table_buffering_combine},
-    };
-    const std::unordered_map<std::string, VoidHandler> voids = {
-        {"catalog_detach", &Dispatcher::catalog_detach},
-        {"catalog_transaction_commit", &Dispatcher::catalog_transaction_commit},
-        {"catalog_transaction_rollback", &Dispatcher::catalog_transaction_rollback},
-    };
-
-    // A `catalog_*` call addressed to a memory catalog is that catalog's,
-    // whatever this dispatcher would otherwise do with it (vgi-go routes its
-    // sub-catalogs the same way: by method name, then by attachment).
+    // Registering the whole surface up front is deliberate. It makes
+    // `vgi_rpc.Reflection.v1`'s `describe` an honest inventory of the protocol
+    // surface, and reports the reference's protocol hash: the table below is
+    // generated from vgi-python's VgiProtocol, schemas and all, so no method can
+    // be missing or carry a schema of its own.
+    //
+    // Nothing here names a method but `catalog_attach`. Every handler runs
+    // behind the same boundary: the opaque values are opened, a `catalog_*`
+    // call addressed to a memory catalog is that catalog's (vgi-go routes its
+    // sub-catalogs the same way: by method name, then by attachment), and a
+    // unary's answer is re-declared under the `result` its method is registered
+    // with.
     const auto routed = [this](const std::string& name, const vgi_rpc::Request& req,
                                std::optional<vgi_rpc::Result>* out) {
         if (!route_memory_catalog(name, req, out)) return false;
@@ -335,137 +284,113 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
         return true;
     };
 
-    for (const auto& spec : protocol_methods()) {
-        const std::string name = spec.name;
-        const auto& declared = declared_envelope_schema(spec);
+    for (const auto& method : generated::VGI_METHODS) {
+        const std::string name(method.name);
+        const std::string doc(method.doc);
 
-        if (spec.kind == MethodKind::Stream) {
+        if (const auto* stream = std::get_if<generated::VgiMethod::Stream>(&method.handler)) {
             // `init` is the only streaming method, and an exchange rather than
             // a producer: the engine pushes input batches and reads one output
             // batch back for each. Its input and output schemas are settled
             // per call by the preceding bind, so the ones declared here are
             // only placeholders — the factory returns the real pair.
             builder.add_exchange(
-                name, spec.params, arrow::schema({}), arrow::schema({}),
-                [this, name](const vgi_rpc::Request& incoming, vgi_rpc::CallContext& ctx) {
+                name, method.params(), arrow::schema({}), arrow::schema({}),
+                [this, name, serve = *stream](const vgi_rpc::Request& incoming,
+                                              vgi_rpc::CallContext& ctx) {
                     opaque::Call call(opaque_key_, ctx.auth());
                     const auto req = call.open(incoming);
                     trace(name);
-                    return this->init(req, ctx);
+                    return (this->*serve)(req, ctx);
                 },
-                "", global_init_response_schema());
+                doc, method.header());
             continue;
         }
 
-        // Two different refusals, and the distinction is user-visible.
-        //
-        // A `catalog_*_create` / `_drop` / `_rename` on a worker that serves a
-        // read-only catalog is not an unimplemented method — it is a DDL
-        // statement against something that does not accept DDL, and the engine
-        // surfaces "catalog is read-only" to the user. Reporting it as
-        // unimplemented instead sends them looking for a missing feature.
-        const bool is_ddl =
-            name.rfind("catalog_", 0) == 0 &&
-            (name.find("_create") != std::string::npos || name.find("_drop") != std::string::npos ||
-             name.find("_rename") != std::string::npos || name.find("_set") != std::string::npos ||
-             name.find("_add") != std::string::npos || name.find("_change") != std::string::npos);
-        const auto refuse = [name, is_ddl] {
-            trace(name + (is_ddl ? " (read-only)" : " (unimplemented)"));
-            if (is_ddl) {
-                throw std::invalid_argument("catalog is read-only: " + name + " is not supported");
-            }
-            throw std::runtime_error("vgi-c++ has not implemented " + name + " yet");
-        };
-
-        if (spec.kind == MethodKind::Void) {
-            if (auto it = voids.find(name); it != voids.end()) {
-                auto handler = it->second;
-                builder.add_void(name, spec.params,
-                                 [this, handler, name, routed](const vgi_rpc::Request& incoming,
-                                                               vgi_rpc::CallContext& ctx) {
-                                     opaque::Call call(opaque_key_, ctx.auth());
-                                     const auto req = call.open(incoming);
-                                     std::optional<vgi_rpc::Result> answer;
-                                     if (routed(name, req, &answer)) return;
-                                     trace(name);
-                                     (this->*handler)(req);
-                                 });
-                continue;
-            }
-            builder.add_void(name, spec.params,
-                             [this, refuse, name, routed](const vgi_rpc::Request& incoming,
-                                                          vgi_rpc::CallContext& ctx) {
-                                 opaque::Call call(opaque_key_, ctx.auth());
-                                 const auto req = call.open(incoming);
-                                 std::optional<vgi_rpc::Result> answer;
-                                 if (routed(name, req, &answer)) return;
-                                 refuse();
-                             });
-        } else {
-            if (auto it = unary_with_context.find(name); it != unary_with_context.end()) {
-                auto handler = it->second;
-                builder.add_unary(name, spec.params, declared,
-                                  [this, handler, name, declared](const vgi_rpc::Request& incoming,
-                                                                  vgi_rpc::CallContext& ctx) {
-                                      opaque::Call call(opaque_key_, ctx.auth());
-                                      const auto req = call.open(incoming);
-                                      trace(name);
-                                      return conform((this->*handler)(req, ctx), declared, name);
-                                  });
-                continue;
-            }
-            if (name == "catalog_attach") {
-                // The opaque-value boundary first (it seals the value this
-                // call answers with), then a `vgi_attach_ticket` is redeemed
-                // -- before routing to a memory catalog, before any catalog
-                // code -- so the sealed catalog, not the request's name,
-                // decides who serves it.
-                builder.add_unary(name, spec.params, declared,
-                                  [this, name, declared, routed](const vgi_rpc::Request& incoming,
-                                                                 vgi_rpc::CallContext& ctx) {
-                                      opaque::Call call(opaque_key_, ctx.auth());
-                                      const auto req =
-                                          redeem_attach_ticket(call.open(incoming), ctx);
-                                      std::optional<vgi_rpc::Result> answer;
-                                      if (routed(name, req, &answer)) {
-                                          return conform(std::move(*answer), declared, name);
-                                      }
-                                      trace(name);
-                                      return conform(catalog_attach(req), declared, name);
-                                  });
-                continue;
-            }
-            if (auto it = unary.find(name); it != unary.end()) {
-                auto handler = it->second;
-                builder.add_unary(name, spec.params, declared,
-                                  [this, handler, name, declared, routed](
-                                      const vgi_rpc::Request& incoming, vgi_rpc::CallContext& ctx) {
-                                      opaque::Call call(opaque_key_, ctx.auth());
-                                      const auto req = call.open(incoming);
-                                      std::optional<vgi_rpc::Result> answer;
-                                      if (routed(name, req, &answer)) {
-                                          return conform(std::move(*answer), declared, name);
-                                      }
-                                      trace(name);
-                                      return conform((this->*handler)(req), declared, name);
-                                  });
-                continue;
-            }
-            builder.add_unary(name, spec.params, declared,
-                              [this, refuse, name, declared, routed](
-                                  const vgi_rpc::Request& incoming,
-                                  vgi_rpc::CallContext& ctx) -> vgi_rpc::Result {
-                                  opaque::Call call(opaque_key_, ctx.auth());
-                                  const auto req = call.open(incoming);
-                                  std::optional<vgi_rpc::Result> answer;
-                                  if (routed(name, req, &answer)) {
-                                      return conform(std::move(*answer), declared, name);
-                                  }
-                                  refuse();
-                                  return vgi_rpc::Result::void_result();  // unreachable
-                              });
+        if (const auto* void_handler = std::get_if<generated::VgiMethod::Void>(&method.handler)) {
+            builder.add_void(
+                name, method.params(),
+                [this, name, routed, serve = *void_handler](const vgi_rpc::Request& incoming,
+                                                            vgi_rpc::CallContext& ctx) {
+                    opaque::Call call(opaque_key_, ctx.auth());
+                    const auto req = call.open(incoming);
+                    std::optional<vgi_rpc::Result> answer;
+                    if (routed(name, req, &answer)) return;
+                    trace(name);
+                    (this->*serve)(req, ctx);
+                },
+                doc);
+            continue;
         }
+
+        // A `vgi_attach_ticket` is redeemed after the opaque-value boundary (it
+        // seals the value this call answers with) and before routing to a
+        // memory catalog or any catalog code, so the sealed catalog, not the
+        // request's name, decides who serves it.
+        const bool redeems_ticket = name == "catalog_attach";
+        const auto& declared = method.result();
+        builder.add_unary(
+            name, method.params(), declared,
+            [this, name, routed, redeems_ticket, declared,
+             serve = std::get<generated::VgiMethod::Unary>(method.handler)](
+                const vgi_rpc::Request& incoming, vgi_rpc::CallContext& ctx) {
+                opaque::Call call(opaque_key_, ctx.auth());
+                auto req = call.open(incoming);
+                if (redeems_ticket) req = redeem_attach_ticket(req, ctx);
+                std::optional<vgi_rpc::Result> answer;
+                if (routed(name, req, &answer)) {
+                    return conform(std::move(*answer), declared, name);
+                }
+                trace(name);
+                return conform((this->*serve)(req, ctx), declared, name);
+            },
+            doc);
     }
 }
+
+// Every DDL method, refused as read-only (see dispatcher.h). The body is the
+// same for all of them, hence the macro.
+namespace {
+
+[[noreturn]] void refuse_read_only(const char* method) {
+    trace(std::string(method) + " (read-only)");
+    throw std::invalid_argument(std::string("catalog is read-only: ") + method +
+                                " is not supported");
+}
+
+}  // namespace
+
+#define VGI_READ_ONLY(method)                                                 \
+    void Dispatcher::method(const vgi_rpc::Request&, vgi_rpc::CallContext&) { \
+        refuse_read_only(#method);                                            \
+    }
+
+VGI_READ_ONLY(catalog_create)
+VGI_READ_ONLY(catalog_drop)
+VGI_READ_ONLY(catalog_schema_create)
+VGI_READ_ONLY(catalog_schema_drop)
+VGI_READ_ONLY(catalog_table_create)
+VGI_READ_ONLY(catalog_table_drop)
+VGI_READ_ONLY(catalog_table_rename)
+VGI_READ_ONLY(catalog_table_comment_set)
+VGI_READ_ONLY(catalog_table_column_add)
+VGI_READ_ONLY(catalog_table_column_drop)
+VGI_READ_ONLY(catalog_table_column_rename)
+VGI_READ_ONLY(catalog_table_column_comment_set)
+VGI_READ_ONLY(catalog_table_column_default_set)
+VGI_READ_ONLY(catalog_table_column_default_drop)
+VGI_READ_ONLY(catalog_table_column_type_change)
+VGI_READ_ONLY(catalog_table_not_null_set)
+VGI_READ_ONLY(catalog_table_not_null_drop)
+VGI_READ_ONLY(catalog_view_create)
+VGI_READ_ONLY(catalog_view_drop)
+VGI_READ_ONLY(catalog_view_rename)
+VGI_READ_ONLY(catalog_view_comment_set)
+VGI_READ_ONLY(catalog_macro_create)
+VGI_READ_ONLY(catalog_macro_drop)
+VGI_READ_ONLY(catalog_index_create)
+VGI_READ_ONLY(catalog_index_drop)
+
+#undef VGI_READ_ONLY
 
 }  // namespace vgi

@@ -16,6 +16,8 @@
 
 #include "wire.h"
 
+#include "generated/vgi_service.hpp"
+
 #include "vgi/attach_ticket.h"
 #include "vgi/catalog.h"
 #include "vgi/function.h"
@@ -53,7 +55,7 @@ std::string next_execution_id();
 // Split from Worker because the HTTP transport needs the registries after the
 // server has been built, and because the registries outlive any one
 // connection while a Worker is a one-shot builder.
-class Dispatcher {
+class Dispatcher : public generated::VgiService {
 public:
     Dispatcher();
 
@@ -147,72 +149,113 @@ public:
     vgi_rpc::Request redeem_attach_ticket(const vgi_rpc::Request& request,
                                           const vgi_rpc::CallContext& ctx) const;
 
-    using UnaryHandler = vgi_rpc::Result (Dispatcher::*)(const vgi_rpc::Request&);
-    // The few handlers that need the call's own channel back to the client.
-    // Kept separate rather than widening every signature: only a method that
-    // actually logs has any use for it, and the rest read better without it.
-    using UnaryContextHandler = vgi_rpc::Result (Dispatcher::*)(const vgi_rpc::Request&,
-                                                                vgi_rpc::CallContext&);
-    using VoidHandler = void (Dispatcher::*)(const vgi_rpc::Request&);
-
-    // ── Handlers ──────────────────────────────────────────────────────────
+    // ── vgi.v2 ────────────────────────────────────────────────────────────
     //
-    // One member per protocol method, grouped into translation units by area
-    // (catalog.cpp, function.cpp, …) rather than a single file: the surface is
-    // 70 methods, and a handler is much easier to review beside its siblings
-    // than in a 5,000-line switch.
+    // The generated `VgiService` (src/generated/vgi_service.hpp) declares every
+    // vgi.v2 method and answers UNIMPLEMENTED for each; these overrides are what
+    // this SDK serves, and `install` registers all of them from the generated
+    // table. They are grouped into translation units by area (catalog.cpp,
+    // function_dispatch.cpp, …) rather than a single file: a handler is much
+    // easier to review beside its siblings than in a 5,000-line switch.
 
-    vgi_rpc::Result bind(const vgi_rpc::Request& request);
-    vgi_rpc::Result table_function_plan(const vgi_rpc::Request& request,
-                                        vgi_rpc::CallContext& context);
-    vgi_rpc::Result table_function_cardinality(const vgi_rpc::Request& request);
-    vgi_rpc::Result table_function_statistics(const vgi_rpc::Request& request);
-    vgi_rpc::Result table_function_dynamic_to_string(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_bind(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_update(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_combine(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_finalize(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_destructor(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_streaming_open(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_streaming_chunk(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_streaming_close(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_window_init(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_window(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_window_batch(const vgi_rpc::Request& request);
-    vgi_rpc::Result aggregate_window_destructor(const vgi_rpc::Request& request);
-    vgi_rpc::Result table_buffering_process(const vgi_rpc::Request& request,
-                                            vgi_rpc::CallContext& context);
-    vgi_rpc::Result table_buffering_combine(const vgi_rpc::Request& request,
-                                            vgi_rpc::CallContext& context);
-    vgi_rpc::Result table_buffering_destructor(const vgi_rpc::Request& request);
-    vgi_rpc::Stream init(const vgi_rpc::Request& request, vgi_rpc::CallContext& context);
+    vgi_rpc::Result bind(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result table_function_plan(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result table_function_cardinality(const vgi_rpc::Request&,
+                                               vgi_rpc::CallContext&) override;
+    vgi_rpc::Result table_function_statistics(const vgi_rpc::Request&,
+                                              vgi_rpc::CallContext&) override;
+    vgi_rpc::Result table_function_dynamic_to_string(const vgi_rpc::Request&,
+                                                     vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_bind(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_update(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_combine(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_finalize(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_destructor(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_streaming_open(const vgi_rpc::Request&,
+                                             vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_streaming_chunk(const vgi_rpc::Request&,
+                                              vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_streaming_close(const vgi_rpc::Request&,
+                                              vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_window_init(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_window(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_window_batch(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result aggregate_window_destructor(const vgi_rpc::Request&,
+                                                vgi_rpc::CallContext&) override;
+    vgi_rpc::Result table_buffering_process(const vgi_rpc::Request&,
+                                            vgi_rpc::CallContext&) override;
+    vgi_rpc::Result table_buffering_combine(const vgi_rpc::Request&,
+                                            vgi_rpc::CallContext&) override;
+    vgi_rpc::Result table_buffering_destructor(const vgi_rpc::Request&,
+                                               vgi_rpc::CallContext&) override;
+    vgi_rpc::Stream init(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
 
-    vgi_rpc::Result catalog_attach(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_schemas(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_attach(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_schemas(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     // The whole catalog in one call (protocol 2.1.0): every schema and every
     // object in it, composed from the same encoders the per-schema listings
     // use, so each item is byte-for-byte what those would have answered.
-    vgi_rpc::Result catalog_contents(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_schema_get(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_schema_contents_functions(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_schema_contents_tables(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_schema_contents_views(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_schema_contents_macros(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_schema_contents_indexes(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_copy_from_formats(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_version(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_catalogs(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_table_get(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_table_column_statistics_get(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_table_scan_function_get(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_table_scan_branches_get(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_view_get(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_macro_get(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_index_get(const vgi_rpc::Request& request);
-    void catalog_detach(const vgi_rpc::Request& request);
-    vgi_rpc::Result catalog_transaction_begin(const vgi_rpc::Request& request);
-    void catalog_transaction_commit(const vgi_rpc::Request& request);
-    void catalog_transaction_rollback(const vgi_rpc::Request& request);
+    vgi_rpc::Result catalog_contents(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_schema_get(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_schema_contents_functions(const vgi_rpc::Request&,
+                                                      vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_schema_contents_tables(const vgi_rpc::Request&,
+                                                   vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_schema_contents_views(const vgi_rpc::Request&,
+                                                  vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_schema_contents_macros(const vgi_rpc::Request&,
+                                                   vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_schema_contents_indexes(const vgi_rpc::Request&,
+                                                    vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_copy_from_formats(const vgi_rpc::Request&,
+                                              vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_version(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_catalogs(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_table_get(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_table_column_statistics_get(const vgi_rpc::Request&,
+                                                        vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_table_scan_function_get(const vgi_rpc::Request&,
+                                                    vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_table_scan_branches_get(const vgi_rpc::Request&,
+                                                    vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_view_get(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_macro_get(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_index_get(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_detach(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_transaction_begin(const vgi_rpc::Request&,
+                                              vgi_rpc::CallContext&) override;
+    void catalog_transaction_commit(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_transaction_rollback(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+
+    // DDL. A memory catalog is routed before any of these runs, so reaching one
+    // means a catalog that does not accept DDL: each refuses as read-only, the
+    // error the engine shows the user, rather than as UNIMPLEMENTED, which would
+    // send them looking for a missing feature.
+    void catalog_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_schema_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_schema_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_rename(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_comment_set(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_column_add(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_column_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_column_rename(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_column_comment_set(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_column_default_set(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_column_default_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_column_type_change(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_not_null_set(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_table_not_null_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_view_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_view_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_view_rename(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_view_comment_set(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_macro_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_macro_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_index_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_index_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
 
 private:
     std::optional<int64_t> current_catalog_version(const vgi_rpc::Request& request) const;
