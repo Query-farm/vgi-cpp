@@ -1,6 +1,6 @@
 # © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 cmake_minimum_required(VERSION 3.20)
-project(vgi-cpp VERSION 0.10.0 LANGUAGES CXX)
+project(vgi-cpp VERSION 0.10.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,7 +27,7 @@ set(VGI_RPC_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vgi-rpc-c++"
     CACHE PATH "Sibling vgi-rpc-c++ checkout to build against")
 
 if(VGI_USE_INSTALLED_RPC)
-    find_package(vgi_rpc 0.8.3 CONFIG REQUIRED)
+    find_package(vgi_rpc 0.9.0 CONFIG REQUIRED)
 else()
     if(NOT EXISTS "${VGI_RPC_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
