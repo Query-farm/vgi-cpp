@@ -55,3 +55,22 @@ target_compile_definitions(opaque_seal_e2e_test PRIVATE
     VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
 add_dependencies(opaque_seal_e2e_test vgi-example-worker)
 catch_discover_tests(opaque_seal_e2e_test)
+
+# Attach tickets against the shared vectors (vendored verbatim from
+# vgi-python), plus the protocol and redemption units.
+add_executable(attach_ticket_test attach_ticket_test.cpp)
+target_link_libraries(attach_ticket_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(attach_ticket_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(attach_ticket_test PRIVATE
+    VGI_ATTACH_TICKET_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/data/attach_ticket_vectors.json")
+catch_discover_tests(attach_ticket_test)
+
+# Attach tickets end to end over HTTP: seal while logged in, then reattach
+# with a grant and the ticket alone, against the built example worker.
+add_executable(attach_ticket_e2e_test attach_ticket_e2e_test.cpp)
+target_link_libraries(attach_ticket_e2e_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(attach_ticket_e2e_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(attach_ticket_e2e_test PRIVATE
+    VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
+add_dependencies(attach_ticket_e2e_test vgi-example-worker)
+catch_discover_tests(attach_ticket_e2e_test)

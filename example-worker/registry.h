@@ -98,6 +98,9 @@ void declare_catalog(vgi::Worker& worker);
 void register_extra_catalogs(vgi::Worker& worker);
 // Declares the `attach_options` catalog and its echo function.
 void register_attach_options(vgi::Worker& worker);
+// Declares the `ticket_probe` catalog (attach tickets' cross-SDK fixture):
+// options `region` and secret, required `api_key`; table `main.probe`.
+void register_ticket_probe(vgi::Worker& worker);
 // Shapes the `versioned_tables` catalog model, before any function registers.
 void declare_versioned_tables(vgi::CatalogModel& catalog);
 

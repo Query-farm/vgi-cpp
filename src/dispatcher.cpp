@@ -3,6 +3,9 @@
 #include "opaque_seal.h"
 
 #include <algorithm>
+
+#include <arrow/builder.h>
+#include <vgi_rpc/arrow_utils.h>
 #include <cstdlib>
 #include <cstdio>
 #include <stdexcept>
@@ -213,7 +216,51 @@ const CatalogModel* Dispatcher::find_catalog(const std::string& name) const {
     return nullptr;
 }
 
+std::optional<std::vector<AttachOptionSpec>> Dispatcher::declared_attach_options(
+    const std::string& name) const {
+    if (const auto* model = find_catalog(name)) return model->attach_options;
+    // A memory catalog declares no attach options.
+    if (memory_catalogs_.count(name)) return std::vector<AttachOptionSpec>{};
+    return std::nullopt;
+}
+
+vgi_rpc::Request Dispatcher::redeem_attach_ticket(const vgi_rpc::Request& request,
+                                                  const vgi_rpc::CallContext& ctx) const {
+    const auto attach = wire::get_ipc(request.batch(), "request");
+    const auto restored =
+        vgi::redeem_attach_ticket(attach, attach_ticket_key_, attach_ticket_principal(ctx.auth()));
+    if (!restored) return request;
+    // Only the method name is traced: never the ticket, never a restored option.
+    trace("catalog_attach (attach ticket redeemed)");
+    arrow::BinaryBuilder builder;
+    VGI_RPC_THROW_NOT_OK(builder.Append(wire::encode_ipc(restored)));
+    std::shared_ptr<arrow::Array> column = vgi_rpc::unwrap(builder.Finish());
+    const auto& params = request.batch();
+    std::vector<std::shared_ptr<arrow::Array>> columns;
+    for (int i = 0; i < params->num_columns(); ++i) {
+        columns.push_back(params->schema()->field(i)->name() == "request" ? column
+                                                                          : params->column(i));
+    }
+    return vgi_rpc::Request(arrow::RecordBatch::Make(params->schema(), 1, std::move(columns)),
+                            request.metadata());
+}
+
 void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
+    // `vgi_attach_ticket` is the framework's: it is read as an attach ticket
+    // before any catalog code runs, so a catalog declaring it could never see
+    // its value. A startup error, naming the catalog.
+    for (const auto& model : catalogs_) {
+        for (const auto& option : model->attach_options) {
+            if (is_reserved_attach_option(option.name)) {
+                throw std::invalid_argument(
+                    "catalog '" + model->name + "' declares attach option '" + option.name +
+                    "', which uses the reserved name '" + kAttachTicketOption +
+                    "': the framework reads it as an attach ticket before any catalog code "
+                    "runs. Rename the option.");
+            }
+        }
+    }
+
     // Every method of the protocol is registered, including the ones with no
     // implementation yet.
     //
@@ -364,6 +411,27 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
                                       const auto req = call.open(incoming);
                                       trace(name);
                                       return conform((this->*handler)(req, ctx), declared, name);
+                                  });
+                continue;
+            }
+            if (name == "catalog_attach") {
+                // The opaque-value boundary first (it seals the value this
+                // call answers with), then a `vgi_attach_ticket` is redeemed
+                // -- before routing to a memory catalog, before any catalog
+                // code -- so the sealed catalog, not the request's name,
+                // decides who serves it.
+                builder.add_unary(name, spec.params, declared,
+                                  [this, name, declared, routed](const vgi_rpc::Request& incoming,
+                                                                 vgi_rpc::CallContext& ctx) {
+                                      opaque::Call call(opaque_key_, ctx.auth());
+                                      const auto req =
+                                          redeem_attach_ticket(call.open(incoming), ctx);
+                                      std::optional<vgi_rpc::Result> answer;
+                                      if (routed(name, req, &answer)) {
+                                          return conform(std::move(*answer), declared, name);
+                                      }
+                                      trace(name);
+                                      return conform(catalog_attach(req), declared, name);
                                   });
                 continue;
             }

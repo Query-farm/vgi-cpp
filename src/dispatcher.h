@@ -16,6 +16,7 @@
 
 #include "wire.h"
 
+#include "vgi/attach_ticket.h"
 #include "vgi/catalog.h"
 #include "vgi/function.h"
 #include "vgi/table_function.h"
@@ -128,6 +129,23 @@ public:
     // under: the HTTP signing key, on HTTP. Without one (stdio, unix) the
     // values pass through unsealed and carry no secret attach option.
     void set_opaque_key(std::optional<std::array<uint8_t, 32>> key) { opaque_key_ = key; }
+
+    // The key attach tickets open under: `VGI_SIGNING_KEY`, configured
+    // explicitly, on HTTP. Without one every ticket is `attach_ticket_invalid`.
+    void set_attach_ticket_key(std::optional<AttachTicketKey> key) {
+        attach_ticket_key_ = std::move(key);
+    }
+
+    // The attach options `catalog` declares, or nullopt when this worker
+    // serves no catalog by that name.
+    std::optional<std::vector<AttachOptionSpec>> declared_attach_options(
+        const std::string& catalog) const;
+
+    // `catalog_attach` with a `vgi_attach_ticket` replaced by the attach the
+    // ticket seals; any other request unchanged. Runs before routing, so the
+    // sealed catalog -- not the request's name -- decides who serves it.
+    vgi_rpc::Request redeem_attach_ticket(const vgi_rpc::Request& request,
+                                          const vgi_rpc::CallContext& ctx) const;
 
     using UnaryHandler = vgi_rpc::Result (Dispatcher::*)(const vgi_rpc::Request&);
     // The few handlers that need the call's own channel back to the client.
@@ -390,6 +408,8 @@ private:
     std::map<std::string, std::shared_ptr<MemoryCatalog>> memory_catalogs_;
     std::optional<split_token::SigningKey> split_token_signing_key_;
     std::optional<std::array<uint8_t, 32>> opaque_key_;
+
+    std::optional<AttachTicketKey> attach_ticket_key_;
     std::set<std::string> hidden_;
     // Built function listings, by (catalog, schema path, function type). The
     // HTTP transport dispatches independent calls in parallel, hence the lock.

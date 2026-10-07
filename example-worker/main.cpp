@@ -115,6 +115,10 @@ int main(int argc, char** argv) {
     if (composite || catalog_name == "attach_options") {
         example::register_attach_options(worker);
     }
+    // Attach tickets' cross-SDK probe: one plain and one secret attach option.
+    if (composite || catalog_name == "ticket_probe") {
+        example::register_ticket_probe(worker);
+    }
     if (composite) {
         example::register_catalog_contents(worker);
         example::register_accumulate(worker);

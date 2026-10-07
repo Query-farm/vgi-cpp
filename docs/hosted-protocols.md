@@ -142,6 +142,13 @@ grant keys or `resolve_token` refuses to start there.
 `--access-log PATH` writes vgi-rpc's JSON-lines access log, whose `principal`
 and `auth_domain` fields show how each call was authenticated.
 
+## Attach tickets
+
+With `VGI_SIGNING_KEY` set as well as grant keys (or a `set_mint_grant`
+minter), `--http` also hosts `vgi.attach_tickets.v1`, whose `seal_attach` seals
+a user's ATTACH into a ticket a runner redeems with that user's grant. See
+[Attach tickets](attach-tickets.md).
+
 ## Checking a worker
 
 vgi-rpc's hosted-protocols group checks all of the above on every transport:

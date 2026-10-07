@@ -84,6 +84,10 @@ when two runs go at once, since they would otherwise share one log.
 See [Hosted protocols and Identity](docs/hosted-protocols.md) for serving
 other vgi-rpc protocols beside `vgi.v2` and for hosting `vgi_rpc.Identity.v1`.
 
+See [Attach tickets](docs/attach-tickets.md) for letting a runner reattach a
+user's catalog later, as that user, with a grant and a sealed `vgia1.` ticket
+(`vgi.attach_tickets.v1`, enabled by `VGI_SIGNING_KEY` plus grant keys).
+
 See [Iroh operations](docs/iroh.md) for the in-process C ABI client and
 identity-preserving raw or HTTP worker bridge setup.
 

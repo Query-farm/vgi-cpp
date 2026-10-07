@@ -19,6 +19,7 @@
 #include <vgi_rpc/server.h>
 #include <vgi_rpc/token_identity.h>
 
+#include "attach_ticket_service.h"
 #include "dispatcher.h"
 #include "landing.h"
 #include "vgi/generated/vgi_protocol_names.hpp"
@@ -369,6 +370,33 @@ std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
         if (args[i] != "--access-log") continue;
         if (i + 1 >= args.size()) throw std::invalid_argument("--access-log needs a path");
         builder.access_log(args[i + 1]);
+    }
+
+    // Attach tickets (vgi.attach_tickets.v1). Opened only under a signing key
+    // the operator configured -- `VGI_SIGNING_KEY` -- on HTTP, the one
+    // transport with a caller identity; a key generated for this process
+    // would make every ticket die on restart. Elsewhere a ticket is simply
+    // `attach_ticket_invalid`.
+    const char* signing_key = std::getenv("VGI_SIGNING_KEY");
+    const bool signing_key_configured = signing_key != nullptr && *signing_key != '\0';
+    std::optional<AttachTicketKey> ticket_key;
+    if (transport == Transport::HTTP && signing_key_configured) {
+        ticket_key = attach_ticket_key(signing_key);
+    }
+    disp_->set_attach_ticket_key(ticket_key);
+    // Hosted only when both halves of an unattended session can be issued:
+    // the key above, and grants (grant keys, or the worker's own minter) --
+    // a ticket is useless without a grant. Absent, not hosted-and-refusing,
+    // so a client learns this from reflection.
+    if (ticket_key && (grant_keys || mint_grant_)) {
+        const auto ceiling = attach_ticket_max_ttl(
+            grant_keys ? std::optional<int64_t>(grant_keys->max_ttl_seconds) : std::nullopt);
+        Dispatcher* dispatcher = disp_.get();
+        builder.add_protocol(attach_tickets_protocol(
+            [dispatcher](const std::string& catalog) {
+                return dispatcher->declared_attach_options(catalog);
+            },
+            *ticket_key, ceiling));
     }
 
     if (transport == Transport::HTTP && (resolve_token_ || mint_grant_ || grant_keys)) {

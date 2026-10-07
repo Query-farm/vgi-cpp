@@ -13,6 +13,7 @@
 // spoofable X-Conformance-Principal header for authentication: a test fixture
 // that must never be deployed.
 
+#include <chrono>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -21,6 +22,8 @@
 #include <arrow/type.h>
 #include <vgi_rpc/arrow_utils.h>
 #include <vgi_rpc/errors.h>
+#include <vgi_rpc/grants.h>
+#include <vgi_rpc/http_config.h>
 #include <vgi_rpc/server.h>
 #include <vgi_rpc/token_identity.h>
 #include <vgi/worker.h>
@@ -157,6 +160,29 @@ vgi_rpc::IssuedGrant mint_grant(const std::string& principal, const std::string&
     return vgi_rpc::IssuedGrant{std::move(token), kGrantExpiresAt, "conformance-grant-id"};
 }
 
+// vgi-python's `_optional_bearer`: `vgi-test-alice` / `vgi-test-bob` are
+// fresh logins (auth_time = now, so issue_grant's freshness guard passes); a
+// sealed grant is not ours, and falls through to the grant authenticator; any
+// other bearer stays anonymous. One difference vgi-rpc-cpp imposes: with a
+// bearer authenticator configured, a request with *no* Authorization header is
+// a 401 rather than anonymous, so this is opt-in (VGI_FIXTURE_TEST_BEARERS=1).
+std::optional<vgi_rpc::AuthContext> test_bearer(const std::string& token) {
+    if (token.rfind(vgi_rpc::kGrantTokenPrefix, 0) == 0) return std::nullopt;
+    std::string principal;
+    if (token == "vgi-test-alice") principal = "alice";
+    if (token == "vgi-test-bob") principal = "bob";
+    if (principal.empty()) return vgi_rpc::AuthContext::anonymous();
+    vgi_rpc::AuthContext auth;
+    auth.domain = "bearer";
+    auth.authenticated = true;
+    auth.principal = principal;
+    auth.claims = nlohmann::json{
+        {"auth_time",
+         std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch())
+             .count()}};
+    return auth;
+}
+
 }  // namespace
 
 void register_conformance_fixtures(vgi::Worker& worker, int argc, char** argv) {
@@ -175,21 +201,26 @@ void register_conformance_fixtures(vgi::Worker& worker, int argc, char** argv) {
         // with a fresh X-Conformance-Auth-Time can mint a sealed grant.
         if (std::string(argv[i]) == "--conformance-principal-header") principal_header = true;
     }
-    if (principal_header && !identity) {
-        worker.configure_http(
-            [](vgi_rpc::HttpConfig& config) { config.sticky_header_auth = true; });
-        return;
+    // vgi-python's fixture test bearers (vgi-test-alice / vgi-test-bob), as
+    // fresh logins, so an ATTACH can mint a grant with nothing but a bearer.
+    const char* bearers_env = std::getenv("VGI_FIXTURE_TEST_BEARERS");
+    const bool test_bearers = bearers_env && std::string(bearers_env) == "1";
+    const bool header_auth = identity || principal_header;
+    if (identity) {
+        worker.set_resolve_token(resolve_token);
+        worker.set_mint_grant(mint_grant);
+        // The allowlist is deliberately *not* set here: the fixture takes it
+        // the way a deployment does (--introspect-principals
+        // conformance-introspector, or VGI_INTROSPECT_PRINCIPALS), so starting
+        // it without one exercises the refuse-to-start rule.
     }
-    if (!identity) return;
-    worker.set_resolve_token(resolve_token);
-    worker.set_mint_grant(mint_grant);
-    // The allowlist is deliberately *not* set here: the fixture takes it the
-    // way a deployment does (--introspect-principals conformance-introspector,
-    // or VGI_INTROSPECT_PRINCIPALS), so starting it without one exercises the
-    // refuse-to-start rule.
-    // The fixture's spoofable header authentication (X-Conformance-Principal,
-    // X-Conformance-Auth-Time). Test-only.
-    worker.configure_http([](vgi_rpc::HttpConfig& config) { config.sticky_header_auth = true; });
+    if (!header_auth && !test_bearers) return;
+    worker.configure_http([header_auth, test_bearers](vgi_rpc::HttpConfig& config) {
+        // The fixture's spoofable header authentication (X-Conformance-Principal,
+        // X-Conformance-Auth-Time). Test-only.
+        if (header_auth) config.sticky_header_auth = true;
+        if (test_bearers) config.bearer_authenticate = test_bearer;
+    });
 }
 
 }  // namespace example

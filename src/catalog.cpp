@@ -43,6 +43,13 @@ namespace {
 // Cast to the declared type rather than taken as-is, because DuckDB names a
 // list's item field and a struct's children its own way; a value that differs
 // only in those names is the same value.
+bool equals_ignore_case(const std::string& a, const std::string& b) {
+    return a.size() == b.size() &&
+           std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) {
+               return std::tolower(x) == std::tolower(y);
+           });
+}
+
 std::shared_ptr<arrow::RecordBatch> merge_attach_options(
     const CatalogModel& model, const std::shared_ptr<arrow::RecordBatch>& attach) {
     if (model.attach_options.empty()) return nullptr;
@@ -59,7 +66,15 @@ std::shared_ptr<arrow::RecordBatch> merge_attach_options(
 
         std::shared_ptr<arrow::Array> value;
         if (supplied) {
-            if (auto column = supplied->GetColumnByName(option.name)) {
+            // Option names match case-insensitively, as the engine and the
+            // attach-ticket validation compare them.
+            std::shared_ptr<arrow::Array> column;
+            for (int i = 0; i < supplied->num_columns() && !column; ++i) {
+                if (equals_ignore_case(supplied->schema()->field(i)->name(), option.name)) {
+                    column = supplied->column(i);
+                }
+            }
+            if (column) {
                 auto casted = arrow::compute::Cast(*column, option.type);
                 if (!casted.ok()) {
                     throw std::invalid_argument("Cannot cast ATTACH option '" + option.name +
