@@ -80,16 +80,18 @@ AWK_HTTP=0
 HTTP_SKIP=()
 if [ "$TRANSPORT" = "http" ]; then
   AWK_HTTP=1
-  # database_worker/package.test packages an executable wrapper around
-  # VGI_TEST_WORKER. On this lane that value is an HTTP URL, not an executable;
-  # the direct-exec lifecycle is covered by the stdio and launch lanes.
+  # database_worker/package.test runs here too: VGI_TEST_WORKER is a URL on
+  # this lane, so the package re-execs VGI_DATABASE_PACKAGE_WORKER (exported
+  # below for every lane) instead.
   # cache/identity_isolation.test attaches the shared worker as alice and as
-  # bob through OPTIONAL bearer tokens, which this SDK's HTTP auth does not
-  # offer (VGI_BEARER_TOKENS is required-token only), so the file cannot run
-  # against it.
+  # bob through OPTIONAL bearer tokens, and every other file attaches it with no
+  # token. vgi-rpc-cpp (0.8.2) cannot serve both from one server: with
+  # HttpConfig::bearer_authenticate set, a request with no Authorization header
+  # is a 401 (resolve_http_identity), so the fixture's test bearers
+  # (VGI_FIXTURE_TEST_BEARERS) would refuse the rest of the suite. Excluded
+  # until the port can leave a header-less request anonymous.
   HTTP_SKIP=(
     -not -name 'projection_pushdown_repro.test'
-    -not -path './database_worker/package.test'
     -not -path './cache/identity_isolation.test'
   )
 fi

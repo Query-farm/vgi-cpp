@@ -69,6 +69,13 @@ exec "$BIN" "\$@" 2>>"$CACHE/worker.log"
 EOF
 chmod +x "$WRAP"
 
+# database_worker/package.test installs a worker package that re-execs
+# VGI_DATABASE_PACKAGE_WORKER (the extension's test/support/
+# database_worker_fixture.sh). On the HTTP lane VGI_TEST_WORKER is a URL,
+# which is not a command, so the fixture needs a launchable worker named
+# explicitly. The stderr-capturing wrapper is one, on every lane.
+export VGI_DATABASE_PACKAGE_WORKER="${VGI_DATABASE_PACKAGE_WORKER:-$WRAP}"
+
 # One binary serves every catalog the suite attaches, switched by
 # VGI_WORKER_CATALOG_NAME — same shape as the Rust fixture.
 mk_wrapper() { # name catalog [extra-env...]
