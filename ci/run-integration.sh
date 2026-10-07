@@ -34,6 +34,16 @@ STAGE="${STAGE:-$(mktemp -d)}"
 TRANSPORT="${TRANSPORT:-stdio}"
 INTEGRATION="$VGI_SRC/test/sql/integration"
 [ -d "$INTEGRATION" ] || { echo "::error::no test/sql/integration under VGI_SRC=$VGI_SRC"; exit 1; }
+# Fail on every unexpected error. Without --test-config, DuckDB's sqllogictest
+# runner turns any error whose text contains "HTTP" (or "Unable to connect")
+# into a SKIP that exits 0, and over the HTTP transport every worker error
+# contains "HTTP": real failures read as skips. The extension ships the config
+# that turns this off (Query-farm/vgi test/configs/no_error_skip.json); it is
+# read from the same checkout as the suite, so the two never disagree. Every
+# lane gets it, not only http: a skip on an error message is a hidden failure
+# on any transport.
+TEST_CONFIG="$VGI_SRC/test/configs/no_error_skip.json"
+[ -f "$TEST_CONFIG" ] || { echo "::error::VGI suite is missing $TEST_CONFIG"; exit 1; }
 
 # Windows (Git Bash) has no AF_UNIX, and the prebuilt runner cannot exec a shell
 # catalog wrapper as a subprocess LOCATION, so it runs the main worker only.
@@ -323,7 +333,7 @@ esac
 run_unittest() {
   local log unittest_rc=0
   log="$(mktemp)"
-  "$HAYBARN_UNITTEST" "$@" 2>&1 | tee "$log"
+  "$HAYBARN_UNITTEST" --test-config "$TEST_CONFIG" "$@" 2>&1 | tee "$log"
   # Read PIPESTATUS immediately: any command in between (including `|| true`)
   # overwrites it and would silently swallow every real test failure.
   unittest_rc="${PIPESTATUS[0]}"
