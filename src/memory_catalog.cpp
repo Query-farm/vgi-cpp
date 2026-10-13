@@ -12,6 +12,7 @@
 #include "methods.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "wire.h"
+#include <vgi_rpc/errors.h>
 
 namespace vgi {
 
@@ -362,6 +363,10 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
 
     // DDL.
     if (method == "catalog_schema_create") {
+        if (wire::get_optional_binary(params, "options").has_value()) {
+            throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
+                "catalog_schema_create requires negotiated vgi.schema.options.create.v1", vgi_rpc::Code::UNIMPLEMENTED);
+        }
         schema_create(attach, params);
         return std::nullopt;
     }

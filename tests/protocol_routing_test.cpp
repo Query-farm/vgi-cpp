@@ -59,14 +59,14 @@ const std::string kVersion(gen::VGI_PROTOCOL_VERSION);
 // than a handler failing somewhere inside a payload it cannot read.
 const std::string kOtherMajor = "vgi.v1";
 
-// The reference vgi.v2 protocol hash: vgi-python 0.43.0's, 72 methods. The
+// The reference vgi.v2 protocol hash: the unpublished combined contract, 74 methods. The
 // hash covers each method's type and its params, result and header schemas
 // (field names, order, nullability, types), not docs or defaults, so a
 // registration that drifts from the reference changes it. Every SDK reports
-// this same value. It changes only with vgi.v2's protocol version (2.1.0):
-// update it together with VGI_PROTOCOL_VERSION, never to make a drift pass.
+// this same value. This is the changing development contract; the public
+// version transition remains gated on the complete combined protocol freeze.
 const std::string kReferenceProtocolHash =
-    "774cb80090d71ea76d09aa311b9cda4ca4c33c3bf72c43242eb6dc87b6f79ce5";
+    "98309fc84d6bdb9c01c70986a3ddc53596a9dfaba4325297be22f601e3a4e6a2";
 
 // A worker serving a listening transport, owned for the length of one test.
 //

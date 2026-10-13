@@ -84,3 +84,10 @@ target_compile_definitions(launcher_idle_test PRIVATE
     VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
 add_dependencies(launcher_idle_test vgi-example-worker)
 catch_discover_tests(launcher_idle_test)
+
+add_executable(catalog_contracts_test catalog_contracts_test.cpp)
+target_link_libraries(catalog_contracts_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(catalog_contracts_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(catalog_contracts_test PRIVATE
+    VGI_CATALOG_CONTRACT_VECTORS="${CMAKE_SOURCE_DIR}/conformance/catalog-contracts.json")
+catch_discover_tests(catalog_contracts_test)
