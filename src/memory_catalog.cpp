@@ -416,7 +416,8 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         auto info = wire::ResultBuilder(gen::ViewInfoSchema())
                         .set_string("name", name)
                         .set_string_list("schema_path", path)
-                        .set_string("definition", wire::get_string(params, "definition"));
+                        .set_string("definition", wire::get_string(params, "definition"))
+                        .set_string_list("aliases", wire::get_string_list(params, "aliases"));
         put_object(attach, path, name, "View",
                    wire::get_optional_enum(params, "on_conflict").value_or(""), true,
                    wire::encode_ipc(info.fill_defaults().finish()));
