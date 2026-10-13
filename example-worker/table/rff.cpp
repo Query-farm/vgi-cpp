@@ -234,8 +234,8 @@ std::shared_ptr<arrow::Schema> hive_schema() {
 }
 
 // The four bbox corners, each its own group: every one must carry a filter.
-std::vector<std::vector<std::string>> bbox_corners() {
-    return {{"bbox.xmin"}, {"bbox.xmax"}, {"bbox.ymin"}, {"bbox.ymax"}};
+std::vector<std::vector<std::vector<std::string>>> bbox_corners() {
+    return {{{"bbox", "xmin"}}, {{"bbox", "xmax"}}, {{"bbox", "ymin"}}, {{"bbox", "ymax"}}};
 }
 
 }  // namespace
@@ -266,7 +266,7 @@ void register_rff(vgi::Worker& worker) {
 // The `rff_*` tables, declared by the catalog.
 std::vector<vgi::CatalogTable> rff_tables() {
     const auto table = [](std::string name, std::shared_ptr<arrow::Schema> columns,
-                          std::string scan, std::vector<std::vector<std::string>> required) {
+                          std::string scan, std::vector<std::vector<std::vector<std::string>>> required) {
         vgi::CatalogTable entry;
         entry.name = std::move(name);
         entry.columns = std::move(columns);
@@ -283,7 +283,7 @@ std::vector<vgi::CatalogTable> rff_tables() {
     // own column projection.
     const auto native = [](std::string name, std::shared_ptr<arrow::Schema> columns,
                            std::string path, bool hive,
-                           std::vector<std::vector<std::string>> required) {
+                           std::vector<std::vector<std::vector<std::string>>> required) {
         vgi::CatalogTable entry;
         entry.name = std::move(name);
         entry.columns = std::move(columns);
@@ -299,20 +299,20 @@ std::vector<vgi::CatalogTable> rff_tables() {
     const auto ab = arrow::schema(
         {arrow::field("a", arrow::int64(), true), arrow::field("b", arrow::int64(), true)});
     std::vector<vgi::CatalogTable> tables;
-    tables.push_back(table("rff_simple", ab, "rff_simple_scan", {{"a"}}));
+    tables.push_back(table("rff_simple", ab, "rff_simple_scan", {{{"a"}}}));
     // One OR-group: a filter on either column satisfies it.
-    tables.push_back(table("rff_or", ab, "rff_simple_scan", {{"a", "b"}}));
+    tables.push_back(table("rff_or", ab, "rff_simple_scan", {{{"a"}, {"b"}}}));
     tables.push_back(table("rff_none", ab, "rff_none_scan", {}));
     tables.push_back(table(
         "rff_struct", arrow::schema({struct_ab("s"), arrow::field("other", arrow::int64(), true)}),
-        "rff_struct_scan", {{"s.a"}, {"s.b"}}));
+        "rff_struct_scan", {{{"s", "a"}}, {{"s", "b"}}}));
     auto multi = table("rff_multi",
                        arrow::schema({struct_ab("s"), arrow::field("top", arrow::int64(), true)}),
-                       "rff_multi_scan", {{"top"}, {"s.a"}});
+                       "rff_multi_scan", {{{"top"}}, {{"s", "a"}}});
     multi.cardinality = 2;
     tables.push_back(std::move(multi));
     tables.push_back(
-        table("rff_nested", nested_schema(), "rff_nested_scan", {{"wrapper.mid.leaf"}}));
+        table("rff_nested", nested_schema(), "rff_nested_scan", {{{"wrapper", "mid", "leaf"}}}));
 
     auto rowid =
         table("rff_rowid",
@@ -329,7 +329,7 @@ std::vector<vgi::CatalogTable> rff_tables() {
     // The mixed requirement: a top-level path alongside the corners, which
     // lands at a permuted slot once the native scan projects.
     auto mixed = bbox_corners();
-    mixed.insert(mixed.begin(), {"id"});
+    mixed.insert(mixed.begin(), {{"id"}});
     tables.push_back(native("rff_hive_mixed", hive_schema(), "rff_hive/*/*/*.parquet",
                             /*hive=*/true, std::move(mixed)));
     return tables;

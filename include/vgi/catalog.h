@@ -90,13 +90,13 @@ struct CatalogTable {
     std::vector<TimeTravelVersion> time_travel;
 
     // WHERE-filter groups this table requires, in conjunctive normal form: an
-    // AND of OR-groups of dotted column paths.
+    // AND of OR-groups of raw component paths (dots and quotes are literal).
     //
     // A group is satisfied when *any* of its paths carries a filter, and every
     // group must be satisfied. A single-path group is a plain mandatory
-    // filter; `{"ticker", "cik"}` means "one of these two". Empty means no
+    // filter; `{{"ticker"}, {"cik"}}` means "one of these two". Empty means no
     // requirement. The engine enforces it — the worker only declares it.
-    std::vector<std::vector<std::string>> required_filters;
+    std::vector<std::vector<std::vector<std::string>>> required_filters;
 
     // Sources this table is stitched from.
     //

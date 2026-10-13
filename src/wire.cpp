@@ -522,6 +522,24 @@ ResultBuilder& ResultBuilder::set_int32_list_list(const std::string& field,
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_string_list_list_list(
+    const std::string& field, const std::vector<std::vector<std::vector<std::string>>>& groups) {
+    auto items = std::make_shared<arrow::StringBuilder>();
+    auto paths = std::make_shared<arrow::ListBuilder>(arrow::default_memory_pool(), items);
+    auto inner = std::make_shared<arrow::ListBuilder>(arrow::default_memory_pool(), paths);
+    arrow::ListBuilder outer(arrow::default_memory_pool(), inner);
+    check_ok(outer.Append(), "opening required-filter groups");
+    for (const auto& group : groups) {
+        check_ok(inner->Append(), "opening required-filter group");
+        for (const auto& path : group) {
+            check_ok(paths->Append(), "opening required-filter path");
+            check_ok(items->AppendValues(path), "appending required-filter components");
+        }
+    }
+    arrays_[static_cast<size_t>(field_index(field))] = unwrap(outer.Finish(), "finishing required-filter groups");
+    return *this;
+}
+
 ResultBuilder& ResultBuilder::set_string_list_list(
     const std::string& field, const std::vector<std::vector<std::string>>& groups) {
     auto items = std::make_shared<arrow::StringBuilder>();

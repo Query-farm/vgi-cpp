@@ -905,7 +905,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
         .set_binary_list("foreign_key_constraints", encode_foreign_keys(table, schema_path))
         .set_bool("supports_column_statistics", !table.column_statistics.empty())
         .set_string_map("tags", table.tags)
-        .set_string_list_list("required_filters", table.required_filters);
+        .set_string_list_list_list("required_filters", table.required_filters);
     // Null, not -1, when the table does not know its size. The engine reads
     // these as optional, so a present -1 *is* an answer: it takes it, skips
     // `table_function_cardinality` entirely, and DuckDB clamps it to one row.
