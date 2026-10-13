@@ -66,7 +66,7 @@ const std::string kOtherMajor = "vgi.v1";
 // this same value. This is the changing development contract; the public
 // version transition remains gated on the complete combined protocol freeze.
 const std::string kReferenceProtocolHash =
-    "880e67e755301062698475d23ae8922a6b868d8d0b70ddb195edd96f6be385a4";
+    "4b77dc42e39231dec67e31739ab31ae1f7291a8f92ea4e6767db61f39afb5dfd";
 
 // A worker serving a listening transport, owned for the length of one test.
 //
