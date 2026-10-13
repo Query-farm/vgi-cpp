@@ -251,6 +251,7 @@ public:
     void catalog_view_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_view_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_view_rename(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    void catalog_view_column_comment_set(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_view_comment_set(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_macro_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_macro_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;

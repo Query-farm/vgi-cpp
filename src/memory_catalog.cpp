@@ -2,6 +2,7 @@
 #include "memory_catalog.h"
 #include "opaque_seal.h"
 
+#include <arrow/array.h>
 #include <algorithm>
 #include <cctype>
 #include <random>
@@ -19,6 +20,28 @@ namespace vgi {
 namespace {
 
 namespace gen = ::vgi::generated;
+
+std::map<std::string, std::string> view_map(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    auto values = std::dynamic_pointer_cast<arrow::MapArray>(wire::column(batch, field));
+    if (!values) throw std::invalid_argument("view metadata must be a string map");
+    std::map<std::string, std::string> result;
+    if (values->IsNull(0)) return result;
+    auto keys = std::dynamic_pointer_cast<arrow::StringArray>(values->keys());
+    auto items = std::dynamic_pointer_cast<arrow::StringArray>(values->items());
+    if (!keys || !items) throw std::invalid_argument("view metadata must be a string map");
+    const auto begin = values->value_offset(0);
+    const auto end = begin + values->value_length(0);
+    for (auto i = begin; i < end; ++i) {
+        if (keys->IsNull(i) || items->IsNull(i)) throw std::invalid_argument("view metadata cannot contain null entries");
+        result.emplace(keys->GetString(i), items->GetString(i));
+    }
+    return result;
+}
+
+std::vector<std::pair<std::string, std::string>> view_pairs(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    const auto values = view_map(batch, field);
+    return {values.begin(), values.end()};
+}
 
 std::string path_key(const SchemaPath& path) {
     std::string key;
@@ -410,18 +433,68 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
                     wire::get_optional_bool(params, "ignore_not_found").value_or(false), view);
         return std::nullopt;
     }
+    if (method == "catalog_view_comment_set" || method == "catalog_view_column_comment_set") {
+        const bool column = method == "catalog_view_column_comment_set";
+        std::vector<std::string> column_path;
+        if (column) {
+            column_path = wire::get_string_list(params, "column_path");
+            if (column_path.size() != 1 || column_path[0].empty() || column_path[0].find('\0') != std::string::npos)
+                throw std::invalid_argument("view column comments require one raw output identifier");
+        }
+        const auto name = wire::get_string(params, "name");
+        const auto path = wire::get_schema_path(params, "schema_path");
+        const auto comment = wire::get_optional_string(params, "comment");
+        const bool ignore = wire::get_bool(params, "ignore_not_found");
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& current = state(attach);
+        auto schema = current.schemas.find(path_key(path));
+        Object* view = nullptr;
+        if (schema != current.schemas.end()) {
+            auto found = schema->second.views.find(lower(name));
+            if (found != schema->second.views.end()) view = &found->second;
+        }
+        if (!view) {
+            if (ignore) return std::nullopt;
+            throw std::invalid_argument("View with name " + name + " does not exist");
+        }
+        auto batch = wire::decode_ipc(view->item);
+        auto replacement = wire::ResultBuilder(gen::ViewInfoSchema());
+        std::string field = "comment";
+        if (column) {
+            field = "column_comments";
+            auto comments = view_map(batch, field);
+            if (comment) comments[column_path[0]] = *comment;
+            else comments.erase(column_path[0]);
+            replacement.set_string_map(field, {comments.begin(), comments.end()});
+        } else replacement.set_optional_string(field, comment);
+        auto values = replacement.fill_defaults().finish()->GetColumnByName(field);
+        const auto index = batch->schema()->GetFieldIndex(field);
+        auto updated = batch->SetColumn(index, batch->schema()->field(index), values);
+        if (!updated.ok()) throw std::runtime_error(updated.status().ToString());
+        view->item = wire::encode_ipc(*updated);
+        current.version++;
+        return std::nullopt;
+    }
     if (method == "catalog_view_create") {
         if (wire::get_string(params, "security") != "regular") {
             throw std::runtime_error("view security mode is unsupported");
         }
         const auto name = wire::get_string(params, "name");
         const auto path = wire::get_schema_path(params, "schema_path");
+        const auto column_comments = view_pairs(params, "column_comments");
+        for (const auto& entry : column_comments) {
+            if (entry.first.empty() || entry.first.find('\0') != std::string::npos)
+                throw std::invalid_argument("view column comments require raw output identifiers");
+        }
         auto info = wire::ResultBuilder(gen::ViewInfoSchema())
                         .set_string("name", name)
                         .set_string_list("schema_path", path)
                         .set_string("definition", wire::get_string(params, "definition"))
                         .set_string_list("aliases", wire::get_string_list(params, "aliases"))
-                        .set_string("security", "regular");
+                        .set_string("security", "regular")
+                        .set_optional_string("comment", wire::get_optional_string(params, "comment"))
+                        .set_string_map("tags", view_pairs(params, "tags"))
+                        .set_string_map("column_comments", column_comments);
         put_object(attach, path, name, "View",
                    wire::get_optional_enum(params, "on_conflict").value_or(""), true,
                    wire::encode_ipc(info.fill_defaults().finish()));
