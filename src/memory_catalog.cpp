@@ -159,6 +159,7 @@ std::string MemoryCatalog::schema_item(const std::string& attach, const Schema& 
                        .set_string_list("path", schema.path)
                        .set_binary("attach_opaque_data", opaque::echo_attach(attach));
     builder.set_optional_string("comment", schema.comment);
+    builder.set_string_map("tags", {schema.tags.begin(), schema.tags.end()});
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
@@ -191,7 +192,7 @@ std::shared_ptr<arrow::RecordBatch> MemoryCatalog::attach(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         State st;
-        st.schemas[path_key({"main"})] = Schema{{"main"}, std::nullopt, {}, {}};
+        st.schemas[path_key({"main"})] = Schema{{"main"}, std::nullopt, {}, {}, {}};
         version = reported_version(st);
         attaches_[attach] = std::move(st);
     }
@@ -240,7 +241,7 @@ void MemoryCatalog::schema_create(const std::string& attach,
             throw std::invalid_argument("Schema " + path_display(parent) + " does not exist");
         }
     }
-    st.schemas[path_key(path)] = Schema{path, wire::get_optional_string(params, "comment"), {}, {}};
+    st.schemas[path_key(path)] = Schema{path, wire::get_optional_string(params, "comment"), view_map(params, "tags"), {}, {}};
     ++st.version;
 }
 

@@ -47,6 +47,7 @@ private:
     struct Schema {
         SchemaPath path;
         std::optional<std::string> comment;
+        std::map<std::string, std::string> tags;
         std::map<std::string, Object> tables;  // keyed by lower-cased name
         std::map<std::string, Object> views;
     };
