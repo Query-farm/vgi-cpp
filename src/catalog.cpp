@@ -977,6 +977,7 @@ std::string Dispatcher::encode_view_info(const CatalogView& view, const SchemaPa
         // took `SHOW TABLES` on the schema with it.
         .set_string("definition", view.definition)
         .set_string_list("aliases", view.aliases)
+        .set_string("security", view.security)
         .set_string_map("tags", view.tags)
         .set_string_map("column_comments", view.column_comments);
     if (view.comment) {

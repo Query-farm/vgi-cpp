@@ -34,6 +34,7 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         {"table_info", gen::TableInfoSchema()},
         {"view_info", gen::ViewInfoSchema()},
         {"view_info_implicit", gen::ViewInfoSchema()},
+        {"view_info_barrier", gen::ViewInfoSchema()},
         {"column_add_literal", gen::CatalogTableColumnAddParamsSchema()},
         {"column_add_nested", gen::CatalogTableColumnAddParamsSchema()},
         {"column_drop_literal", gen::CatalogTableColumnDropParamsSchema()},
@@ -67,6 +68,7 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     }
     REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("view_info")), "aliases") ==
             std::vector<std::string>{"a.b", "with\"quote"});
+    REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(fixture("view_info_barrier")), "security") == "barrier");
     const auto definitions = vgi::wire::decode_ipc(fixture("definitions"));
     REQUIRE(vgi::wire::get_binary(definitions, "defaults") == fixture("values"));
     const auto changes = vgi::wire::decode_ipc(fixture("changes"));

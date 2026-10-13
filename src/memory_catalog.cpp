@@ -411,13 +411,17 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         return std::nullopt;
     }
     if (method == "catalog_view_create") {
+        if (wire::get_string(params, "security") != "regular") {
+            throw std::runtime_error("view security mode is unsupported");
+        }
         const auto name = wire::get_string(params, "name");
         const auto path = wire::get_schema_path(params, "schema_path");
         auto info = wire::ResultBuilder(gen::ViewInfoSchema())
                         .set_string("name", name)
                         .set_string_list("schema_path", path)
                         .set_string("definition", wire::get_string(params, "definition"))
-                        .set_string_list("aliases", wire::get_string_list(params, "aliases"));
+                        .set_string_list("aliases", wire::get_string_list(params, "aliases"))
+                        .set_string("security", "regular");
         put_object(attach, path, name, "View",
                    wire::get_optional_enum(params, "on_conflict").value_or(""), true,
                    wire::encode_ipc(info.fill_defaults().finish()));

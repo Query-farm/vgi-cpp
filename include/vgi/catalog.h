@@ -157,6 +157,7 @@ struct CatalogView {
     // SQL produces, and the engine matches these against them.
     std::vector<std::pair<std::string, std::string>> column_comments;
     std::vector<std::string> aliases;
+    std::string security = "regular";
 };
 
 // A macro: a name bound to SQL the engine substitutes at the call site.

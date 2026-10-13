@@ -17,6 +17,7 @@
 // builds a response.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <sys/socket.h>
 #include <unistd.h>
@@ -596,13 +597,14 @@ size_t schema_count(const std::shared_ptr<arrow::RecordBatch>& payload) {
 }
 
 void create_view(Served& worker, const std::string& handle, const std::string& name,
-                 const std::string& definition) {
+                 const std::string& definition, const std::string& security = "regular") {
     worker.call_void("catalog_view_create",
                      vgi::wire::ResultBuilder(gen::CatalogViewCreateParamsSchema())
                          .set_binary("attach_opaque_data", handle)
                          .set_string_list("schema_path", {"main"})
                          .set_string("name", name)
                          .set_string("definition", definition)
+                         .set_string("security", security)
                          .set_enum("on_conflict", "ERROR")
                          .fill_defaults()
                          .finish());
@@ -644,6 +646,10 @@ TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its versi
     CHECK(version_of(worker, one) == 1);
 
     create_view(worker, one, "v", "SELECT 1 AS x");
+
+    const auto security_version = version_of(worker, one);
+    REQUIRE_THROWS_WITH(create_view(worker, one, "v", "SELECT 2", "barrier"), Catch::Matchers::ContainsSubstring("security"));
+    REQUIRE(version_of(worker, one) == security_version);
     CHECK(version_of(worker, one) == 2);
     CHECK(view_names(worker, one) == Names{"v"});
     // The second ATTACH never sees the first's objects.
