@@ -375,6 +375,13 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         return std::nullopt;
     }
     if (method == "catalog_table_create") {
+        for (const char* field : {"comment", "tags", "options", "layout"}) {
+            if (params->schema()->GetFieldIndex(field) >= 0 && !wire::column(params, field)->IsNull(0)) {
+                throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
+                    "catalog_table_create: table metadata/options/layout profiles are not supported",
+                    vgi_rpc::Code::UNIMPLEMENTED);
+            }
+        }
         const auto name = wire::get_string(params, "name");
         const auto path = wire::get_schema_path(params, "schema_path");
         if (wire::get_binary(params, "columns").empty()) {

@@ -23,6 +23,16 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         {"empty_state", gen::OptionStateSchema()},
         {"paths", gen::RequiredFilterPathsSchema()},
         {"empty_paths", gen::RequiredFilterPathsSchema()},
+        {"expression", gen::SqlExpressionSchema()},
+        {"sort_key", gen::SortKeySchema()},
+        {"layout", gen::TableLayoutSchema()},
+        {"empty_layout", gen::TableLayoutSchema()},
+        {"layout_change", gen::TableLayoutChangeSchema()},
+        {"layout_clear", gen::TableLayoutChangeSchema()},
+        {"table_create", gen::TableCreateRequestSchema()},
+        {"table_create_legacy", gen::TableCreateRequestSchema()},
+        {"table_info", gen::TableInfoSchema()},
+
     };
     for (const auto& [name, expected] : cases) {
         INFO(name);
