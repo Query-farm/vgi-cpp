@@ -14,6 +14,14 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     };
     namespace gen = vgi::generated;
     const std::vector<std::pair<const char*, std::shared_ptr<arrow::Schema>>> cases = {
+        {"query_offer", gen::ClientQueryCapabilitiesSchema()},
+        {"query_capabilities", gen::QueryCapabilitiesSchema()},
+        {"query_context", gen::QueryEvaluationContextSchema()},
+        {"query_object_reference", gen::QueryObjectReferenceSchema()},
+        {"query_prepare", gen::CatalogQueryPrepareRequestSchema()},
+        {"query_accepted", gen::CatalogQueryPrepareResultSchema()},
+        {"query_declined", gen::CatalogQueryPrepareResultSchema()},
+
         {"capabilities", gen::CatalogCapabilitiesSchema()},
         {"empty_capabilities", gen::CatalogCapabilitiesSchema()},
         {"definitions", gen::OptionDefinitionsSchema()},
@@ -81,4 +89,20 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     REQUIRE(vgi::wire::get_binary(definitions, "defaults") == fixture("values"));
     const auto changes = vgi::wire::decode_ipc(fixture("changes"));
     REQUIRE(vgi::wire::get_binary(changes, "set_values") == fixture("values"));
+    for (const auto* name : {"query_parameters", "query_empty_parameters"}) {
+        INFO(name);
+        const auto source = vgi::wire::decode_ipc(fixture(name));
+        const auto restored = vgi::wire::decode_ipc(vgi::wire::encode_ipc(source));
+        REQUIRE(restored->Equals(*source, true));
+        REQUIRE(restored->num_rows() == 1);
+        REQUIRE(restored->schema()->metadata()->Get("vgi.query.parameters.v1").ValueOrDie() ==
+                (std::string(name) == "query_empty_parameters" ? "positional" : "named"));
+        if (std::string(name) == "query_empty_parameters") {
+            REQUIRE(restored->num_columns() == 0);
+        } else {
+            REQUIRE(restored->column(0)->IsNull(0));
+            const auto type = std::static_pointer_cast<arrow::StructType>(restored->schema()->field(1)->type());
+            REQUIRE(type->field(0)->metadata()->Get("nested").ValueOrDie() == "retained");
+        }
+    }
 }
