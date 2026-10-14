@@ -3,6 +3,7 @@
 #include "opaque_seal.h"
 
 #include <arrow/array.h>
+#include <arrow/util/key_value_metadata.h>
 #include <algorithm>
 #include <cctype>
 #include <random>
@@ -20,6 +21,25 @@ namespace vgi {
 namespace {
 
 namespace gen = ::vgi::generated;
+
+void require_unconstrained_field(const std::shared_ptr<arrow::Field>& field, bool top_level) {
+    const auto& metadata = field->metadata();
+    if (top_level && metadata && metadata->Contains("is_row_id")) return;
+    bool logical = field->type()->id() == arrow::Type::EXTENSION;
+    if (metadata) {
+        for (const auto& key : metadata->keys()) {
+            logical = logical || key.rfind("ARROW:extension:", 0) == 0 || key.rfind("vgi.logical_type.", 0) == 0;
+        }
+    }
+    if (logical || !field->nullable()) {
+        throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
+            "catalog_table_create: nonnullable or logical columns require supported canonical semantics",
+            vgi_rpc::Code::UNIMPLEMENTED);
+    }
+    if (field->type()->id() == arrow::Type::STRUCT) {
+        for (const auto& child : field->type()->fields()) require_unconstrained_field(child, false);
+    }
+}
 
 std::map<std::string, std::string> view_map(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
     auto values = std::dynamic_pointer_cast<arrow::MapArray>(wire::column(batch, field));
@@ -399,6 +419,10 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         return std::nullopt;
     }
     if (method == "catalog_table_create") {
+        if (!wire::get_binary_list(params, "constraint_definitions").empty()) {
+            throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
+                "catalog_table_create: canonical constraint enforcement is not supported", vgi_rpc::Code::UNIMPLEMENTED);
+        }
         for (const char* field : {"comment", "tags", "options", "layout"}) {
             if (params->schema()->GetFieldIndex(field) >= 0 && !wire::column(params, field)->IsNull(0)) {
                 throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
@@ -411,17 +435,15 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         if (wire::get_binary(params, "columns").empty()) {
             throw std::invalid_argument("catalog_table_create: missing columns schema");
         }
+        const auto columns_schema = wire::decode_schema(wire::get_binary(params, "columns"));
+        for (const auto& field : columns_schema->fields()) {
+            require_unconstrained_field(field, true);
+        }
         auto info = wire::ResultBuilder(gen::TableInfoSchema())
                         .set_string("name", name)
                         .set_string_list("schema_path", path)
                         .set_binary("columns", wire::get_binary(params, "columns"));
-        for (const char* constraint :
-             {"not_null_constraints", "unique_constraints", "check_constraints",
-              "primary_key_constraints", "foreign_key_constraints"}) {
-            if (params->schema()->GetFieldIndex(constraint) >= 0) {
-                info.set_array(constraint, wire::column(params, constraint));
-            }
-        }
+        info.set_binary_list("constraints", {}).set_null("definition_revision");
         put_object(attach, path, name, "Table",
                    wire::get_optional_enum(params, "on_conflict").value_or(""), false,
                    wire::encode_ipc(info.fill_defaults().finish()));

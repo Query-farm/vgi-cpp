@@ -678,9 +678,45 @@ TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its versi
                          .set_binary("request", vgi::wire::encode_ipc(table_request))
                          .finish());
     CHECK(version_of(worker, one) == 4);
+    for (const auto* conflict : {"ERROR", "IGNORE", "REPLACE"}) {
+        const auto rejected = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+                                  .set_binary("attach_opaque_data", one)
+                                  .set_string_list("schema_path", {"main"})
+                                  .set_string("name", "t1")
+                                  .set_binary("columns", vgi::wire::encode_schema(arrow::schema(
+                                                            {arrow::field("replacement", arrow::utf8())})))
+                                  .set_enum("on_conflict", conflict)
+                                  .set_binary_list("constraint_definitions", {"unsupported"})
+                                  .fill_defaults()
+                                  .finish();
+        REQUIRE_THROWS(worker.call_void("catalog_table_create",
+                           vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                               .set_binary("request", vgi::wire::encode_ipc(rejected))
+                               .finish()));
+        REQUIRE(version_of(worker, one) == 4);
+    }
+    for (const auto& field : {
+             arrow::field("required", arrow::int32(), false),
+             arrow::field("nested", arrow::struct_({arrow::field("required", arrow::int32(), false)}))}) {
+        const auto rejected = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+                                  .set_binary("attach_opaque_data", one)
+                                  .set_string_list("schema_path", {"main"})
+                                  .set_string("name", "t1")
+                                  .set_binary("columns", vgi::wire::encode_schema(arrow::schema({field})))
+                                  .set_enum("on_conflict", "REPLACE")
+                                  .fill_defaults()
+                                  .finish();
+        REQUIRE_THROWS(worker.call_void("catalog_table_create",
+                           vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                               .set_binary("request", vgi::wire::encode_ipc(rejected))
+                               .finish()));
+        REQUIRE(version_of(worker, one) == 4);
+    }
     const auto contents = contents_by_path(contents_call(worker, one, std::nullopt));
     REQUIRE(contents.size() == 2);
     CHECK(contents.at({"main"}).tables.size() == 1);
+    const auto original_table = vgi::wire::decode_ipc(contents.at({"main"}).tables.front());
+    CHECK(vgi::wire::get_binary(original_table, "columns") == vgi::wire::get_binary(table_request, "columns"));
     CHECK(contents.at({"main"}).views.size() == 1);
     CHECK(contents.count({"s2"}) == 1);
 

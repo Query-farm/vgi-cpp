@@ -53,6 +53,10 @@ struct TimeTravelVersion {
     std::string scan_arguments;
     // The calendar year this version became current, for `AT (TIMESTAMP => …)`.
     std::optional<int> timestamp_year;
+    // Explicit canonical records for this version. Absence cannot inherit a
+    // constrained current table's definitions: its columns may have changed.
+    std::optional<std::vector<std::string>> constraints;
+    std::optional<std::string> definition_revision;
 };
 
 // A foreign key on a table, by column *name* rather than index — the wire
@@ -73,6 +77,9 @@ struct ForeignKey {
 // planner types the query against before any scan runs, so they have to match
 // what the scan actually emits.
 struct CatalogTable {
+    // Canonical ConstraintInfo IPC supplied by the provider; identities are never synthesized.
+    std::vector<std::string> constraints;
+    std::optional<std::string> definition_revision;
     std::string name;
     std::shared_ptr<arrow::Schema> columns;
     // The table function that produces the rows.

@@ -118,6 +118,25 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("view_info")), "aliases") ==
             std::vector<std::string>{"a.b", "with\"quote"});
     REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(fixture("view_info_barrier")), "security") == "barrier");
+    const auto table_create = vgi::wire::decode_ipc(fixture("table_create"));
+    const auto table_info = vgi::wire::decode_ipc(fixture("table_info"));
+    const auto constraint_definitions = vgi::wire::get_binary_list(table_create, "constraint_definitions");
+    const auto constraints = vgi::wire::get_binary_list(table_info, "constraints");
+    REQUIRE(constraint_definitions.size() == 1);
+    REQUIRE(constraints.size() == 1);
+    REQUIRE(vgi::wire::get_binary_list(vgi::wire::decode_ipc(fixture("table_create_legacy")), "constraint_definitions").empty());
+    REQUIRE(vgi::wire::get_binary(table_info, "definition_revision") == std::string("revision\0\xff", 10));
+    const auto constraint = vgi::wire::decode_ipc(constraints[0]);
+    REQUIRE(vgi::wire::get_binary(constraint, "definition") == constraint_definitions[0]);
+    REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(vgi::wire::get_binary(constraint, "ref")), "name") == "fixture-stable-key");
+    const auto constraint_definition = vgi::wire::decode_ipc(constraint_definitions[0]);
+    const auto paths = std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(constraint_definition, "column_paths"));
+    REQUIRE(paths->value_length(0) == 1);
+    const auto path = std::static_pointer_cast<arrow::ListArray>(paths->values());
+    REQUIRE(path->value_length(0) == 2);
+    const auto components = std::static_pointer_cast<arrow::StringArray>(path->values());
+    REQUIRE(components->GetString(0) == "record");
+    REQUIRE(components->GetString(1) == "a.b");
     const auto definitions = vgi::wire::decode_ipc(fixture("definitions"));
     REQUIRE(vgi::wire::get_binary(definitions, "defaults") == fixture("values"));
     const auto changes = vgi::wire::decode_ipc(fixture("changes"));

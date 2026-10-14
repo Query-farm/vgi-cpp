@@ -18,6 +18,7 @@
 #include <vgi/worker.h>
 
 #include "registry.h"
+#include "constraint_fixtures.h"
 
 namespace example {
 namespace {
@@ -630,10 +631,7 @@ void declare_catalog(vgi::Worker& worker) {
                                      tagged("budget", arrow::float64(), {"default"}, {"0"})}),
                       "Department reference table");
         departments.cardinality = 3;
-        departments.not_null = {0, 1};
-        departments.primary_key = {{0}};
-        departments.unique = {{1}};
-        departments.check = {"budget >= 0"};
+        departments.constraints = constraint_fixtures::records("departments");
         // Bounds wider than the three rows on purpose: they describe the table
         // the fixture stands in for, and `column_statistics.test` folds
         // `id > 100` to EMPTY_RESULT against them, not against the data.
@@ -659,8 +657,7 @@ void declare_catalog(vgi::Worker& worker) {
                       }),
                       "Product table with column defaults");
         products.cardinality = 3;
-        products.not_null = {0};
-        products.primary_key = {{0}};
+        products.constraints = constraint_fixtures::records("products");
         products.column_statistics = {
             stat("id", vgi::StatValue::integer(1), vgi::StatValue::integer(100), 100),
             string_stat("name", "Anvil", "Zebra Tape", 100, 30),
@@ -681,10 +678,7 @@ void declare_catalog(vgi::Worker& worker) {
                                             {"department_id", arrow::int64()}}),
                                    "Employee table with FK to departments");
         employees.cardinality = 5;
-        employees.not_null = {0, 1, 2};
-        employees.primary_key = {{0}};
-        employees.unique = {{2}};
-        employees.foreign_keys = {{{"department_id"}, "departments", {"id"}, std::nullopt}};
+        employees.constraints = constraint_fixtures::records("employees");
         data.tables.push_back(std::move(employees));
     }
 
@@ -697,9 +691,7 @@ void declare_catalog(vgi::Worker& worker) {
         projects.cardinality = 3;
         // Composite, which is what this table is here for: a single-column key
         // would not tell a reader whether the list-of-lists survived the wire.
-        projects.primary_key = {{0, 1}};
-        projects.not_null = {0, 1, 2};
-        projects.foreign_keys = {{{"department_id"}, "departments", {"id"}, std::nullopt}};
+        projects.constraints = constraint_fixtures::records("projects");
         data.tables.push_back(std::move(projects));
     }
 
@@ -911,17 +903,13 @@ void declare_catalog(vgi::Worker& worker) {
             entry.scan_function = "versioned_constraints_scan";
             entry.scan_arguments = vgi::serialize_scan_arguments({int64_arg(version)});
             entry.timestamp_year = constraint_years[version - 1];
+            entry.constraints = constraint_fixtures::records("versioned_constraints", version);
             constraints.time_travel.push_back(std::move(entry));
         }
         constraints.columns = constraints.time_travel.back().columns;
         constraints.scan_arguments = constraints.time_travel.back().scan_arguments;
-        // The current version's constraints; an AT to an older one shows the
-        // older *columns* but these same constraints, which is what the wire
-        // carries.
-        constraints.not_null = {0, 1};
-        constraints.primary_key = {{0}};
-        constraints.unique = {{2}};
-        constraints.foreign_keys = {{{"department_id"}, "departments", {"id"}, std::nullopt}};
+        // Each historical schema has its own explicit constraint snapshot.
+        constraints.constraints = *constraints.time_travel.back().constraints;
         data.tables.push_back(std::move(constraints));
     }
 }

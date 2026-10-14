@@ -812,65 +812,6 @@ const TimeTravelVersion* resolve_version(const CatalogTable& table,
     throw std::invalid_argument("unsupported AT unit: " + unit);
 }
 
-namespace {
-
-// Constraints are declared against the table's newest columns, and an AT read
-// is answered against an older version's. Re-seat each index by *name*, and
-// drop the ones naming a column that version does not have.
-//
-// Re-seating rather than range-checking, because a version that reordered its
-// columns keeps every index in range while meaning something else entirely:
-// `not_null = {2}` for `email` becomes `name`, and DuckDB may fold
-// `WHERE name IS NULL` to zero rows on the strength of it.
-std::vector<int32_t> reseat(const std::vector<int32_t>& columns,
-                            const std::shared_ptr<arrow::Schema>& declared,
-                            const std::shared_ptr<arrow::Schema>& shape) {
-    std::vector<int32_t> kept;
-    if (!declared || !shape) return kept;
-    for (const auto column : columns) {
-        if (column < 0 || column >= declared->num_fields()) continue;
-        const int seated = shape->GetFieldIndex(declared->field(column)->name());
-        if (seated >= 0) kept.push_back(seated);
-    }
-    return kept;
-}
-
-// The same, for a list of column groups. A group that loses any member is
-// dropped whole: a composite key missing a column is a different constraint,
-// not a narrower one.
-std::vector<std::vector<int32_t>> reseat(const std::vector<std::vector<int32_t>>& groups,
-                                         const std::shared_ptr<arrow::Schema>& declared,
-                                         const std::shared_ptr<arrow::Schema>& shape) {
-    std::vector<std::vector<int32_t>> kept;
-    for (const auto& group : groups) {
-        auto seated = reseat(group, declared, shape);
-        if (seated.size() == group.size()) kept.push_back(std::move(seated));
-    }
-    return kept;
-}
-
-// One IPC entry per foreign key. The referenced schema travels alongside the
-// table because the wire allows a cross-schema reference, even though every
-// fixture here stays inside one.
-std::vector<std::string> encode_foreign_keys(const CatalogTable& table,
-                                             const SchemaPath& schema_path) {
-    std::vector<std::string> entries;
-    entries.reserve(table.foreign_keys.size());
-    for (const auto& key : table.foreign_keys) {
-        entries.push_back(
-            wire::encode_ipc(wire::ResultBuilder(gen::ForeignKeyInfoSchema())
-                                 .set_string_list("fk_columns", key.columns)
-                                 .set_string_list("pk_columns", key.referenced_columns)
-                                 .set_string("referenced_table", key.referenced_table)
-                                 .set_string_list("referenced_schema_path",
-                                                  key.referenced_schema_path.value_or(schema_path))
-                                 .finish()));
-    }
-    return entries;
-}
-
-}  // namespace
-
 // A table's wire record.
 //
 // `scan_function` and `scan_arguments` are what make a VGI table work: the
@@ -879,6 +820,13 @@ std::vector<std::string> encode_foreign_keys(const CatalogTable& table,
 // per query.
 std::string Dispatcher::encode_table_info(const CatalogTable& table, const SchemaPath& schema_path,
                                           const TimeTravelVersion* version) {
+    if (!table.not_null.empty() || !table.unique.empty() || !table.primary_key.empty() ||
+        !table.check.empty() || !table.foreign_keys.empty()) {
+        throw std::invalid_argument("legacy constraint metadata requires explicit canonical records");
+    }
+    if (version && !version->constraints && !table.constraints.empty()) {
+        throw std::invalid_argument("canonical constraints require version-specific provider snapshots");
+    }
     auto scan =
         wire::ResultBuilder(gen::ScanFunctionResultSchema())
             .set_string("function_name", version ? version->scan_function : table.scan_function)
@@ -887,9 +835,9 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
             .set_string_list("schema_path", schema_path)
             .finish();
 
-    // Constraints are declared against `table.columns`; this read may be
-    // answered against an older version's.
     const auto& shape = version ? version->columns : table.columns;
+    const auto& constraints = version && version->constraints ? *version->constraints : table.constraints;
+    const auto& revision = version ? version->definition_revision : table.definition_revision;
 
     auto builder = wire::ResultBuilder(gen::TableInfoSchema());
     builder.set_string("name", table.name)
@@ -897,15 +845,15 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
         .set_binary("columns", wire::encode_schema(shape))
         .set_binary("scan_function", table.inline_scan ? wire::encode_ipc(scan) : std::string{})
         .set_string_map("write_result_modes", {})
-        .set_int32_list("not_null_constraints", reseat(table.not_null, table.columns, shape))
-        .set_int32_list_list("unique_constraints", reseat(table.unique, table.columns, shape))
-        .set_int32_list_list("primary_key_constraints",
-                             reseat(table.primary_key, table.columns, shape))
-        .set_string_list("check_constraints", table.check)
-        .set_binary_list("foreign_key_constraints", encode_foreign_keys(table, schema_path))
+        .set_binary_list("constraints", constraints)
         .set_bool("supports_column_statistics", !table.column_statistics.empty())
         .set_string_map("tags", table.tags)
         .set_string_list_list_list("required_filters", table.required_filters);
+    if (revision) {
+        builder.set_binary("definition_revision", *revision);
+    } else {
+        builder.set_null("definition_revision");
+    }
     // Null, not -1, when the table does not know its size. The engine reads
     // these as optional, so a present -1 *is* an answer: it takes it, skips
     // `table_function_cardinality` entirely, and DuckDB clamps it to one row.

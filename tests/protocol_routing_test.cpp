@@ -66,7 +66,7 @@ const std::string kOtherMajor = "vgi.v1";
 // this same value. This is the changing development contract; the public
 // version transition remains gated on the complete combined protocol freeze.
 const std::string kReferenceProtocolHash =
-    "28cf2ae30b6cf07dbd4db602e4972611319b993fb073b27de456b6fcf341dc00";
+    "a81e4c5fb450665c3e4991333ba8a404b6482a345269bc3df5b1c02680d71bea";
 
 // A worker serving a listening transport, owned for the length of one test.
 //
@@ -297,5 +297,67 @@ TEST_CASE("http: the worker serves {prefix}/vgi.v2/{method}", "[protocol][http]"
         FAIL("a request routed to " << kOtherMajor << " was served");
     } catch (const vgi_rpc::HttpClientError& refused) {
         CHECK(refused.http_status() == 404);
+    }
+}
+
+TEST_CASE("example constraint discovery preserves canonical untrusted snapshots", "[catalog][constraints][stdio]") {
+    auto client = vgi_rpc::RpcClient::spawn({kWorker}, raw_options(kProtocol));
+    const auto request = vgi::wire::ResultBuilder(gen::CatalogAttachRequestSchema())
+                             .set_string("name", "example")
+                             .fill_defaults()
+                             .finish();
+    const auto attached = client.call_unary(
+        "catalog_attach", vgi::wire::ResultBuilder(gen::CatalogAttachParamsSchema())
+                              .set_binary("request", vgi::wire::encode_ipc(request))
+                              .finish());
+    const auto attach = vgi::wire::get_binary(
+        vgi::wire::decode_ipc(vgi::wire::get_binary(attached.batch, "result")), "attach_opaque_data");
+    const auto read = [&](const std::string& name, int version = 0) {
+        auto params = vgi::wire::ResultBuilder(gen::CatalogTableGetParamsSchema());
+        params.set_binary("attach_opaque_data", attach)
+            .set_string_list("schema_path", {"data"})
+            .set_string("name", name);
+        if (version) params.set_string("at_unit", "VERSION").set_string("at_value", std::to_string(version));
+        const auto response = client.call_unary("catalog_table_get", params.fill_defaults().finish());
+        const auto payload = vgi::wire::decode_ipc(vgi::wire::get_binary(response.batch, "result"));
+        REQUIRE(payload != nullptr);
+        const auto items = vgi::wire::get_binary_list(payload, "items");
+        REQUIRE(items.size() == 1);
+        return vgi::wire::decode_ipc(items.front());
+    };
+    for (const auto& [name, count] : std::vector<std::pair<std::string, size_t>>{
+             {"departments", 5}, {"products", 2}, {"employees", 6}, {"projects", 5}, {"versioned_constraints", 5}}) {
+        const auto table = read(name);
+        REQUIRE(table != nullptr);
+        REQUIRE(table->schema()->Equals(*gen::TableInfoSchema(), true));
+        const auto columns = vgi::wire::get_schema(table, "columns");
+        REQUIRE(columns != nullptr);
+        for (const auto& field : columns->fields()) CHECK(field->nullable());
+        const auto constraints = vgi::wire::get_binary_list(table, "constraints");
+        REQUIRE(constraints.size() == count);
+        std::set<std::string> keys;
+        for (const auto& encoded : constraints) {
+            const auto info = vgi::wire::decode_ipc(encoded);
+            REQUIRE(info->schema()->Equals(*gen::ConstraintInfoSchema(), true));
+            CHECK(vgi::wire::get_enum(info, "enforcement") == "METADATA_ONLY");
+            CHECK(vgi::wire::get_enum(info, "validation") == "UNVALIDATED");
+            const auto ref = vgi::wire::get_ipc(info, "ref");
+            CHECK(vgi::wire::get_string(ref, "owner_table") == name);
+            CHECK(keys.insert(vgi::wire::get_string(ref, "name")).second);
+            const auto definition = vgi::wire::get_ipc(info, "definition");
+            if (vgi::wire::get_enum(definition, "kind") == "FOREIGN_KEY") {
+                const auto target = vgi::wire::get_ipc(info, "referenced_constraint");
+                CHECK(vgi::wire::get_string(target, "owner_table") == "departments");
+                CHECK(vgi::wire::get_string(target, "name") == "fixture:departments:primary");
+            }
+        }
+    }
+    std::vector<std::string> previous;
+    for (int version = 1; version <= 3; ++version) {
+        const auto table = read("versioned_constraints", version);
+        const auto constraints = vgi::wire::get_binary_list(table, "constraints");
+        REQUIRE(constraints.size() == static_cast<size_t>(version + 2));
+        for (size_t i = 0; i < previous.size(); ++i) CHECK(previous[i] == constraints[i]);
+        previous = constraints;
     }
 }
