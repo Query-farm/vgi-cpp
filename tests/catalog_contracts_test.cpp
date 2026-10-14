@@ -12,8 +12,33 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     const auto fixture = [&](const char* name) {
         return vgi::wire::base64_decode(records.at(name).get<std::string>());
     };
+    const auto expression_source = vgi::wire::decode_ipc(fixture("column_expression_metadata"));
+    const auto expression_restored = vgi::wire::decode_ipc(vgi::wire::encode_ipc(expression_source));
+    REQUIRE(expression_source->Equals(*expression_restored, true));
+    REQUIRE(vgi::wire::base64_decode(expression_restored->schema()->field(0)->metadata()->Get("vgi.column.default.v1").ValueOrDie()) == fixture("column_default_expression"));
+    REQUIRE(vgi::wire::base64_decode(expression_restored->schema()->field(1)->metadata()->Get("vgi.column.generated.v1").ValueOrDie()) == fixture("column_generated_expression"));
+    REQUIRE(expression_restored->schema()->field(1)->metadata()->Get("vgi.column.generation.v1").ValueOrDie() == "virtual");
     namespace gen = vgi::generated;
     const std::vector<std::pair<const char*, std::shared_ptr<arrow::Schema>>> cases = {
+        {"sql_statement", gen::SqlStatementSchema()},
+        {"constraint_ref", gen::CatalogObjectRefSchema()},
+        {"foreign_key_definition", gen::ForeignKeyDefinitionSchema()},
+        {"constraint_definition_not_null", gen::ConstraintDefinitionSchema()},
+        {"constraint_definition_unique", gen::ConstraintDefinitionSchema()},
+        {"constraint_definition_primary", gen::ConstraintDefinitionSchema()},
+        {"constraint_definition_check", gen::ConstraintDefinitionSchema()},
+        {"constraint_definition_foreign", gen::ConstraintDefinitionSchema()},
+        {"constraint_info", gen::ConstraintInfoSchema()},
+        {"constraint_info_untrusted", gen::ConstraintInfoSchema()},
+        {"constraint_change_add", gen::ConstraintChangeSchema()},
+        {"constraint_change_drop", gen::ConstraintChangeSchema()},
+        {"constraint_change_rename", gen::ConstraintChangeSchema()},
+        {"constraint_change_unname", gen::ConstraintChangeSchema()},
+        {"constraint_change_replace", gen::ConstraintChangeSchema()},
+        {"constraint_snapshot", gen::ConstraintSnapshotSchema()},
+        {"constraint_snapshot_empty", gen::ConstraintSnapshotSchema()},
+        {"constraints_apply", gen::ConstraintsApplyRequestSchema()},
+        {"constraints_apply_autocommit", gen::ConstraintsApplyRequestSchema()},
         {"macro_parameter", gen::MacroParameterSchema()},
         {"macro_parameter_expression", gen::MacroParameterSchema()},
         {"macro_parameter_untyped", gen::MacroParameterSchema()},
