@@ -115,13 +115,32 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         REQUIRE(restored->Equals(*source, true));
         REQUIRE(restored->num_rows() == 1);
         const auto field = restored->schema()->field(0);
-        if (std::string(name) == "logical_struct") {
+        if (std::string(name) != "logical_tuple") {
             REQUIRE((!field->metadata() || !field->metadata()->Contains("vgi.logical_type.v1")));
         } else {
-            REQUIRE(field->metadata()->Get("vgi.logical_type.v1").ValueOrDie() ==
-                    (std::string(name) == "logical_tuple" ? "tuple" : "variant"));
+            REQUIRE(field->metadata()->Get("vgi.logical_type.v1").ValueOrDie() == "tuple");
         }
         REQUIRE(restored->column(0)->IsNull(0) == (std::string(name) == "logical_variant_sql_null"));
+        if (std::string(name).find("logical_variant_") == 0) {
+            REQUIRE(field->metadata()->Get("ARROW:extension:name").ValueOrDie() == "arrow.parquet.variant");
+            REQUIRE(field->metadata()->Get("ARROW:extension:metadata").ValueOrDie() == "");
+            const auto storage = std::static_pointer_cast<arrow::StructType>(field->type());
+            REQUIRE(storage->num_fields() == 2);
+            REQUIRE(storage->field(0)->name() == "metadata");
+            REQUIRE_FALSE(storage->field(0)->nullable());
+            REQUIRE(storage->field(1)->name() == "value");
+            REQUIRE(storage->field(1)->nullable());
+            if (std::string(name) != "logical_variant_sql_null") {
+                const auto column = std::static_pointer_cast<arrow::StructArray>(restored->column(0));
+                const std::string expected_metadata = std::string(name) == "logical_variant_null_member"
+                    ? std::string("\x01\x01\x00\x07present", 11) : std::string("\x01\x00\x00", 3);
+                const std::string expected_value = std::string(name) == "logical_variant_null"
+                    ? std::string("\x00", 1) : std::string(name) == "logical_variant_absent"
+                    ? std::string("\x02\x00\x00", 3) : std::string("\x02\x01\x00\x00\x01\x00", 6);
+                REQUIRE(std::static_pointer_cast<arrow::BinaryArray>(column->field(0))->GetString(0) == expected_metadata);
+                REQUIRE(std::static_pointer_cast<arrow::BinaryArray>(column->field(1))->GetString(0) == expected_value);
+            }
+        }
     }
     REQUIRE(fixture("logical_variant_sql_null") != fixture("logical_variant_null"));
     REQUIRE(fixture("logical_variant_absent") != fixture("logical_variant_null_member"));
