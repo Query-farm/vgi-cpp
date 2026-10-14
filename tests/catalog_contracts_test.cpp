@@ -14,6 +14,14 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     };
     namespace gen = vgi::generated;
     const std::vector<std::pair<const char*, std::shared_ptr<arrow::Schema>>> cases = {
+        {"macro_parameter", gen::MacroParameterSchema()},
+        {"macro_parameter_expression", gen::MacroParameterSchema()},
+        {"macro_parameter_untyped", gen::MacroParameterSchema()},
+        {"macro_overload", gen::MacroOverloadSchema()},
+        {"macro_create", gen::MacroCreateRequestSchema()},
+        {"macro_create_legacy", gen::MacroCreateRequestSchema()},
+        {"macro_info", gen::MacroInfoSchema()},
+        {"macro_info_legacy", gen::MacroInfoSchema()},
         {"query_offer", gen::ClientQueryCapabilitiesSchema()},
         {"query_capabilities", gen::QueryCapabilitiesSchema()},
         {"query_context", gen::QueryEvaluationContextSchema()},
@@ -89,6 +97,34 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     REQUIRE(vgi::wire::get_binary(definitions, "defaults") == fixture("values"));
     const auto changes = vgi::wire::decode_ipc(fixture("changes"));
     REQUIRE(vgi::wire::get_binary(changes, "set_values") == fixture("values"));
+    const auto macro = vgi::wire::decode_ipc(fixture("macro_create"));
+    const auto overloads = std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(macro, "overloads"));
+    REQUIRE(overloads->value_length(0) == 2);
+    REQUIRE(vgi::wire::column(vgi::wire::decode_ipc(fixture("macro_create_legacy")), "overloads")->IsNull(0));
+    const auto parameter = vgi::wire::decode_ipc(fixture("macro_parameter"));
+    const auto default_value = vgi::wire::decode_ipc(vgi::wire::get_binary(parameter, "default_value"));
+    REQUIRE(default_value->column(0)->IsNull(0));
+    REQUIRE(default_value->schema()->field(0)->metadata()->Get("domain").ValueOrDie() == "retained");
+    REQUIRE(vgi::wire::column(parameter, "default_expression")->IsNull(0));
+    REQUIRE(vgi::wire::column(vgi::wire::decode_ipc(fixture("macro_parameter_untyped")), "declared_type")->IsNull(0));
+    for (const auto* name : {"logical_tuple", "logical_struct", "logical_variant_sql_null",
+                            "logical_variant_null", "logical_variant_absent", "logical_variant_null_member"}) {
+        INFO(name);
+        const auto source = vgi::wire::decode_ipc(fixture(name));
+        const auto restored = vgi::wire::decode_ipc(vgi::wire::encode_ipc(source));
+        REQUIRE(restored->Equals(*source, true));
+        REQUIRE(restored->num_rows() == 1);
+        const auto field = restored->schema()->field(0);
+        if (std::string(name) == "logical_struct") {
+            REQUIRE((!field->metadata() || !field->metadata()->Contains("vgi.logical_type.v1")));
+        } else {
+            REQUIRE(field->metadata()->Get("vgi.logical_type.v1").ValueOrDie() ==
+                    (std::string(name) == "logical_tuple" ? "tuple" : "variant"));
+        }
+        REQUIRE(restored->column(0)->IsNull(0) == (std::string(name) == "logical_variant_sql_null"));
+    }
+    REQUIRE(fixture("logical_variant_sql_null") != fixture("logical_variant_null"));
+    REQUIRE(fixture("logical_variant_absent") != fixture("logical_variant_null_member"));
     for (const auto* name : {"query_parameters", "query_empty_parameters"}) {
         INFO(name);
         const auto source = vgi::wire::decode_ipc(fixture(name));
