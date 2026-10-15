@@ -16,6 +16,8 @@ catch_discover_tests(function_test)
 add_executable(function_listing_test function_listing_test.cpp)
 target_link_libraries(function_listing_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
 target_include_directories(function_listing_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(function_listing_test PRIVATE
+    VGI_CATALOG_CONTRACT_VECTORS="${CMAKE_SOURCE_DIR}/conformance/catalog-contracts.json")
 catch_discover_tests(function_listing_test)
 
 # Drives the built example worker over stdio, a unix socket and HTTP with

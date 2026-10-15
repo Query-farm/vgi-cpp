@@ -20,6 +20,14 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     REQUIRE(expression_restored->schema()->field(1)->metadata()->Get("vgi.column.generation.v1").ValueOrDie() == "virtual");
     namespace gen = vgi::generated;
     const std::vector<std::pair<const char*, std::shared_ptr<arrow::Schema>>> cases = {
+        {"index_key_column", gen::IndexKeySchema()},
+        {"index_key_nested", gen::IndexKeySchema()},
+        {"index_key_expression", gen::IndexKeySchema()},
+        {"index_definition", gen::IndexDefinitionSchema()},
+        {"index_definition_primary", gen::IndexDefinitionSchema()},
+        {"index_info", gen::IndexInfoSchema()},
+        {"index_create", gen::IndexCreateRequestSchema()},
+        {"index_create_cross_schema", gen::IndexCreateRequestSchema()},
         {"sql_statement", gen::SqlStatementSchema()},
         {"constraint_ref", gen::CatalogObjectRefSchema()},
         {"foreign_key_definition", gen::ForeignKeyDefinitionSchema()},
@@ -118,6 +126,17 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("view_info")), "aliases") ==
             std::vector<std::string>{"a.b", "with\"quote"});
     REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(fixture("view_info_barrier")), "security") == "barrier");
+    const auto index_info = vgi::wire::decode_ipc(fixture("index_info"));
+    const auto index_create = vgi::wire::decode_ipc(fixture("index_create"));
+    const auto index_definition = vgi::wire::decode_ipc(fixture("index_definition"));
+    REQUIRE(vgi::wire::get_binary(index_info, "definition") == fixture("index_definition"));
+    REQUIRE(vgi::wire::get_binary(index_create, "definition") == fixture("index_definition"));
+    REQUIRE(vgi::wire::get_binary(index_info, "options") == fixture("state"));
+    REQUIRE(vgi::wire::get_binary(index_definition, "options") == fixture("values"));
+    REQUIRE(vgi::wire::get_binary_list(index_definition, "keys") == std::vector<std::string>{fixture("index_key_column"), fixture("index_key_expression")});
+    REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("index_key_column")), "column_path") == std::vector<std::string>{"a.b"});
+    REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("index_key_nested")), "column_path") == std::vector<std::string>{"record", "a.b"});
+
     const auto table_create = vgi::wire::decode_ipc(fixture("table_create"));
     const auto table_info = vgi::wire::decode_ipc(fixture("table_info"));
     const auto constraint_definitions = vgi::wire::get_binary_list(table_create, "constraint_definitions");

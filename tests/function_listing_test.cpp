@@ -23,6 +23,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <fstream>
+#include <nlohmann/json.hpp>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -678,6 +680,27 @@ TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its versi
                          .set_binary("request", vgi::wire::encode_ipc(table_request))
                          .finish());
     CHECK(version_of(worker, one) == 4);
+    // Unported index operations must fail before REPLACE, DROP or option binding can publish anything.
+    std::ifstream index_input(VGI_CATALOG_CONTRACT_VECTORS);
+    REQUIRE(index_input.good());
+    const auto index_records = nlohmann::json::parse(index_input).at("records");
+    const auto index_definition = vgi::wire::base64_decode(index_records.at("index_definition").get<std::string>());
+    for (const auto* conflict : {"ERROR", "IGNORE", "REPLACE"}) {
+        const auto rejected = vgi::wire::ResultBuilder(gen::IndexCreateRequestSchema())
+            .set_binary("attach_opaque_data", one).set_string_list("schema_path", {"main"})
+            .set_string("name", "t1").set_binary("definition", index_definition)
+            .set_enum("on_conflict", conflict).fill_defaults().finish();
+        REQUIRE_THROWS(worker.call_void("catalog_index_create", vgi::wire::ResultBuilder(gen::CatalogIndexCreateParamsSchema())
+            .set_binary("request", vgi::wire::encode_ipc(rejected)).finish()));
+    }
+    REQUIRE_THROWS(worker.call_void("catalog_index_drop", vgi::wire::ResultBuilder(gen::CatalogIndexDropParamsSchema())
+        .set_binary("attach_opaque_data", one).set_string_list("schema_path", {"main"}).set_string("name", "t1")
+        .set_bool("ignore_not_found", true).set_bool("cascade", true).fill_defaults().finish()));
+    REQUIRE_THROWS(worker.call_void("catalog_index_option_definitions", vgi::wire::ResultBuilder(gen::CatalogIndexOptionDefinitionsParamsSchema())
+        .set_binary("attach_opaque_data", one)
+        .set_binary("table", vgi::wire::base64_decode(index_records.at("object_ref").get<std::string>()))
+        .set_string("algorithm", "ART").fill_defaults().finish()));
+    REQUIRE(version_of(worker, one) == 4);
     for (const auto* conflict : {"ERROR", "IGNORE", "REPLACE"}) {
         const auto rejected = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
                                   .set_binary("attach_opaque_data", one)
