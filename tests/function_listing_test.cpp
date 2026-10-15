@@ -680,6 +680,10 @@ TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its versi
                          .set_binary("request", vgi::wire::encode_ipc(table_request))
                          .finish());
     CHECK(version_of(worker, one) == 4);
+    // An unported provider must not manufacture an empty semantic dependency graph.
+    REQUIRE_THROWS(worker.call_void("catalog_dependencies", vgi::wire::ResultBuilder(gen::CatalogDependenciesParamsSchema())
+        .set_binary("attach_opaque_data", one).fill_defaults().finish()));
+    REQUIRE(version_of(worker, one) == 4);
     // Unported index operations must fail before REPLACE, DROP or option binding can publish anything.
     std::ifstream index_input(VGI_CATALOG_CONTRACT_VECTORS);
     REQUIRE(index_input.good());

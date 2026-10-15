@@ -69,6 +69,12 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         {"object_ref", gen::CatalogObjectRefSchema()},
         {"trigger_ref", gen::CatalogObjectRefSchema()},
         {"object_dependency", gen::ObjectDependencySchema()},
+        {"dependency_membership", gen::ObjectDependencySchema()},
+        {"dependency_column_literal", gen::ObjectDependencySchema()},
+        {"dependency_column_nested", gen::ObjectDependencySchema()},
+        {"dependency_generated", gen::ObjectDependencySchema()},
+        {"dependency_generated_chain", gen::ObjectDependencySchema()},
+        {"dependency_column_snapshot", gen::DependencySnapshotSchema()},
         {"dependency_snapshot", gen::DependencySnapshotSchema()},
         {"empty_dependency_snapshot", gen::DependencySnapshotSchema()},
         {"metadata_patch", gen::CatalogMetadataChangesSchema()},
@@ -126,6 +132,39 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("view_info")), "aliases") ==
             std::vector<std::string>{"a.b", "with\"quote"});
     REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(fixture("view_info_barrier")), "security") == "barrier");
+    const auto membership = vgi::wire::decode_ipc(fixture("dependency_membership"));
+    const auto owned = vgi::wire::decode_ipc(fixture("object_dependency"));
+    REQUIRE_FALSE(vgi::wire::get_bool(membership, "blocks_alter"));
+    REQUIRE(vgi::wire::get_bool(owned, "blocks_alter"));
+    for (const auto& edge : {membership, owned}) {
+        REQUIRE(vgi::wire::column(edge, "subject_column_paths")->IsNull(0));
+        REQUIRE(vgi::wire::column(edge, "dependent_column_path")->IsNull(0));
+    }
+    const auto dependency_paths = [](const std::shared_ptr<arrow::RecordBatch>& edge) {
+        const auto outer = std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(edge, "subject_column_paths"));
+        REQUIRE_FALSE(outer->IsNull(0));
+        const auto inner = std::static_pointer_cast<arrow::ListArray>(outer->values());
+        const auto parts = std::static_pointer_cast<arrow::StringArray>(inner->values());
+        std::vector<std::vector<std::string>> result;
+        for (int64_t i = outer->value_offset(0); i < outer->value_offset(0) + outer->value_length(0); ++i) {
+            std::vector<std::string> path;
+            for (int64_t j = inner->value_offset(i); j < inner->value_offset(i) + inner->value_length(i); ++j) path.push_back(parts->GetString(j));
+            result.push_back(std::move(path));
+        }
+        return result;
+    };
+    REQUIRE(dependency_paths(vgi::wire::decode_ipc(fixture("dependency_column_literal"))) == std::vector<std::vector<std::string>>{{"a.b"}});
+    REQUIRE(dependency_paths(vgi::wire::decode_ipc(fixture("dependency_column_nested"))) == std::vector<std::vector<std::string>>{{"record", "a.b"}});
+    const auto generated = vgi::wire::decode_ipc(fixture("dependency_generated"));
+    REQUIRE(vgi::wire::get_binary(generated, "dependent") == vgi::wire::get_binary(generated, "subject"));
+    REQUIRE(vgi::wire::get_string_list(generated, "dependent_column_path") == std::vector<std::string>{"generated"});
+    REQUIRE(dependency_paths(generated) == std::vector<std::vector<std::string>>{{"a.b"}, {"record", "a.b"}});
+    const auto chain = vgi::wire::decode_ipc(fixture("dependency_generated_chain"));
+    REQUIRE(vgi::wire::get_string_list(chain, "dependent_column_path") == std::vector<std::string>{"second.generated"});
+    REQUIRE(dependency_paths(chain) == std::vector<std::vector<std::string>>{{"generated"}});
+    REQUIRE(vgi::wire::get_binary_list(vgi::wire::decode_ipc(fixture("dependency_column_snapshot")), "dependencies") ==
+        std::vector<std::string>{fixture("dependency_column_literal"), fixture("dependency_generated"), fixture("dependency_generated_chain")});
+
     const auto index_info = vgi::wire::decode_ipc(fixture("index_info"));
     const auto index_create = vgi::wire::decode_ipc(fixture("index_create"));
     const auto index_definition = vgi::wire::decode_ipc(fixture("index_definition"));
