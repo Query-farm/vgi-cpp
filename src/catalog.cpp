@@ -129,6 +129,18 @@ std::string join_quoted(const std::vector<std::string>& values) {
     return out;
 }
 
+// A function kind as `FunctionInfo.function_type` spells it: the Python
+// `FunctionType` member name, never the lowercase internal key.
+const char* function_type_wire_value(std::string_view kind) {
+    if (kind == enums::function_type::kScalar) return enums::function_type_name::kScalar;
+    if (kind == enums::function_type::kTable) return enums::function_type_name::kTable;
+    if (kind == enums::function_type::kTableBuffering) {
+        return enums::function_type_name::kTableBuffering;
+    }
+    if (kind == enums::function_type::kAggregate) return enums::function_type_name::kAggregate;
+    throw std::logic_error("unknown function kind: " + std::string(kind));
+}
+
 const char* stability_wire_value(Stability stability) {
     switch (stability) {
         case Stability::Volatile: return enums::stability::kVolatile;
@@ -1072,7 +1084,8 @@ std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
     auto builder = wire::ResultBuilder(gen::MacroInfoSchema());
     builder.set_string("name", macro.name)
         .set_string_list("schema_path", schema_path)
-        .set_enum("macro_type", macro.table_macro ? "table" : "scalar")
+        .set_enum("macro_type",
+                  macro.table_macro ? enums::macro_type::kTable : enums::macro_type::kScalar)
         .set_string_list("parameters", macro.parameters)
         .set_binary("parameter_default_values", defaults)
         .set_string("definition", macro.definition)
@@ -1279,7 +1292,7 @@ wire::ResultBuilder Dispatcher::common_function_info(
         wire::ResultBuilder(gen::FunctionInfoSchema())
             .set_string("name", name)
             .set_string_list("schema_path", schema_path)
-            .set_enum("function_type", function_type)
+            .set_enum("function_type", function_type_wire_value(function_type))
             .set_binary("arguments", wire::encode_schema(build_arg_schema(specs)))
             .set_binary("output_schema", wire::encode_schema(output_schema))
             .set_enum("stability", stability_wire_value(metadata.stability))

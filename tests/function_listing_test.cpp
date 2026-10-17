@@ -826,3 +826,57 @@ TEST_CASE("catalog_contents_digest is deterministic and covers every part", "[ca
     CHECK(vgi::catalog_contents_digest({}) ==
           "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc");
 }
+
+namespace {
+
+// A dictionary-encoded enum cell, as decoded.
+std::string enum_of(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    return vgi::wire::get_enum(batch, field);
+}
+
+}  // namespace
+
+TEST_CASE("function and macro kinds travel as the Python enum member names",
+          "[catalog][listing][enum]") {
+    // `FunctionInfo.function_type` and `MacroInfo.macro_type` are the
+    // reference's `FunctionType` / `MacroType` *member names*, not their
+    // lowercase values: a strict decoder rejects `scalar`.
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "kinds";
+    dispatcher.register_scalar(std::make_shared<Scalar>("s", "scalar"));
+    dispatcher.register_table(std::make_shared<Table>("t", "table"));
+    dispatcher.register_aggregate(std::make_shared<Aggregate>("a", "aggregate"));
+    auto& main = dispatcher.catalog().schema("main");
+    main.macros.push_back({"m_scalar", {"x"}, "x + 1", /*table_macro=*/false});
+    main.macros.push_back({"m_table", {}, "SELECT 1", /*table_macro=*/true});
+
+    Served worker(dispatcher);
+    const auto handle = attach(worker, "kinds");
+    const auto kind_of = [&](const std::string& filter) {
+        std::vector<std::string> kinds;
+        for (const auto& item : list(worker, handle, {"main"}, filter)) {
+            kinds.push_back(enum_of(vgi::wire::decode_ipc(item), "function_type"));
+        }
+        return kinds;
+    };
+    CHECK(kind_of("SCALAR_FUNCTION") == Names{"SCALAR"});
+    CHECK(kind_of("TABLE_FUNCTION") == Names{"TABLE"});
+    CHECK(kind_of("AGGREGATE_FUNCTION") == Names{"AGGREGATE"});
+
+    const auto macros = [&](const std::string& filter) {
+        const auto params = vgi::wire::ResultBuilder(gen::CatalogSchemaContentsMacrosParamsSchema())
+                                .set_binary("attach_opaque_data", handle)
+                                .set_string_list("path", {"main"})
+                                .set_enum("type", filter)
+                                .fill_defaults()
+                                .finish();
+        std::vector<std::string> kinds;
+        for (const auto& item : vgi::wire::get_binary_list(
+                 worker.call("catalog_schema_contents_macros", params), "items")) {
+            kinds.push_back(enum_of(vgi::wire::decode_ipc(item), "macro_type"));
+        }
+        return kinds;
+    };
+    CHECK(macros("SCALAR_MACRO") == Names{"SCALAR"});
+    CHECK(macros("TABLE_MACRO") == Names{"TABLE"});
+}

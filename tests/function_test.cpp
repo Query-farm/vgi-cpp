@@ -1,5 +1,6 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <array>
 #include <cmath>
@@ -686,4 +687,60 @@ TEST_CASE("split token bind failures precede stale anchors", "[split-token]") {
     REQUIRE(
         vgi::split_token::open(token, fingerprint, current_anchor, std::nullopt, anonymous).error ==
         vgi::split_token::OpenError::SnapshotExpired);
+}
+
+TEST_CASE("a result never carries a null where its schema forbids one", "[wire]") {
+    // A null cell in a non-nullable column, or a null item in a list whose item
+    // field is non-nullable, is refused by the reference's decoder, so the
+    // builder refuses it first and names the field.
+    const auto item = arrow::field("item", arrow::utf8(), /*nullable=*/false);
+    const auto schema = arrow::schema({
+        arrow::field("strict_items", arrow::list(item), /*nullable=*/false),
+        arrow::field("tags", arrow::map(arrow::utf8(), arrow::utf8()), /*nullable=*/false),
+    });
+
+    const auto list_with = [&](bool null_item) {
+        arrow::ListBuilder list(arrow::default_memory_pool(),
+                                std::make_shared<arrow::StringBuilder>(), arrow::list(item));
+        REQUIRE(list.Append().ok());
+        auto* values = static_cast<arrow::StringBuilder*>(list.value_builder());
+        REQUIRE(values->Append("a").ok());
+        REQUIRE((null_item ? values->AppendNull() : values->Append("b")).ok());
+        std::shared_ptr<arrow::Array> out;
+        REQUIRE(list.Finish(&out).ok());
+        return out;
+    };
+
+    CHECK_NOTHROW(vgi::wire::ResultBuilder(schema)
+                      .set_array("strict_items", list_with(false))
+                      .fill_defaults()
+                      .finish());
+    CHECK_THROWS_WITH(vgi::wire::ResultBuilder(schema)
+                          .set_array("strict_items", list_with(true))
+                          .fill_defaults()
+                          .finish(),
+                      Catch::Matchers::ContainsSubstring("strict_items.item"));
+    CHECK_THROWS_WITH(
+        vgi::wire::ResultBuilder(schema).set_null("strict_items").fill_defaults().finish(),
+        Catch::Matchers::ContainsSubstring("strict_items"));
+    CHECK_THROWS_WITH(vgi::wire::ResultBuilder(schema)
+                          .set_array("strict_items", list_with(false))
+                          .set_null("tags")
+                          .finish(),
+                      Catch::Matchers::ContainsSubstring("tags"));
+}
+
+TEST_CASE("every non-nullable FunctionInfo list and map defaults to empty, not null", "[wire]") {
+    const auto batch = vgi::wire::ResultBuilder(vgi::generated::FunctionInfoSchema())
+                           .set_string("name", "f")
+                           .set_enum("function_type", "SCALAR")
+                           .fill_defaults()
+                           .finish();
+    for (int i = 0; i < batch->num_columns(); ++i) {
+        const auto& field = batch->schema()->field(i);
+        if (!field->nullable()) {
+            INFO(field->name());
+            CHECK(batch->column(i)->null_count() == 0);
+        }
+    }
 }

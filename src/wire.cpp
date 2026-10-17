@@ -841,14 +841,62 @@ ResultBuilder& ResultBuilder::fill_defaults() {
     return *this;
 }
 
+namespace {
+
+// Fail if `array` holds a null anywhere `field` (or a field nested in it)
+// declares non-nullable: a list item, a struct child, a map key or value. The
+// declared types are walked, not the array's own -- a builder's default child
+// field is nullable whatever the schema says, so the array cannot be trusted
+// to say what is allowed.
+void check_nulls(const arrow::Field& field, const arrow::Array& array, const std::string& path) {
+    if (!field.nullable() && array.null_count() > 0) {
+        fail("result field '" + path + "' is non-nullable but holds a null");
+    }
+    const auto& type = *field.type();
+    switch (type.id()) {
+        case arrow::Type::LIST: {
+            const auto& list = static_cast<const arrow::ListArray&>(array);
+            check_nulls(*static_cast<const arrow::ListType&>(type).value_field(), *list.values(),
+                        path + ".item");
+            break;
+        }
+        case arrow::Type::LARGE_LIST: {
+            const auto& list = static_cast<const arrow::LargeListArray&>(array);
+            check_nulls(*static_cast<const arrow::LargeListType&>(type).value_field(),
+                        *list.values(), path + ".item");
+            break;
+        }
+        case arrow::Type::MAP: {
+            const auto& map = static_cast<const arrow::MapArray&>(array);
+            const auto& map_type = static_cast<const arrow::MapType&>(type);
+            check_nulls(*map_type.key_field(), *map.keys(), path + ".key");
+            check_nulls(*map_type.item_field(), *map.items(), path + ".value");
+            break;
+        }
+        case arrow::Type::STRUCT: {
+            const auto& st = static_cast<const arrow::StructArray&>(array);
+            for (int i = 0; i < type.num_fields(); ++i) {
+                check_nulls(*type.field(i), *st.field(i), path + "." + type.field(i)->name());
+            }
+            break;
+        }
+        default: break;
+    }
+}
+
+}  // namespace
+
 std::shared_ptr<arrow::RecordBatch> ResultBuilder::finish() {
     for (size_t i = 0; i < arrays_.size(); ++i) {
+        const auto& field = schema_->field(static_cast<int>(i));
         if (!arrays_[i]) {
             // Defaulting to null here would produce a batch the engine accepts
             // and then misreads; naming the field is far cheaper.
-            fail("result field '" + schema_->field(static_cast<int>(i))->name() +
-                 "' was never set");
+            fail("result field '" + field->name() + "' was never set");
         }
+        // The reference refuses to decode a null where the schema says there
+        // cannot be one, so writing it is a bug here, not there.
+        check_nulls(*field, *arrays_[i], field->name());
     }
     return arrow::RecordBatch::Make(schema_, 1, arrays_);
 }

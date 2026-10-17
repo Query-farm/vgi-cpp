@@ -15,12 +15,29 @@
 
 namespace vgi::enums {
 
+// The worker's internal function-kind keys (listing cache keys, the
+// normalized `catalog_schema_contents_functions` filter). These are NOT what
+// `FunctionInfo.function_type` carries on the wire -- see `function_type_name`.
 namespace function_type {
 inline constexpr const char* kScalar = "scalar";
 inline constexpr const char* kTable = "table";
 inline constexpr const char* kTableBuffering = "table_buffering";
 inline constexpr const char* kAggregate = "aggregate";
 }  // namespace function_type
+
+// `FunctionInfo.function_type` on the wire: the `FunctionType` member names.
+namespace function_type_name {
+inline constexpr const char* kScalar = "SCALAR";
+inline constexpr const char* kTable = "TABLE";
+inline constexpr const char* kTableBuffering = "TABLE_BUFFERING";
+inline constexpr const char* kAggregate = "AGGREGATE";
+}  // namespace function_type_name
+
+// `MacroInfo.macro_type` on the wire: the `MacroType` member names.
+namespace macro_type {
+inline constexpr const char* kScalar = "SCALAR";
+inline constexpr const char* kTable = "TABLE";
+}  // namespace macro_type
 
 namespace stability {
 inline constexpr const char* kConsistent = "CONSISTENT";
