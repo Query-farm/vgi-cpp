@@ -5,7 +5,6 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
-#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -43,11 +42,13 @@ std::shared_ptr<arrow::Schema> result_envelope() {
     return schema;
 }
 
-// `AttachTicket`, as vgi-python's dataclass serializes it.
+// `AttachTicket`, as vgi-python's dataclass serializes it. `expires_at` is a
+// UTC instant; null means the ticket has no expiry.
 std::shared_ptr<arrow::Schema> attach_ticket_schema() {
     static const auto schema =
         arrow::schema({arrow::field("ticket", arrow::utf8(), /*nullable=*/false),
-                       arrow::field("expires_at", arrow::float64(), /*nullable=*/false)});
+                       arrow::field("expires_at", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"),
+                                    /*nullable=*/true)});
     return schema;
 }
 
@@ -159,10 +160,13 @@ vgi_rpc::Result seal_attach(const DeclaredAttachOptions& declared, const AttachT
     arrow::StringBuilder ticket_builder;
     VGI_RPC_THROW_NOT_OK(ticket_builder.Append(token));
     std::shared_ptr<arrow::Array> ticket = vgi_rpc::unwrap(ticket_builder.Finish());
-    arrow::DoubleBuilder expires_builder;
-    VGI_RPC_THROW_NOT_OK(expires_builder.Append(claims.expires_at == 0
-                                                    ? std::numeric_limits<double>::infinity()
-                                                    : static_cast<double>(claims.expires_at)));
+    arrow::TimestampBuilder expires_builder(arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"),
+                                            arrow::default_memory_pool());
+    if (claims.expires_at == 0) {
+        VGI_RPC_THROW_NOT_OK(expires_builder.AppendNull());
+    } else {
+        VGI_RPC_THROW_NOT_OK(expires_builder.Append(claims.expires_at * 1'000'000));
+    }
     std::shared_ptr<arrow::Array> expires = vgi_rpc::unwrap(expires_builder.Finish());
     const auto payload = arrow::RecordBatch::Make(attach_ticket_schema(), 1, {ticket, expires});
 

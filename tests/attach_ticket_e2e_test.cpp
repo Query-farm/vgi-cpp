@@ -4,7 +4,7 @@
 //
 // A freshly logged-in user attaches `ticket_probe` with a region and a secret
 // api_key, seals that attach (`vgi.attach_tickets.v1` `seal_attach`) and mints
-// a grant (`vgi_rpc.Identity.v1` `issue_grant`). A second client, authenticated
+// a grant (`vgi_rpc.Identity.v2` `issue_grant`). A second client, authenticated
 // by nothing but `Bearer <grant>`, then attaches with the single option
 // `vgi_attach_ticket` and gets the user's attach back -- the same options the
 // probe reports from. Another principal's grant with that ticket is refused.
@@ -249,7 +249,8 @@ std::pair<std::string, std::string> probe_row(const Attached& attached) {
 
 struct Sealed {
     std::string ticket;
-    double expires_at;
+    // Unix microseconds; nullopt means the ticket has no expiry.
+    std::optional<int64_t> expires_at_us;
 };
 
 Sealed seal(const vgi_rpc::HttpClient& tickets, const std::map<std::string, std::string>& options,
@@ -269,9 +270,14 @@ Sealed seal(const vgi_rpc::HttpClient& tickets, const std::map<std::string, std:
     const auto request = arrow::RecordBatch::Make(
         schema, 1, {catalog, opts, data_version, implementation, ttl_array});
     const auto ticket = payload_of(tickets.call("seal_attach", wrapped(request)));
+    const auto field = ticket->schema()->GetFieldByName("expires_at");
+    REQUIRE(field != nullptr);
+    CHECK(field->type()->Equals(arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")));
+    CHECK(field->nullable());
     const auto expires =
-        std::static_pointer_cast<arrow::DoubleArray>(ticket->GetColumnByName("expires_at"));
-    return {vgi::wire::get_string(ticket, "ticket"), expires->Value(0)};
+        std::static_pointer_cast<arrow::TimestampArray>(ticket->GetColumnByName("expires_at"));
+    return {vgi::wire::get_string(ticket, "ticket"),
+            expires->IsNull(0) ? std::nullopt : std::optional<int64_t>(expires->Value(0))};
 }
 
 std::string issue_grant(const vgi_rpc::HttpClient& identity) {
@@ -347,10 +353,13 @@ TEST_CASE("http: grant plus ticket reattaches as the user", "[attach_ticket][htt
     CHECK(sealed.ticket.rfind(vgi::kAttachTicketPrefix, 0) == 0);
     CHECK(sealed.ticket.find("sk-live-secret") == std::string::npos);
     // Capped at the grant maximum (7 days), so the two halves expire together.
-    const double now =
-        std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
-    CHECK(sealed.expires_at <= now + 7 * 24 * 3600 + 5);
-    CHECK(sealed.expires_at > now + 7 * 24 * 3600 - 60);
+    const int64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::system_clock::now().time_since_epoch())
+                               .count();
+    constexpr int64_t kSecond = 1'000'000;
+    REQUIRE(sealed.expires_at_us.has_value());
+    CHECK(*sealed.expires_at_us <= now_us + (7 * 24 * 3600 + 5) * kSecond);
+    CHECK(*sealed.expires_at_us > now_us + (7 * 24 * 3600 - 60) * kSecond);
 
     // The runner holds only the grant, and names some other catalog -- a
     // memory catalog, which the router would hand the request to by name: the

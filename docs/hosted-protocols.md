@@ -41,7 +41,7 @@ Errors raised by a hosted protocol carry the full vgi-rpc error model (code,
 kind and details). Throw `vgi_rpc::StatusError` to choose them; see vgi-rpc's
 `docs/api/errors.md`.
 
-## `vgi_rpc.Identity.v1`: `set_resolve_token` / `set_mint_grant`
+## `vgi_rpc.Identity.v2`: `set_resolve_token` / `set_mint_grant`
 
 A reverse proxy that terminates the only public listener has to know who the
 caller is before it can authorize anything. Identity lets the worker answer
@@ -107,7 +107,7 @@ my-worker --http 8080
 # or: my-worker --http 8080 --grant-key KEY [--grant-key OLD_KEY]
 ```
 
-- **Opt-in.** No key, no change. With keys, `vgi_rpc.Identity.v1` is hosted on
+- **Opt-in.** No key, no change. With keys, `vgi_rpc.Identity.v2` is hosted on
   `--http` with `issue_grant`, and vgi-rpc mints sealed `vgig1.` grants unless
   you call `set_mint_grant`. A malformed or duplicate key, or a non-positive
   lifetime, **refuses to start** the worker. `Worker::set_grant_keys` sets them

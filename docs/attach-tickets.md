@@ -5,7 +5,7 @@ without ever seeing the user's attach options. The normative spec is
 vgi-python's `docs/protocol/vgi-attach-tickets.md`; this page is how this SDK
 implements it.
 
-A ticket says *what* to attach. A sealed grant (`vgi_rpc.Identity.v1`
+A ticket says *what* to attach. A sealed grant (`vgi_rpc.Identity.v2`
 `issue_grant`, see [Hosted protocols and Identity](hosted-protocols.md)) says
 *who* attaches:
 
@@ -71,8 +71,9 @@ vgi-python's (the protocol hash is the same):
 | `implementation_version` | `utf8`, `""` for none |
 | `ttl_seconds` | `int64`; `0` = as long as allowed |
 
-It returns `ticket` (`utf8`) and `expires_at` (`float64` Unix seconds, `+inf`
-for no expiry). The caller must be authenticated (`action_denied` otherwise)
+It returns `ticket` (`utf8`) and `expires_at` (`timestamp[us, tz="UTC"]`, null
+for no expiry). The protocol is `vgi.attach_tickets.v1` at version `2.0.0`
+(1.x returned `expires_at` as `float64` Unix seconds with `+inf` for none). The caller must be authenticated (`action_denied` otherwise)
 but needs no fresh login. The options are validated against the catalog's
 declared attach options, case-insensitively: an undeclared option, a missing
 required one, a nested `vgi_attach_ticket`, more than one row, an unknown

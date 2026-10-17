@@ -2,7 +2,7 @@
 //
 // Sealed grants close the identity loop end to end on a built worker.
 //
-// `vgi_rpc.Identity.v1`'s `issue_grant` mints a credential meant to be
+// `vgi_rpc.Identity.v2`'s `issue_grant` mints a credential meant to be
 // presented later, by unattended automation, as an ordinary bearer.  With grant
 // keys configured (`--grant-key`, or `VGI_RPC_GRANT_KEYS`) the worker is the
 // minter and accepts the grant back: a vgi.v2 call carrying

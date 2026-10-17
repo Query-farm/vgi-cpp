@@ -113,7 +113,7 @@ vgi_rpc::ProtocolBuilder secondary_protocol() {
 // IDENTITY_CONFORMANCE_FIXTURE.md's policy, verbatim.
 constexpr const char* kSubject = "subject@conformance.example";
 constexpr const char* kSubjectTokenName = "conformance-subject";
-constexpr double kGrantExpiresAt = 1893456000.0;
+constexpr vgi_rpc::UtcMicros kGrantExpiresAt{std::chrono::microseconds(1893456000000000)};
 
 std::optional<vgi_rpc::TokenIdentity> resolve_token(const std::string& token) {
     if (token == "conformance-unavailable-token") {

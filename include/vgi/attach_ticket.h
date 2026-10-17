@@ -5,7 +5,7 @@
 // spec; byte-exact vectors in vgi/_test_fixtures/attach_ticket_vectors.json).
 //
 // A ticket is the *what* half of an unattended session; a sealed grant
-// (`vgi_rpc.Identity.v1` `issue_grant`) is the *who*. While the user is
+// (`vgi_rpc.Identity.v2` `issue_grant`) is the *who*. While the user is
 // attached and logged in, a client asks the worker to seal the options it
 // attached with -- secret ones included -- into a ticket only this worker can
 // open (`vgi.attach_tickets.v1` `seal_attach`). Later a runner holding the
@@ -42,7 +42,7 @@ inline constexpr const char* kAttachTicketPrefix = "vgia1.";
 inline constexpr const char* kAttachTicketOption = "vgi_attach_ticket";
 // The protocol hosting `seal_attach`, and its version.
 inline constexpr const char* kAttachTicketsProtocolName = "vgi.attach_tickets.v1";
-inline constexpr const char* kAttachTicketsProtocolVersion = "1.0.0";
+inline constexpr const char* kAttachTicketsProtocolVersion = "2.0.0";
 // The envelope's version byte, fixed by this format.
 inline constexpr uint8_t kAttachTicketEnvelopeVersion = 0x01;
 // Largest options record (serialized Arrow IPC bytes) a ticket carries.

@@ -124,7 +124,7 @@ jobs:
 
       # vgi-rpc's hosted-protocols group: the worker hosts vgi.v2 and, through
       # Worker::set_hosted_protocols, conformance.Secondary.v1 -- on stdio,
-      # a unix socket and HTTP -- and over HTTP opts into vgi_rpc.Identity.v1
+      # a unix socket and HTTP -- and over HTTP opts into vgi_rpc.Identity.v2
       # with the conformance fixture policy.
       - name: Setup Python (reference requires 3.13)
         if: runner.os == 'Linux'

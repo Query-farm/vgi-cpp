@@ -133,13 +133,13 @@ public:
     //
     // Each name must be a valid routing key, distinct from `vgi.v2` and from
     // every other entry, and outside the reserved `vgi_rpc.` prefix --
-    // reflection is hosted automatically, and `vgi_rpc.Identity.v1` is
+    // reflection is hosted automatically, and `vgi_rpc.Identity.v2` is
     // enabled with `set_resolve_token` / `set_mint_grant`.  A violation is a
     // startup error naming this hook.
     using HostedProtocolsHook = std::function<std::vector<vgi_rpc::ProtocolBuilder>()>;
     void set_hosted_protocols(HostedProtocolsHook hook);
 
-    // Host `vgi_rpc.Identity.v1`'s `introspect_token`: resolve an opaque
+    // Host `vgi_rpc.Identity.v2`'s `introspect_token`: resolve an opaque
     // bearer credential to the identity it authenticates as, for a reverse
     // proxy that must know the caller before it can authorize anything.
     //
@@ -174,7 +174,7 @@ public:
     // 4096 bytes.
     void set_resolve_token(vgi_rpc::ResolveTokenHook hook);
 
-    // Host `vgi_rpc.Identity.v1`'s `issue_grant`: mint a standing delegation
+    // Host `vgi_rpc.Identity.v2`'s `issue_grant`: mint a standing delegation
     // credential for the *calling* user (there is no subject parameter).
     // Hosted over `--http` only, absent unless set.  The same rule as above
     // for transient failures: throw `vgi_rpc::AuthUnavailableError`.
@@ -211,7 +211,7 @@ private:
 
     // The one place this worker's server is built, for every transport: the
     // vgi.v2 protocol, the hosted protocols, and -- on HTTP, when a hook is
-    // set -- vgi_rpc.Identity.v1.  Reflection is hosted by vgi-rpc itself.
+    // set -- vgi_rpc.Identity.v2.  Reflection is hosted by vgi-rpc itself.
     std::unique_ptr<vgi_rpc::Server> build_server(Transport transport,
                                                   const std::vector<std::string>& args);
 
