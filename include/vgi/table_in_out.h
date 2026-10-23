@@ -156,7 +156,9 @@ class ResumableTableInOutFunction : public TableInOutFunction {
                   "State must be default- and move-constructible");
 
 public:
-    // The state a new stream starts from.
+    // The state a new stream starts from. Asked once, when the stream opens;
+    // `params.client_log` then writes to that init call's channel and is valid
+    // only during this call, so never keep it in the State.
     virtual State initial_state(const ProcessParams&) const { return State{}; }
 
     // The first reply for a real input batch.

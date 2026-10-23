@@ -744,3 +744,23 @@ TEST_CASE("every non-nullable FunctionInfo list and map defaults to empty, not n
         }
     }
 }
+
+TEST_CASE("a dictionary binary cell naming a null entry is null, not empty", "[wire]") {
+    // FunctionInfo's schema-valued fields are dictionary<int32, binary>: a
+    // valid index can still point at a null dictionary value.
+    arrow::BinaryBuilder values;
+    REQUIRE(values.AppendNull().ok());
+    REQUIRE(values.Append(std::string("bytes")).ok());
+    arrow::Int32Builder indices;
+    REQUIRE(indices.AppendValues({0, 1}).ok());
+    REQUIRE(indices.AppendNull().ok());
+    const auto type = arrow::dictionary(arrow::int32(), arrow::binary());
+    const auto column = arrow::DictionaryArray::FromArrays(type, indices.Finish().ValueOrDie(),
+                                                           values.Finish().ValueOrDie())
+                            .ValueOrDie();
+    const auto batch =
+        arrow::RecordBatch::Make(arrow::schema({arrow::field("s", type)}), 3, {column});
+    CHECK_FALSE(vgi::wire::get_optional_binary(batch->Slice(0, 1), "s"));
+    CHECK(vgi::wire::get_optional_binary(batch->Slice(1, 1), "s") == std::string("bytes"));
+    CHECK_FALSE(vgi::wire::get_optional_binary(batch->Slice(2, 1), "s"));
+}

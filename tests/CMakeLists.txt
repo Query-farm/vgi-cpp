@@ -18,6 +18,13 @@ target_link_libraries(function_listing_test PRIVATE vgi::vgi Catch2::Catch2WithM
 target_include_directories(function_listing_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 catch_discover_tests(function_listing_test)
 
+# A table-in-out exchange's turn rules (continuation ticks, HAVE_MORE_OUTPUT,
+# cache control on continued replies), driven without a transport.
+add_executable(table_in_out_exchange_test table_in_out_exchange_test.cpp)
+target_link_libraries(table_in_out_exchange_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(table_in_out_exchange_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+catch_discover_tests(table_in_out_exchange_test)
+
 # Drives the built example worker over stdio, a unix socket and HTTP with
 # vgi-rpc's own clients: the routing key is a statement about a running server,
 # not about a constant, so it is tested against one.

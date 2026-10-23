@@ -15,6 +15,10 @@ namespace vgi {
 
 namespace {
 
+// The CatalogContentsResponse collection fields, in CatalogCollections order.
+constexpr const char* kCollectionNames[] = {"schemas",   "tables", "views",
+                                            "functions", "macros", "indexes"};
+
 std::string path_key(const SchemaPath& path) {
     std::string key;
     for (size_t i = 0; i < path.size(); ++i) {
@@ -63,6 +67,14 @@ void check_paths(const std::vector<SchemaContents>& schemas, bool verify_items) 
     }
 }
 
+// The same parent-before-child order catalog_schemas guarantees.
+void sort_parents_first(std::vector<SchemaContents>& schemas) {
+    std::stable_sort(schemas.begin(), schemas.end(),
+                     [](const SchemaContents& a, const SchemaContents& b) {
+                         return a.path.size() < b.path.size();
+                     });
+}
+
 CatalogContentsResult not_modified(const std::string& etag) {
     CatalogContentsResult result;
     result.etag = etag;
@@ -72,36 +84,52 @@ CatalogContentsResult not_modified(const std::string& etag) {
 
 }  // namespace
 
-std::string catalog_contents_digest(const std::vector<SchemaContents>& schemas) {
-    vgi_rpc::crypto::Sha256 hash;
-    const auto length = [&](uint64_t n) {
-        uint8_t bytes[8];
-        for (int i = 0; i < 8; ++i) bytes[i] = static_cast<uint8_t>(n >> (8 * i));
-        hash.update(bytes, sizeof bytes);
-    };
-    const auto chunk = [&](const std::string& data) {
-        length(data.size());
-        hash.update(data);
-    };
-    const auto chunks = [&](const std::vector<std::string>& values) {
-        length(values.size());
-        for (const auto& value : values) chunk(value);
-    };
-    length(schemas.size());
+CatalogCollections encode_collections(const std::vector<SchemaContents>& schemas) {
+    // Functions of every subtype share one stream, both macro kinds another.
+    std::vector<std::string> infos;
+    std::vector<const std::vector<std::string>*> tables, views, functions, macros, indexes;
     for (const auto& schema : schemas) {
-        length(schema.path.size());
-        for (const auto& part : schema.path) chunk(part);
-        chunk(schema.schema);
-        for (const auto* kind : {&schema.tables, &schema.views, &schema.scalar_functions,
-                                 &schema.aggregate_functions, &schema.table_functions,
-                                 &schema.scalar_macros, &schema.table_macros, &schema.indexes}) {
-            chunks(*kind);
-        }
+        infos.push_back(schema.schema);
+        tables.push_back(&schema.tables);
+        views.push_back(&schema.views);
+        functions.insert(functions.end(), {&schema.scalar_functions, &schema.aggregate_functions,
+                                           &schema.table_functions});
+        macros.insert(macros.end(), {&schema.scalar_macros, &schema.table_macros});
+        indexes.push_back(&schema.indexes);
+    }
+    return {wire::concat_ipc({&infos}),  wire::concat_ipc(tables), wire::concat_ipc(views),
+            wire::concat_ipc(functions), wire::concat_ipc(macros), wire::concat_ipc(indexes)};
+}
+
+std::string collections_digest(const CatalogCollections& collections) {
+    // vgi-python's contents_codec.contents_digest framing (protocol 2.2): a
+    // domain prefix, then per collection its name, a presence byte and, when
+    // present, the stream's little-endian u64 length and bytes.
+    vgi_rpc::crypto::Sha256 hash;
+    hash.update("vgi.catalog.contents.2.2");
+    hash.update_byte(0);
+    for (size_t i = 0; i < collections.size(); ++i) {
+        hash.update(kCollectionNames[i]);
+        hash.update_byte(0);
+        const auto& data = collections[i];
+        hash.update_byte(data ? 1 : 0);
+        if (!data) continue;
+        uint8_t bytes[8];
+        for (int b = 0; b < 8; ++b)
+            bytes[b] = static_cast<uint8_t>(uint64_t(data->size()) >> (8 * b));
+        hash.update(bytes, sizeof bytes);
+        hash.update(*data);
     }
     return hash.hex_digest();
 }
 
-CatalogContentsResult answer_catalog_contents(const CatalogContentsHandler& handler,
+std::string catalog_contents_digest(const std::vector<SchemaContents>& schemas) {
+    auto ordered = schemas;
+    sort_parents_first(ordered);
+    return collections_digest(encode_collections(ordered));
+}
+
+CatalogContentsAnswer answer_catalog_contents(const CatalogContentsHandler& handler,
                                               CatalogContentsEtag etag_mode,
                                               const CatalogContentsCall& call) {
     const auto& if_none_match = call.if_none_match;
@@ -122,59 +150,39 @@ CatalogContentsResult answer_catalog_contents(const CatalogContentsHandler& hand
             throw std::invalid_argument(
                 "catalog_contents returned not_modified with schemas; it must return none");
         }
-        return not_modified(*result.etag);
+        return {not_modified(*result.etag), {}};
     }
 
     check_paths(result.schemas, static_cast<bool>(handler));
-    // The same parent-before-child order catalog_schemas guarantees.
-    std::stable_sort(result.schemas.begin(), result.schemas.end(),
-                     [](const SchemaContents& a, const SchemaContents& b) {
-                         return a.path.size() < b.path.size();
-                     });
+    sort_parents_first(result.schemas);
 
-    if (!result.etag && etag_mode == CatalogContentsEtag::ContentHash) {
-        result.etag = catalog_contents_digest(result.schemas);
-    }
+    // A catalog's own etag answers not_modified before anything is encoded.
     if (result.etag && if_none_match && *result.etag == *if_none_match) {
-        return not_modified(*result.etag);
+        return {not_modified(*result.etag), {}};
     }
-    return result;
+    auto collections = encode_collections(result.schemas);
+    if (!result.etag && etag_mode == CatalogContentsEtag::ContentHash) {
+        result.etag = collections_digest(collections);
+        if (if_none_match && *result.etag == *if_none_match) {
+            return {not_modified(*result.etag), {}};
+        }
+    }
+    return {std::move(result), std::move(collections)};
 }
 
 std::shared_ptr<arrow::RecordBatch> encode_catalog_contents(int64_t catalog_version,
-                                                            const CatalogContentsResult& result) {
+                                                            const CatalogContentsAnswer& answer) {
     auto builder = wire::ResultBuilder(payload_schema_of("catalog_contents"));
     builder.set_int64("catalog_version", catalog_version)
-        .set_optional_string("etag", result.etag)
-        .set_bool("not_modified", result.not_modified);
-    // Six collections across every schema, each one IPC stream of that kind's
-    // info rows: functions of every subtype share one, both macro kinds
-    // another. An empty kind (and every kind of a not_modified answer) is null.
-    std::vector<std::string> schemas;
-    std::vector<const std::vector<std::string>*> tables, views, functions, macros, indexes;
-    for (const auto& schema : result.schemas) {
-        schemas.push_back(schema.schema);
-        tables.push_back(&schema.tables);
-        views.push_back(&schema.views);
-        functions.insert(functions.end(), {&schema.scalar_functions, &schema.aggregate_functions,
-                                           &schema.table_functions});
-        macros.insert(macros.end(), {&schema.scalar_macros, &schema.table_macros});
-        indexes.push_back(&schema.indexes);
-    }
-    const auto set_collection = [&](const char* field,
-                                    const std::vector<const std::vector<std::string>*>& groups) {
-        if (auto stream = wire::concat_ipc(groups)) {
-            builder.set_binary(field, *stream);
+        .set_optional_string("etag", answer.result.etag)
+        .set_bool("not_modified", answer.result.not_modified);
+    for (size_t i = 0; i < answer.collections.size(); ++i) {
+        if (const auto& stream = answer.collections[i]) {
+            builder.set_binary(kCollectionNames[i], *stream);
         } else {
-            builder.set_null(field);
+            builder.set_null(kCollectionNames[i]);
         }
-    };
-    set_collection("schemas", {&schemas});
-    set_collection("tables", tables);
-    set_collection("views", views);
-    set_collection("functions", functions);
-    set_collection("macros", macros);
-    set_collection("indexes", indexes);
+    }
     return builder.finish();
 }
 

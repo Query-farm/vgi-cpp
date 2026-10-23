@@ -110,7 +110,15 @@ std::optional<std::string> get_optional_binary(const std::shared_ptr<arrow::Reco
         if (dict->IsNull(0)) return std::nullopt;
         auto values = std::dynamic_pointer_cast<arrow::BinaryArray>(dict->dictionary());
         if (!values) fail("param '" + field + "' is not a binary dictionary");
-        return values->GetString(dict->GetValueIndex(0));
+        const auto index = dict->GetValueIndex(0);
+        if (index < 0 || index >= values->length()) {
+            fail("param '" + field + "' dictionary index " + std::to_string(index) +
+                 " is out of range");
+        }
+        // A valid index can still name a null dictionary entry: that is null
+        // too, not the empty string.
+        if (values->IsNull(index)) return std::nullopt;
+        return values->GetString(index);
     }
     if (auto wide = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr)) {
         return wide->IsNull(0) ? std::nullopt : std::optional<std::string>(wide->GetString(0));

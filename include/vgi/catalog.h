@@ -280,10 +280,17 @@ enum class CatalogContentsEtag {
 };
 
 // The content-hash etag of a `catalog_contents` answer: lowercase hex SHA-256
-// over a length-prefixed encoding of every schema's path, SchemaInfo and the
-// items of each kind, in order. Byte-for-byte vgi-python's
-// `catalog_contents_digest` (and vgi-go's `CatalogContentsDigest`), so equal
-// catalogs hash alike in every SDK.
+// of the six collection streams the answer sends (schemas parents first), in
+// vgi-python 2.2's `contents_digest` framing -- a `vgi.catalog.contents.2.2\0`
+// prefix, then per collection its name, a presence byte and, when present,
+// the stream's u64 little-endian length and bytes.
+//
+// The framing is vgi-python's, but the etag is not portable across SDKs: it
+// hashes this SDK's own stream bytes, and vgi-python packs up to 1024 rows per
+// batch where this SDK writes one batch per item, so the same catalog hashes
+// differently in each. Only an empty catalog (every collection null) agrees.
+// That is all an etag needs: it is only ever compared with one this worker
+// served.
 std::string catalog_contents_digest(const std::vector<SchemaContents>& schemas);
 
 // A DDL-capable in-memory catalog (Worker::register_memory_catalog).

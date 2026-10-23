@@ -38,6 +38,19 @@ vgi_rpc::LogLevel to_rpc_level(LogLevel level);
 // A sink that writes a function's messages into `context`'s in-band channel.
 std::function<void(LogLevel, const std::string&)> client_log_sink(vgi_rpc::CallContext* context);
 
+// The exchange state that drives a table-in-out stream (every phase but
+// FINALIZE). `init_context` is the init call, whose channel `initial_state`
+// logs through; null logs nowhere. Defined in function_dispatch.cpp, declared
+// here so the exchange's turn rules can be tested without a transport.
+std::shared_ptr<vgi_rpc::ExchangeState> make_table_in_out_exchange(
+    std::shared_ptr<TableInOutFunction> fn, ProcessParams params,
+    vgi_rpc::CallContext* init_context);
+
+// The batches of a table-in-out's `finish()`, for its FINALIZE producer.
+// Refuses `more`: a producer stream has no ticks to ask for it with.
+std::vector<std::shared_ptr<arrow::RecordBatch>> finalize_batches(
+    const TableInOutFunction& fn, std::vector<EmittedBatch> emitted);
+
 // The `init` stream's header schema (`GlobalInitResponse`). Defined in
 // function_dispatch.cpp; registration needs it, and so does the handler.
 const std::shared_ptr<arrow::Schema>& global_init_response_schema();

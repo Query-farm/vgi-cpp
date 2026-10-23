@@ -417,11 +417,14 @@ private:
 // that a batch may fan out or collapse is the whole point of the shape.
 class TableInOutExchange : public vgi_rpc::ExchangeState {
 public:
-    TableInOutExchange(std::shared_ptr<TableInOutFunction> fn, ProcessParams params)
+    // `init_context` is the init call's, which `initial_state` may log through;
+    // null logs nowhere.
+    TableInOutExchange(std::shared_ptr<TableInOutFunction> fn, ProcessParams params,
+                       vgi_rpc::CallContext* init_context)
         : fn_(std::move(fn)),
           params_(std::move(params)),
           cache_(cache_metadata(fn_->cache_control())),
-          continuation_(fn_->open_continuation(params_)) {}
+          continuation_(open_continuation(*fn_, params_, init_context)) {}
 
     void exchange(const vgi_rpc::AnnotatedBatch& input, vgi_rpc::OutputCollector& out,
                   vgi_rpc::CallContext&) override {
@@ -472,6 +475,19 @@ public:
     }
 
 private:
+    // The continuation opens during init, before any turn has bound a logger,
+    // so `initial_state` gets the init call's own channel (whose logs travel
+    // ahead of the stream header) -- never whatever `params_` happens to hold.
+    // Bound on a copy: the channel dies with the init call, and each turn
+    // binds its own.
+    static std::unique_ptr<TableInOutContinuation> open_continuation(
+        const TableInOutFunction& fn, const ProcessParams& params,
+        vgi_rpc::CallContext* init_context) {
+        auto opening = params;
+        opening.client_log = client_log_sink(init_context);
+        return fn.open_continuation(opening);
+    }
+
     // One data batch per exchange tick is all the wire carries, so several
     // emitted batches are concatenated — and their provenance with them, since
     // an output row's parent index is relative to the one input batch either
@@ -627,6 +643,29 @@ private:
 };
 
 }  // namespace
+
+std::shared_ptr<vgi_rpc::ExchangeState> make_table_in_out_exchange(
+    std::shared_ptr<TableInOutFunction> fn, ProcessParams params,
+    vgi_rpc::CallContext* init_context) {
+    return std::make_shared<TableInOutExchange>(std::move(fn), std::move(params), init_context);
+}
+
+std::vector<std::shared_ptr<arrow::RecordBatch>> finalize_batches(
+    const TableInOutFunction& fn, std::vector<EmittedBatch> emitted) {
+    std::vector<std::shared_ptr<arrow::RecordBatch>> rows;
+    rows.reserve(emitted.size());
+    for (auto& item : emitted) {
+        // A finalize is a producer stream, which has no ticks to ask for more
+        // with.
+        if (item.more) {
+            throw std::runtime_error("table-in-out '" + fn.name() +
+                                     "': more output is only valid from process() or resume(), "
+                                     "not finish()");
+        }
+        if (item.batch) rows.push_back(std::move(item.batch));
+    }
+    return rows;
+}
 
 // A registration belongs to a scope when both halves match. An empty schema
 // means "any", which is how a call that names no schema still resolves; the
@@ -1521,26 +1560,14 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
         const auto phase = wire::get_optional_enum(init_request, "phase").value_or("");
         if (phase == enums::phase::kFinalize) {
             stream.input_schema = arrow::schema({});
-            auto batches = transform->finish(params);
-            std::vector<std::shared_ptr<arrow::RecordBatch>> rows;
-            rows.reserve(batches.size());
-            for (auto& emitted : batches) {
-                // A finalize is a producer stream, which has no ticks to ask
-                // for more with.
-                if (emitted.more) {
-                    throw std::runtime_error("table-in-out '" + transform->name() +
-                                             "': more output is only valid from process() "
-                                             "or resume(), not finish()");
-                }
-                if (emitted.batch) rows.push_back(std::move(emitted.batch));
-            }
+            auto rows = finalize_batches(*transform, transform->finish(params));
             stream.state =
                 std::make_shared<TableProduce>(std::make_unique<BatchesProducer>(std::move(rows)));
             return stream;
         }
         stream.input_schema = input_schema_or_empty();
         stream.state =
-            std::make_shared<TableInOutExchange>(std::move(transform), std::move(params));
+            make_table_in_out_exchange(std::move(transform), std::move(params), &context);
         return stream;
     }
 
