@@ -130,10 +130,9 @@ std::vector<const MemoryCatalog::Schema*> MemoryCatalog::sorted_schemas(const St
     return out;
 }
 
-std::string MemoryCatalog::schema_item(const std::string& attach, const Schema& schema) const {
-    auto builder = wire::ResultBuilder(gen::SchemaInfoSchema())
-                       .set_string_list("path", schema.path)
-                       .set_binary("attach_opaque_data", opaque::echo_attach(attach));
+std::string MemoryCatalog::schema_item(const Schema& schema) const {
+    auto builder =
+        wire::ResultBuilder(gen::SchemaInfoSchema()).set_string_list("path", schema.path);
     builder.set_optional_string("comment", schema.comment);
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
@@ -145,7 +144,7 @@ std::vector<SchemaContents> MemoryCatalog::snapshot(const std::string& attach) {
     for (const auto* schema : sorted_schemas(st)) {
         SchemaContents row;
         row.path = schema->path;
-        row.schema = schema_item(attach, *schema);
+        row.schema = schema_item(*schema);
         for (const auto& [key, object] : schema->tables) row.tables.push_back(object.item);
         for (const auto& [key, object] : schema->views) row.views.push_back(object.item);
         out.push_back(std::move(row));
@@ -313,7 +312,7 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<std::string> items;
         for (const auto* schema : sorted_schemas(state(attach))) {
-            items.push_back(schema_item(attach, *schema));
+            items.push_back(schema_item(*schema));
         }
         return items_payload(method, std::move(items));
     }
@@ -322,7 +321,7 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         auto& st = state(attach);
         std::vector<std::string> items;
         const auto found = st.schemas.find(path_key(wire::get_schema_path(params, "path")));
-        if (found != st.schemas.end()) items.push_back(schema_item(attach, found->second));
+        if (found != st.schemas.end()) items.push_back(schema_item(found->second));
         return items_payload(method, std::move(items));
     }
     if (method == "catalog_schema_contents_tables" || method == "catalog_schema_contents_views") {

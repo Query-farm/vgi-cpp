@@ -215,11 +215,6 @@ const Call* current() {
     return g_current;
 }
 
-std::string echo_attach(const std::string& plaintext) {
-    if (g_current && g_current->attach_as_sent()) return *g_current->attach_as_sent();
-    return plaintext;
-}
-
 std::string seal_attach_out(const std::string& plaintext) {
     return g_current ? g_current->seal_attach(plaintext) : plaintext;
 }

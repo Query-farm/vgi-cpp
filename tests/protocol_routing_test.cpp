@@ -191,7 +191,7 @@ void require_hosts_vgi(const std::vector<vgi_rpc::HostedProtocol>& listing) {
     CHECK(application.name == kProtocol);
     CHECK(application.version == kVersion);
     // Byte-identical to the reference surface, on every transport.
-    CHECK(kVersion == "2.1.0");
+    CHECK(kVersion == "2.2.0");
     CHECK(application.hash == kReferenceProtocolHash);
 }
 

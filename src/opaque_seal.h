@@ -106,10 +106,6 @@ private:
 // The call being served on this thread, or nullptr outside a handler.
 const Call* current();
 
-// What a response may echo back as `attach_opaque_data` (a SchemaInfo's
-// handle): the value the caller sent, never a freshly built plaintext.
-std::string echo_attach(const std::string& plaintext);
-
 // Seal an outgoing attach / transaction value for the current call.
 std::string seal_attach_out(const std::string& plaintext);
 std::string seal_transaction_out(const std::string& plaintext);

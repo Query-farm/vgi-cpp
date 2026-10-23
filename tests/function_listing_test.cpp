@@ -32,6 +32,8 @@
 #include <vector>
 
 #include <arrow/array.h>
+#include <arrow/io/memory.h>
+#include <arrow/ipc/reader.h>
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
@@ -423,43 +425,50 @@ struct ContentsRow {
     std::string schema;
 };
 
-std::vector<std::string> binary_list_at(const std::shared_ptr<arrow::Array>& column, int64_t row) {
-    const auto list = std::static_pointer_cast<arrow::ListArray>(column);
-    const auto values = std::static_pointer_cast<arrow::BinaryArray>(list->values());
-    std::vector<std::string> out;
-    for (int64_t i = list->value_offset(row); i < list->value_offset(row + 1); ++i) {
-        out.push_back(values->GetString(i));
+// The rows of one catalog_contents collection, each re-encoded as the
+// one-row IPC item the per-schema listings answer with. Null is no rows.
+std::vector<std::shared_ptr<arrow::RecordBatch>> collection_rows(
+    const std::shared_ptr<arrow::RecordBatch>& payload, const std::string& field) {
+    const auto column =
+        std::static_pointer_cast<arrow::BinaryArray>(payload->GetColumnByName(field));
+    std::vector<std::shared_ptr<arrow::RecordBatch>> rows;
+    if (column->IsNull(0)) return rows;
+    auto source =
+        std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(column->GetString(0)));
+    auto reader = arrow::ipc::RecordBatchStreamReader::Open(source).ValueOrDie();
+    std::shared_ptr<arrow::RecordBatch> batch;
+    while (reader->ReadNext(&batch).ok() && batch) {
+        for (int64_t r = 0; r < batch->num_rows(); ++r) rows.push_back(batch->Slice(r, 1));
     }
-    return out;
+    return rows;
 }
 
 std::map<std::vector<std::string>, ContentsRow> contents_by_path(
     const std::shared_ptr<arrow::RecordBatch>& payload) {
-    const auto schemas =
-        std::static_pointer_cast<arrow::ListArray>(payload->GetColumnByName("schemas"));
-    const auto rows = std::static_pointer_cast<arrow::StructArray>(schemas->values());
     std::map<std::vector<std::string>, ContentsRow> out;
-    for (int64_t r = schemas->value_offset(0); r < schemas->value_offset(1); ++r) {
-        const auto path_list =
-            std::static_pointer_cast<arrow::ListArray>(rows->GetFieldByName("path"));
-        const auto path_values = std::static_pointer_cast<arrow::StringArray>(path_list->values());
-        std::vector<std::string> path;
-        for (int64_t i = path_list->value_offset(r); i < path_list->value_offset(r + 1); ++i) {
-            path.push_back(path_values->GetString(i));
-        }
-        ContentsRow row;
-        row.schema = std::static_pointer_cast<arrow::BinaryArray>(rows->GetFieldByName("schema"))
-                         ->GetString(r);
-        row.tables = binary_list_at(rows->GetFieldByName("tables"), r);
-        row.views = binary_list_at(rows->GetFieldByName("views"), r);
-        row.scalar_functions = binary_list_at(rows->GetFieldByName("scalar_functions"), r);
-        row.aggregate_functions = binary_list_at(rows->GetFieldByName("aggregate_functions"), r);
-        row.table_functions = binary_list_at(rows->GetFieldByName("table_functions"), r);
-        row.scalar_macros = binary_list_at(rows->GetFieldByName("scalar_macros"), r);
-        row.table_macros = binary_list_at(rows->GetFieldByName("table_macros"), r);
-        row.indexes = binary_list_at(rows->GetFieldByName("indexes"), r);
-        out[path] = std::move(row);
+    for (const auto& row : collection_rows(payload, "schemas")) {
+        out[vgi::wire::get_schema_path(row, "path")].schema = vgi::wire::encode_ipc(row);
     }
+    const auto place = [&](const char* field, auto pick) {
+        for (const auto& row : collection_rows(payload, field)) {
+            pick(out[vgi::wire::get_schema_path(row, "schema_path")], row)
+                .push_back(vgi::wire::encode_ipc(row));
+        }
+    };
+    using Row = std::shared_ptr<arrow::RecordBatch>;
+    place("tables", [](ContentsRow& c, const Row&) -> auto& { return c.tables; });
+    place("views", [](ContentsRow& c, const Row&) -> auto& { return c.views; });
+    place("indexes", [](ContentsRow& c, const Row&) -> auto& { return c.indexes; });
+    place("functions", [](ContentsRow& c, const Row& row) -> auto& {
+        const auto kind = vgi::wire::get_optional_enum(row, "function_type").value_or("");
+        if (kind == "SCALAR") return c.scalar_functions;
+        if (kind == "AGGREGATE") return c.aggregate_functions;
+        return c.table_functions;
+    });
+    place("macros", [](ContentsRow& c, const Row& row) -> auto& {
+        return vgi::wire::get_optional_enum(row, "macro_type") == "TABLE" ? c.table_macros
+                                                                          : c.scalar_macros;
+    });
     return out;
 }
 

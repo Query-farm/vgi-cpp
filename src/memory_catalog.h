@@ -58,7 +58,7 @@ private:
     State& state(const std::string& attach);
     int64_t reported_version(const State& state) const;
     std::vector<const Schema*> sorted_schemas(const State& state) const;
-    std::string schema_item(const std::string& attach, const Schema& schema) const;
+    std::string schema_item(const Schema& schema) const;
     std::vector<SchemaContents> snapshot(const std::string& attach);
 
     std::shared_ptr<arrow::RecordBatch> attach(const std::shared_ptr<arrow::RecordBatch>& params);

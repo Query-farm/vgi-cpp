@@ -146,8 +146,35 @@ std::shared_ptr<arrow::RecordBatch> encode_catalog_contents(int64_t catalog_vers
     auto builder = wire::ResultBuilder(payload_schema_of("catalog_contents"));
     builder.set_int64("catalog_version", catalog_version)
         .set_optional_string("etag", result.etag)
-        .set_bool("not_modified", result.not_modified)
-        .set_schema_contents("schemas", result.schemas);
+        .set_bool("not_modified", result.not_modified);
+    // Six collections across every schema, each one IPC stream of that kind's
+    // info rows: functions of every subtype share one, both macro kinds
+    // another. An empty kind (and every kind of a not_modified answer) is null.
+    std::vector<std::string> schemas;
+    std::vector<const std::vector<std::string>*> tables, views, functions, macros, indexes;
+    for (const auto& schema : result.schemas) {
+        schemas.push_back(schema.schema);
+        tables.push_back(&schema.tables);
+        views.push_back(&schema.views);
+        functions.insert(functions.end(), {&schema.scalar_functions, &schema.aggregate_functions,
+                                           &schema.table_functions});
+        macros.insert(macros.end(), {&schema.scalar_macros, &schema.table_macros});
+        indexes.push_back(&schema.indexes);
+    }
+    const auto set_collection = [&](const char* field,
+                                    const std::vector<const std::vector<std::string>*>& groups) {
+        if (auto stream = wire::concat_ipc(groups)) {
+            builder.set_binary(field, *stream);
+        } else {
+            builder.set_null(field);
+        }
+    };
+    set_collection("schemas", {&schemas});
+    set_collection("tables", tables);
+    set_collection("views", views);
+    set_collection("functions", functions);
+    set_collection("macros", macros);
+    set_collection("indexes", indexes);
     return builder.finish();
 }
 

@@ -292,10 +292,8 @@ private:
     // One `SchemaInfo` entry, with the object counts the engine treats as a
     // hard guarantee: a declared zero lets it skip both the bulk listing and
     // every per-name lookup for that kind.
-    // `owner` is the catalog name the counts are scoped in; `handle` is the
-    // sealed `attach_opaque_data` the record carries back to the caller.
-    std::string encode_schema_info(const std::string& owner, const std::string& handle,
-                                   const CatalogSchema& schema,
+    // `owner` is the catalog name the counts are scoped in.
+    std::string encode_schema_info(const std::string& owner, const CatalogSchema& schema,
                                    const CatalogSchema* contents) const;
     static std::string encode_macro_info(const CatalogMacro& macro, const SchemaPath& schema_path);
     static std::string encode_view_info(const CatalogView& view, const SchemaPath& schema_path);
@@ -377,8 +375,6 @@ private:
     // The plaintext attach value. On a transport that does not seal it, the
     // catalog's secret options are left out and kept server-side.
     std::string seal_attachment(const Attachment& attachment) const;
-    // What a response echoes as `attach_opaque_data`: the value the caller sent.
-    std::string handle_of(const Attachment& attachment) const;
     // Put back the secret options an unsealed value left server-side.
     void restore_secret_options(Attachment& attachment) const;
     // The attachment a request belongs to. Falls back to the primary catalog
@@ -390,7 +386,6 @@ private:
     // declared catalog: every schema, parents first, with all its items.
     std::vector<SchemaContents> compose_catalog_contents(const vgi_rpc::Request& request,
                                                          const Attachment& attachment,
-                                                         const std::string& owner,
                                                          const CatalogModel& model) const;
 
     // Serve a `catalog_*` call addressed to a memory catalog, when it is one:

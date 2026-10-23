@@ -105,6 +105,13 @@ std::optional<std::string> get_optional_binary(const std::shared_ptr<arrow::Reco
     // fields that can exceed 2 GiB — `pushdown_filters` is declared
     // large_binary — and they are the same value to every caller here.
     auto arr = column(batch, field);
+    // FunctionInfo's three schema-valued fields are `dictionary<int32, binary>`.
+    if (auto dict = std::dynamic_pointer_cast<arrow::DictionaryArray>(arr)) {
+        if (dict->IsNull(0)) return std::nullopt;
+        auto values = std::dynamic_pointer_cast<arrow::BinaryArray>(dict->dictionary());
+        if (!values) fail("param '" + field + "' is not a binary dictionary");
+        return values->GetString(dict->GetValueIndex(0));
+    }
     if (auto wide = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr)) {
         return wide->IsNull(0) ? std::nullopt : std::optional<std::string>(wide->GetString(0));
     }
@@ -353,6 +360,26 @@ std::string encode_ipc(const std::shared_ptr<arrow::RecordBatch>& batch) {
     return buffer->ToString();
 }
 
+std::optional<std::string> concat_ipc(const std::vector<const std::vector<std::string>*>& groups) {
+    std::shared_ptr<arrow::io::BufferOutputStream> sink;
+    std::shared_ptr<arrow::ipc::RecordBatchWriter> writer;
+    for (const auto* items : groups) {
+        for (const auto& item : *items) {
+            auto batch = decode_ipc(item);
+            if (!batch) throw std::runtime_error("concatenating IPC: an item has no batch");
+            if (!writer) {
+                sink = unwrap(arrow::io::BufferOutputStream::Create(), "allocating an IPC sink");
+                writer = unwrap(arrow::ipc::MakeStreamWriter(sink, batch->schema()),
+                                "opening an IPC writer");
+            }
+            check_ok(writer->WriteRecordBatch(*batch), "writing a concatenated IPC batch");
+        }
+    }
+    if (!writer) return std::nullopt;
+    check_ok(writer->Close(), "closing a concatenated IPC stream");
+    return unwrap(sink->Finish(), "finishing an IPC sink")->ToString();
+}
+
 std::shared_ptr<arrow::Schema> decode_schema(const std::string& bytes) {
     if (bytes.empty()) return nullptr;
     auto buffer = arrow::Buffer::FromString(bytes);
@@ -418,10 +445,23 @@ ResultBuilder& ResultBuilder::set_string(const std::string& field, const std::st
 }
 
 ResultBuilder& ResultBuilder::set_binary(const std::string& field, const std::string& value) {
+    const int index = field_index(field);
     arrow::BinaryBuilder b;
     check_ok(b.Append(value), "building result field '" + field + "'");
-    arrays_[static_cast<size_t>(field_index(field))] =
-        unwrap(b.Finish(), "finishing result field '" + field + "'");
+    auto values = unwrap(b.Finish(), "finishing result field '" + field + "'");
+    // FunctionInfo's `arguments`, `output_schema` and `parameter_default_values`
+    // are `dictionary<int32, binary>`, so a catalog_contents stream shares each
+    // distinct value across rows. One row is one entry, index 0.
+    const auto& type = schema_->field(index)->type();
+    if (type->id() == arrow::Type::DICTIONARY) {
+        arrow::Int32Builder indices;
+        check_ok(indices.Append(0), "building result field '" + field + "'");
+        values = unwrap(
+            arrow::DictionaryArray::FromArrays(
+                type, unwrap(indices.Finish(), "finishing result field '" + field + "'"), values),
+            "building dictionary result field '" + field + "'");
+    }
+    arrays_[static_cast<size_t>(index)] = std::move(values);
     return *this;
 }
 
@@ -592,68 +632,6 @@ ResultBuilder& ResultBuilder::set_secret_lookups(
     }
     arrays_[static_cast<size_t>(index)] =
         unwrap(list->Finish(), "finishing secrets field '" + field + "'");
-    return *this;
-}
-
-ResultBuilder& ResultBuilder::set_schema_contents(const std::string& field,
-                                                  const std::vector<SchemaContents>& rows) {
-    const int index = field_index(field);
-    // Against the schema's own struct type, children reached by name: field
-    // order and nullability are the generator's to decide.
-    const auto& list_type = schema_->field(index)->type();
-    std::unique_ptr<arrow::ArrayBuilder> raw;
-    check_ok(arrow::MakeBuilder(arrow::default_memory_pool(), list_type, &raw),
-             "building schema contents field '" + field + "'");
-    auto* list = dynamic_cast<arrow::ListBuilder*>(raw.get());
-    if (!list) fail("result field '" + field + "' is not a list");
-    auto* entry = dynamic_cast<arrow::StructBuilder*>(list->value_builder());
-    if (!entry) fail("result field '" + field + "' is not a list of structs");
-
-    // The struct type held by value, for the reason string_child gives.
-    const auto entry_type = entry->type();
-    const auto& struct_type = static_cast<const arrow::StructType&>(*entry_type);
-    const auto child = [&](const char* name) -> arrow::ArrayBuilder* {
-        const int i = struct_type.GetFieldIndex(name);
-        if (i < 0) fail(std::string("SchemaContents has no field '") + name + "'");
-        return entry->field_builder(i);
-    };
-    const auto append_list = [&](const char* name, const std::vector<std::string>& values,
-                                 bool utf8) {
-        auto* items = dynamic_cast<arrow::ListBuilder*>(child(name));
-        if (!items) fail(std::string("SchemaContents field '") + name + "' is not a list");
-        check_ok(items->Append(), std::string("opening SchemaContents.") + name);
-        for (const auto& value : values) {
-            if (utf8) {
-                auto* b = dynamic_cast<arrow::StringBuilder*>(items->value_builder());
-                if (!b) fail(std::string("SchemaContents.") + name + " is not list<utf8>");
-                check_ok(b->Append(value), std::string("appending SchemaContents.") + name);
-            } else {
-                auto* b = dynamic_cast<arrow::BinaryBuilder*>(items->value_builder());
-                if (!b) fail(std::string("SchemaContents.") + name + " is not list<binary>");
-                check_ok(b->Append(value), std::string("appending SchemaContents.") + name);
-            }
-        }
-    };
-
-    check_ok(list->Append(), "opening schema contents field '" + field + "'");
-    for (const auto& row : rows) {
-        check_ok(entry->Append(), "opening a SchemaContents struct");
-        append_list("path", row.path, true);
-        auto* schema = dynamic_cast<arrow::BinaryBuilder*>(child("schema"));
-        if (!schema) fail("SchemaContents.schema is not binary");
-        check_ok(schema->Append(row.schema), "appending SchemaContents.schema");
-        append_list("tables", row.tables, false);
-        append_list("views", row.views, false);
-        append_list("scalar_functions", row.scalar_functions, false);
-        append_list("aggregate_functions", row.aggregate_functions, false);
-        append_list("table_functions", row.table_functions, false);
-        append_list("scalar_macros", row.scalar_macros, false);
-        append_list("table_macros", row.table_macros, false);
-        append_list("indexes", row.indexes, false);
-    }
-    std::shared_ptr<arrow::Array> array;
-    check_ok(list->Finish(&array), "finishing schema contents field '" + field + "'");
-    arrays_[static_cast<size_t>(index)] = std::move(array);
     return *this;
 }
 
