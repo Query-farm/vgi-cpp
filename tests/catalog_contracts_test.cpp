@@ -128,6 +128,24 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         }
         const auto restored = vgi::wire::decode_ipc(vgi::wire::encode_ipc(builder.finish()));
         REQUIRE(restored->Equals(*source, true));
+        const std::string case_name(name);
+        if (case_name.starts_with("column_default_set_") ||
+            case_name.starts_with("column_type_change_")) {
+            const auto payload = std::static_pointer_cast<arrow::BinaryArray>(
+                vgi::wire::column(restored, "expression"));
+            if (case_name == "column_type_change_literal") {
+                REQUIRE(payload->IsNull(0));
+            } else {
+                REQUIRE_FALSE(payload->IsNull(0));
+                const auto bytes = payload->GetView(0);
+                const auto expression = vgi::wire::decode_ipc(
+                    std::string(bytes.begin(), bytes.end()));
+                REQUIRE(expression->schema()->Equals(gen::SqlExpressionSchema(), true));
+                REQUIRE(vgi::wire::get_string_list(expression, "schema_path") ==
+                        vgi::wire::get_string_list(restored, "schema_path"));
+                REQUIRE_FALSE(vgi::wire::get_string(expression, "profile").empty());
+            }
+        }
     }
     REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("view_info")), "aliases") ==
             std::vector<std::string>{"a.b", "with\"quote"});
