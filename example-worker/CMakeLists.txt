@@ -48,6 +48,7 @@ add_executable(vgi-example-worker
     table_in_out/echo.cpp
     table_in_out/cached.cpp
     table_in_out/blended.cpp
+    table_in_out/paged.cpp
     table_in_out/accumulate.cpp
     table_in_out/secrets.cpp
     table_in_out/cancellable.cpp

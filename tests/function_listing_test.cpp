@@ -889,3 +889,46 @@ TEST_CASE("function and macro kinds travel as the Python enum member names",
     CHECK(macros("SCALAR_MACRO") == Names{"SCALAR"});
     CHECK(macros("TABLE_MACRO") == Names{"TABLE"});
 }
+
+namespace {
+
+// A table-in-out that only declares itself, for registration checks.
+class Sliced final : public vgi::TableInOutFunction {
+public:
+    Sliced(bool blended, std::optional<int64_t> rows) : blended_(blended), rows_(rows) {}
+    std::string name() const override { return "sliced"; }
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata metadata;
+        metadata.input_from_args = blended_;
+        metadata.input_rows_per_call = rows_;
+        return metadata;
+    }
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::column("n", 0, "int64")};
+    }
+    std::vector<vgi::EmittedBatch> process(
+        const vgi::ProcessParams&, const std::shared_ptr<arrow::RecordBatch>&) const override {
+        return {};
+    }
+
+private:
+    bool blended_;
+    std::optional<int64_t> rows_;
+};
+
+}  // namespace
+
+TEST_CASE("input_rows_per_call is advertised for a blended function and refused elsewhere",
+          "[catalog][listing]") {
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "rows";
+    CHECK_THROWS(dispatcher.register_table_in_out(std::make_shared<Sliced>(true, 0)));
+    CHECK_THROWS(dispatcher.register_table_in_out(std::make_shared<Sliced>(false, 3)));
+    dispatcher.register_table_in_out(std::make_shared<Sliced>(true, 3));
+
+    Served worker(dispatcher);
+    const auto items = list(worker, attach(worker, "rows"), {"main"}, "TABLE_FUNCTION");
+    REQUIRE(items.size() == 1);
+    CHECK(vgi::wire::get_optional_int64(vgi::wire::decode_ipc(items[0]), "input_rows_per_call") ==
+          3);
+}

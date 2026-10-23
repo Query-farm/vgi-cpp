@@ -43,6 +43,26 @@ vgi_rpc::Result conform(vgi_rpc::Result result, const std::shared_ptr<arrow::Sch
     return vgi_rpc::Result::from_annotated_batch(std::move(answer));
 }
 
+// Refuse an `input_rows_per_call` the engine could not honour, at
+// registration rather than on the first query: it splits the per-row input of
+// a blended function, so it means nothing on a classic table-in-out, and a
+// call of no rows is not a call.
+void check_input_rows_per_call(const std::string& name, const FunctionMetadata& metadata) {
+    const auto& rows = metadata.input_rows_per_call;
+    if (!rows) return;
+    if (!metadata.input_from_args) {
+        throw std::invalid_argument(
+            name +
+            ": input_rows_per_call applies only to a blended (input_from_args) table-in-out "
+            "function, whose per-row input the client can split into calls");
+    }
+    if (*rows < 1) {
+        throw std::invalid_argument(name +
+                                    ": input_rows_per_call must be a positive row count, got " +
+                                    std::to_string(*rows));
+    }
+}
+
 }  // namespace
 
 void Dispatcher::register_scalar(std::shared_ptr<ScalarFunction> fn) {
@@ -82,6 +102,7 @@ void Dispatcher::register_table_in_out_in(std::string catalog, std::string schem
 void Dispatcher::register_table_in_out_in(std::string catalog, SchemaPath schema_path,
                                           std::shared_ptr<TableInOutFunction> fn) {
     if (!fn) throw std::invalid_argument("register_table_in_out: null function");
+    check_input_rows_per_call(fn->name(), fn->metadata());
     // Declaring a function in a schema creates both the schema and, when the
     // name is one this worker has not served before, the catalog.
     this->catalog(catalog).schema(schema_path);

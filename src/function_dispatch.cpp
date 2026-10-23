@@ -103,6 +103,14 @@ constexpr const char* kIfModifiedSince = "vgi.cache.if_modified_since";
 // Filters the engine only learned after the scan began — a join's build side,
 // a Top-N threshold — base64 of the same IPC blob the init request carries.
 constexpr const char* kDynamicFilters = "vgi_pushdown_filters";
+// Continued table-in-out output. A reply carrying `HAVE_MORE_OUTPUT` has more
+// output for the same input batch, and the client asks for the next reply with
+// a zero-row input batch carrying `CONTINUE` — a continuation tick.
+constexpr const char* kStatus = "vgi.status";
+constexpr const char* kHaveMoreOutput = "HAVE_MORE_OUTPUT";
+constexpr const char* kContinue = "CONTINUE";
+// Every response-side cache-control key starts with this.
+constexpr const char* kCachePrefix = "vgi.cache.";
 }  // namespace keys
 
 std::optional<std::string> metadata_value(
@@ -412,38 +420,94 @@ public:
     TableInOutExchange(std::shared_ptr<TableInOutFunction> fn, ProcessParams params)
         : fn_(std::move(fn)),
           params_(std::move(params)),
-          cache_(cache_metadata(fn_->cache_control())) {}
+          cache_(cache_metadata(fn_->cache_control())),
+          continuation_(fn_->open_continuation(params_)) {}
 
     void exchange(const vgi_rpc::AnnotatedBatch& input, vgi_rpc::OutputCollector& out,
                   vgi_rpc::CallContext&) override {
-        // Conditional-request validators ride the tick, not the init: an
-        // exchange is asked once per input chunk and the engine may hold a
-        // cached answer for some of them and not others.
+        // A continuation tick asks for the next reply of the last input's
+        // output, and is the only valid input while that output is pending.
+        // Strict both ways: there is no capability negotiation, so a tick out
+        // of turn is a client bug, and real input over pending output would
+        // silently drop it.
+        const bool tick = tick_metadata(input, keys::kStatus) == keys::kContinue;
+        if (tick && !more_pending_) {
+            throw std::runtime_error(fn_->name() +
+                                     ": continuation tick received, but no output is pending");
+        }
+        if (tick && input.batch && input.batch->num_rows() != 0) {
+            throw std::runtime_error(fn_->name() + ": a continuation tick must have no rows, got " +
+                                     std::to_string(input.batch->num_rows()));
+        }
+        if (!tick && more_pending_) {
+            throw std::runtime_error(
+                fn_->name() +
+                ": input received while output is pending; expected a continuation "
+                "tick");
+        }
+
         auto params = params_;
         // Bound per tick, since the collector is created per tick: a function
         // holding one from an earlier tick would write into a dead sink.
         params.client_log = [&out](LogLevel level, const std::string& message) {
             out.client_log(to_rpc_level(level), message);
         };
-        params.if_none_match = tick_metadata(input, keys::kIfNoneMatch);
-        params.if_modified_since = tick_metadata(input, keys::kIfModifiedSince);
-
-        emit_merged(fn_->process(params, input.batch), out);
+        std::vector<EmittedBatch> emitted;
+        if (tick) {
+            // A tick never carries validators, and the ones its input carried
+            // were answered by that input's first reply.
+            emitted = continuation_->resume(params);
+        } else {
+            // Conditional-request validators ride the input, not the init: an
+            // exchange is asked once per input chunk and the engine may hold a
+            // cached answer for some of them and not others.
+            params.if_none_match = tick_metadata(input, keys::kIfNoneMatch);
+            params.if_modified_since = tick_metadata(input, keys::kIfModifiedSince);
+            emitted = continuation_ ? continuation_->process(params, input.batch)
+                                    : fn_->process(params, input.batch);
+        }
+        // Recorded only once the reply is written: a function that threw ends
+        // the stream, and the client discards the connection.
+        more_pending_ = emit_merged(emitted, out, /*continued=*/tick);
     }
 
 private:
     // One data batch per exchange tick is all the wire carries, so several
     // emitted batches are concatenated — and their provenance with them, since
     // an output row's parent index is relative to the one input batch either
-    // way.
-    void emit_merged(const std::vector<EmittedBatch>& emitted,
-                     vgi_rpc::OutputCollector& out) const {
+    // way. Returns whether the reply said more.
+    //
+    // `continued` marks the reply to a tick: never an input's first, so it may
+    // carry no cache control, the function-wide advertisement included.
+    bool emit_merged(const std::vector<EmittedBatch>& emitted, vgi_rpc::OutputCollector& out,
+                     bool continued) const {
         std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
         std::vector<int32_t> parent_rows;
         bool have_parents = false;
         std::map<std::string, std::string> metadata;
 
+        bool more = false;
+        for (const auto& item : emitted) more = more || item.more;
+        if (more && !continuation_) {
+            throw std::runtime_error("table-in-out '" + fn_->name() +
+                                     "' emitted more output but cannot resume; derive it from "
+                                     "ResumableTableInOutFunction");
+        }
+        const auto cache = continued ? nullptr : cache_;
+
         for (const auto& item : emitted) {
+            if (continued) {
+                bool cache_keys = item.cache_control.has_value();
+                for (const auto& entry : item.metadata) {
+                    cache_keys = cache_keys || entry.first.rfind(keys::kCachePrefix, 0) == 0;
+                }
+                if (cache_keys) {
+                    throw std::runtime_error(
+                        "table-in-out '" + fn_->name() +
+                        "': cache control is only valid on an input's first reply, not on one "
+                        "answering a continuation tick");
+                }
+            }
             if (!item.batch) continue;
             if (item.parent_rows) {
                 if (item.parent_rows->size() != static_cast<size_t>(item.batch->num_rows())) {
@@ -475,29 +539,37 @@ private:
         // never comes. A function that emits nothing this tick — one that
         // accumulates and flushes at finalize — answers with no rows.
         if (batches.empty()) {
-            out.emit_batch(make_empty(params_.output_schema));
-            return;
+            auto empty = make_empty(params_.output_schema);
+            if (more) {
+                // Still says more: a run of empty pages is a valid answer.
+                out.emit_batch(empty,
+                               arrow::key_value_metadata({keys::kStatus}, {keys::kHaveMoreOutput}));
+            } else {
+                out.emit_batch(empty);
+            }
+            return more;
         }
 
         auto batch = batches.size() == 1 ? batches.front() : concatenate(batches);
         if (have_parents) metadata[keys::kParentRow] = encode_parent_rows(parent_rows);
+        if (more) metadata[keys::kStatus] = keys::kHaveMoreOutput;
 
         if (metadata.empty()) {
-            if (cache_) {
-                out.emit_batch(batch, cache_);
+            if (cache) {
+                out.emit_batch(batch, cache);
             } else {
                 out.emit_batch(batch);
             }
-            return;
+            return more;
         }
         // The function-wide advertisement first, so a per-batch one overrides it.
         std::vector<std::string> merged_keys;
         std::vector<std::string> merged_values;
-        if (cache_) {
-            for (int i = 0; i < cache_->size(); ++i) {
-                if (!metadata.count(cache_->key(i))) {
-                    merged_keys.push_back(cache_->key(i));
-                    merged_values.push_back(cache_->value(i));
+        if (cache) {
+            for (int i = 0; i < cache->size(); ++i) {
+                if (!metadata.count(cache->key(i))) {
+                    merged_keys.push_back(cache->key(i));
+                    merged_values.push_back(cache->value(i));
                 }
             }
         }
@@ -506,6 +578,7 @@ private:
             merged_values.push_back(value);
         }
         out.emit_batch(batch, arrow::key_value_metadata(merged_keys, merged_values));
+        return more;
     }
 
     static std::shared_ptr<arrow::RecordBatch> make_empty(
@@ -545,6 +618,12 @@ private:
     std::shared_ptr<TableInOutFunction> fn_;
     ProcessParams params_;
     std::shared_ptr<arrow::KeyValueMetadata> cache_;
+    // The resume position of a function that continues its output, or null.
+    // Held for the stream, which on HTTP is the server-side registry entry the
+    // state token names, so it survives between turns.
+    std::unique_ptr<TableInOutContinuation> continuation_;
+    // Whether the last reply said more, so the next input must be a tick.
+    bool more_pending_ = false;
 };
 
 }  // namespace
@@ -1446,6 +1525,13 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
             std::vector<std::shared_ptr<arrow::RecordBatch>> rows;
             rows.reserve(batches.size());
             for (auto& emitted : batches) {
+                // A finalize is a producer stream, which has no ticks to ask
+                // for more with.
+                if (emitted.more) {
+                    throw std::runtime_error("table-in-out '" + transform->name() +
+                                             "': more output is only valid from process() "
+                                             "or resume(), not finish()");
+                }
                 if (emitted.batch) rows.push_back(std::move(emitted.batch));
             }
             stream.state =

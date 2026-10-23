@@ -72,6 +72,9 @@ void register_cancellable_inout(vgi::Worker& worker);
 void register_large_state(vgi::Worker& worker);
 void register_source_shapes(vgi::Worker& worker);
 void register_blended(vgi::Worker& worker);
+// blended_paged / blended_sliced / paged_explode: continued table-in-out
+// output and input_rows_per_call (table_in_out/*continuation*.test).
+void register_paged(vgi::Worker& worker);
 void register_versioned(vgi::Worker& worker);
 void register_static_scans(vgi::Worker& worker);
 void register_versioned_tables_scans(vgi::Worker& worker);

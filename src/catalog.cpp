@@ -1365,12 +1365,14 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
     const auto metadata = fn.metadata();
     // The engine sees a table-in-out as a table function that happens to take
     // a table argument, so it is advertised as one.
-    return wire::encode_ipc(common_function_info(fn.name(), schema_path,
-                                                 enums::function_type::kTable, fn.argument_specs(),
-                                                 arrow::schema({}), metadata)
-                                .set_bool("has_finalize", fn.has_finish())
-                                .fill_defaults()
-                                .finish());
+    auto builder = common_function_info(fn.name(), schema_path, enums::function_type::kTable,
+                                        fn.argument_specs(), arrow::schema({}), metadata);
+    builder.set_bool("has_finalize", fn.has_finish());
+    // Validated at registration: a positive count, on a blended function.
+    if (metadata.input_rows_per_call) {
+        builder.set_int64("input_rows_per_call", *metadata.input_rows_per_call);
+    }
+    return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
 std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
