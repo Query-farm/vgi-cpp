@@ -38,7 +38,9 @@ constexpr const char* kContinue = "CONTINUE";
 constexpr const char* kHaveMoreOutput = "HAVE_MORE_OUTPUT";
 constexpr const char* kCacheTtl = "vgi.cache.ttl";
 
-std::shared_ptr<arrow::Schema> schema() { return arrow::schema({arrow::field("n", arrow::int64())}); }
+std::shared_ptr<arrow::Schema> schema() {
+    return arrow::schema({arrow::field("n", arrow::int64())});
+}
 
 std::shared_ptr<arrow::RecordBatch> rows(const std::vector<int64_t>& values) {
     arrow::Int64Builder builder;
@@ -52,8 +54,8 @@ vgi_rpc::AnnotatedBatch input(const std::vector<int64_t>& values) {
 }
 
 vgi_rpc::AnnotatedBatch tick(const std::vector<int64_t>& values = {}) {
-    return vgi_rpc::AnnotatedBatch::with_metadata(rows(values),
-                                                  arrow::key_value_metadata({kStatus}, {kContinue}));
+    return vgi_rpc::AnnotatedBatch::with_metadata(
+        rows(values), arrow::key_value_metadata({kStatus}, {kContinue}));
 }
 
 // What a fixture does on each call; set per test.
@@ -105,8 +107,7 @@ public:
         return {page(state)};
     }
 
-    std::vector<vgi::EmittedBatch> resume(const vgi::ProcessParams&,
-                                          Paging& state) const override {
+    std::vector<vgi::EmittedBatch> resume(const vgi::ProcessParams&, Paging& state) const override {
         --state.remaining;
         auto reply = page(state);
         if (script_.cache_on_resume) {
@@ -137,7 +138,8 @@ public:
     vgi::FunctionMetadata metadata() const override { return {}; }
     std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
     std::vector<vgi::EmittedBatch> process(
-        const vgi::ProcessParams&, const std::shared_ptr<arrow::RecordBatch>& batch) const override {
+        const vgi::ProcessParams&,
+        const std::shared_ptr<arrow::RecordBatch>& batch) const override {
         vgi::EmittedBatch reply(batch);
         reply.more = true;
         return {reply};
@@ -217,7 +219,8 @@ std::shared_ptr<Paged> paged(int pages) {
 
 }  // namespace
 
-TEST_CASE("an input answered over several replies is resumed by ticks", "[table_in_out][continue]") {
+TEST_CASE("an input answered over several replies is resumed by ticks",
+          "[table_in_out][continue]") {
     Exchange exchange(paged(3));
     const auto first = exchange.reply(input({1, 2}));
     CHECK(first.batch->num_rows() == 2);
