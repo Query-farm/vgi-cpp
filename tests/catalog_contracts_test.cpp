@@ -20,6 +20,9 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     REQUIRE(expression_restored->schema()->field(1)->metadata()->Get("vgi.column.generation.v1").ValueOrDie() == "virtual");
     namespace gen = vgi::generated;
     const std::vector<std::pair<const char*, std::shared_ptr<arrow::Schema>>> cases = {
+        {"attach_default_schema_none", gen::CatalogAttachResultSchema()},
+        {"attach_default_schema_main", gen::CatalogAttachResultSchema()},
+        {"attach_default_schema_dotted", gen::CatalogAttachResultSchema()},
         {"index_key_column", gen::IndexKeySchema()},
         {"index_key_nested", gen::IndexKeySchema()},
         {"index_key_expression", gen::IndexKeySchema()},
@@ -149,6 +152,9 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     }
     REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("view_info")), "aliases") ==
             std::vector<std::string>{"a.b", "with\"quote"});
+    REQUIRE_FALSE(vgi::wire::get_optional_string(vgi::wire::decode_ipc(fixture("attach_default_schema_none")), "default_schema").has_value());
+    REQUIRE(vgi::wire::get_optional_string(vgi::wire::decode_ipc(fixture("attach_default_schema_main")), "default_schema") == "main");
+    REQUIRE(vgi::wire::get_optional_string(vgi::wire::decode_ipc(fixture("attach_default_schema_dotted")), "default_schema") == "sales.archive");
     REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(fixture("view_info_barrier")), "security") == "barrier");
     const auto membership = vgi::wire::decode_ipc(fixture("dependency_membership"));
     const auto owned = vgi::wire::decode_ipc(fixture("object_dependency"));
