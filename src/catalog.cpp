@@ -27,6 +27,7 @@
 #include "arg_schema.h"
 #include "dispatcher.h"
 #include "catalog_contents.h"
+#include "column_metadata.h"
 #include "enums.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "methods.h"
@@ -837,6 +838,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
             .finish();
 
     const auto& shape = version ? version->columns : table.columns;
+    validate_column_metadata(shape);
     const auto& constraints = version && version->constraints ? *version->constraints : table.constraints;
     const auto& revision = version ? version->definition_revision : table.definition_revision;
 

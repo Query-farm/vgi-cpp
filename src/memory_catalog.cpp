@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "catalog_contents.h"
+#include "column_metadata.h"
 #include "methods.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "wire.h"
@@ -436,6 +437,7 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
             throw std::invalid_argument("catalog_table_create: missing columns schema");
         }
         const auto columns_schema = wire::decode_schema(wire::get_binary(params, "columns"));
+        validate_column_metadata(columns_schema);
         for (const auto& field : columns_schema->fields()) {
             require_unconstrained_field(field, true);
         }
