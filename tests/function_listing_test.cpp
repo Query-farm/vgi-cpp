@@ -495,6 +495,8 @@ TEST_CASE("catalog_contents answers exactly what the per-schema listings do",
     scalar_macro.name = "add_one";
     scalar_macro.parameters = {"x"};
     scalar_macro.definition = "x + 1";
+    scalar_macro.defaults = {{"x", 7}};
+    scalar_macro.parameter_docs = {{"x", ""}};
     dispatcher.catalog().schema("main").macros.push_back(scalar_macro);
     vgi::CatalogMacro table_macro;
     table_macro.name = "one_row";
@@ -553,6 +555,44 @@ TEST_CASE("catalog_contents answers exactly what the per-schema listings do",
     }
     CHECK(contents.at({"main"}).scalar_macros.size() == 1);
     CHECK(contents.at({"main"}).table_macros.size() == 1);
+    const auto info = vgi::wire::decode_ipc(contents.at({"main"}).scalar_macros[0]);
+    CHECK(info->num_columns() == 6);
+    const auto families = std::static_pointer_cast<arrow::ListArray>(info->GetColumnByName("overloads"));
+    REQUIRE(families->value_length(0) == 1);
+    const auto overload = std::static_pointer_cast<arrow::StructArray>(families->values());
+    const auto macro_params = std::static_pointer_cast<arrow::ListArray>(overload->GetFieldByName("parameters"));
+    const auto parameter = std::static_pointer_cast<arrow::StructArray>(macro_params->values());
+    CHECK(parameter->GetFieldByName("declared_type")->IsNull(0));
+    CHECK(parameter->GetFieldByName("default_expression")->IsNull(0));
+    CHECK_FALSE(parameter->GetFieldByName("documentation")->IsNull(0));
+    CHECK(std::static_pointer_cast<arrow::StringArray>(parameter->GetFieldByName("documentation"))->GetString(0).empty());
+    const auto default_bytes = std::static_pointer_cast<arrow::BinaryArray>(parameter->GetFieldByName("default_value"))->GetString(0);
+    const auto value = vgi::wire::decode_ipc(default_bytes);
+    CHECK(value->schema()->field(0)->name() == "x");
+    CHECK(std::static_pointer_cast<arrow::Int64Array>(value->column(0))->Value(0) == 7);
+
+    // Direct provider families retain every overload, with no first-entry projection.
+    const auto overload_bytes = vgi::wire::encode_ipc(arrow::RecordBatch::Make(gen::MacroOverloadSchema(), 1, overload->fields()));
+    vgi::Dispatcher family_dispatcher;
+    family_dispatcher.catalog().name = "family";
+    vgi::CatalogMacro family_macro;
+    family_macro.name = "many";
+    const auto second_overload = vgi::wire::ResultBuilder(gen::MacroOverloadSchema())
+        .set_string("definition", "1").set_string("profile", "duckdb.macro.v1")
+        .set_string_list("schema_path", {"main"}).set_string("macro_type", "scalar")
+        .set_array("evaluation_context", overload->GetFieldByName("evaluation_context"))
+        .fill_defaults().finish();
+    family_macro.overloads = std::vector<std::string>{overload_bytes, vgi::wire::encode_ipc(second_overload)};
+    family_dispatcher.catalog().schema("main").macros.push_back(family_macro);
+    Served family_worker(family_dispatcher);
+    const auto family_handle = attach(family_worker, "family");
+    const auto family_items = per_schema(family_worker, "catalog_schema_contents_macros",
+        gen::CatalogSchemaContentsMacrosParamsSchema(), family_handle, {"main"}, "SCALAR_MACRO");
+    REQUIRE(family_items.size() == 1);
+    const auto restored = vgi::wire::decode_ipc(family_items[0]);
+    const auto full_family = std::static_pointer_cast<arrow::ListArray>(restored->GetColumnByName("overloads"));
+    CHECK(full_family->value_length(0) == 2);
+
     CHECK(contents.at({"side"}).scalar_functions.size() == 1);
 }
 

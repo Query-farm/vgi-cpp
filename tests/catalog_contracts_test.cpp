@@ -55,9 +55,9 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         {"macro_parameter_untyped", gen::MacroParameterSchema()},
         {"macro_overload", gen::MacroOverloadSchema()},
         {"macro_create", gen::MacroCreateRequestSchema()},
-        {"macro_create_legacy", gen::MacroCreateRequestSchema()},
+        {"macro_create_single", gen::MacroCreateRequestSchema()},
         {"macro_info", gen::MacroInfoSchema()},
-        {"macro_info_legacy", gen::MacroInfoSchema()},
+        {"macro_info_single", gen::MacroInfoSchema()},
         {"query_offer", gen::ClientQueryCapabilitiesSchema()},
         {"query_capabilities", gen::QueryCapabilitiesSchema()},
         {"query_context", gen::QueryEvaluationContextSchema()},
@@ -226,7 +226,7 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     const auto macro = vgi::wire::decode_ipc(fixture("macro_create"));
     const auto overloads = std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(macro, "overloads"));
     REQUIRE(overloads->value_length(0) == 2);
-    REQUIRE(vgi::wire::column(vgi::wire::decode_ipc(fixture("macro_create_legacy")), "overloads")->IsNull(0));
+    REQUIRE(std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(vgi::wire::decode_ipc(fixture("macro_create_single")), "overloads"))->value_length(0) == 1);
     const auto parameter = vgi::wire::decode_ipc(fixture("macro_parameter"));
     const auto default_value = vgi::wire::decode_ipc(vgi::wire::get_binary(parameter, "default_value"));
     REQUIRE(default_value->column(0)->IsNull(0));

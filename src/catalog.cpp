@@ -34,6 +34,7 @@
 
 #include "opaque_seal.h"
 #include "wire.h"
+#include <arrow/array/concatenate.h>
 
 namespace vgi {
 namespace {
@@ -976,62 +977,110 @@ static std::optional<std::string> normalize_function_type(const std::string& typ
     return lower;
 }
 
-// The two blobs a macro carries beyond its name and text.
-//
-// `parameter_default_values` is a one-row batch, one column per defaulted
-// parameter. `arguments_schema` is one nullable field per parameter *in
-// declaration order* — order is the positional call order — typed from the
-// default where there is one, carrying the description as `vgi_doc`.
-std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
-                                          const SchemaPath& schema_path) {
-    std::string defaults;
-    if (!macro.defaults.empty()) {
-        arrow::FieldVector fields;
-        std::vector<std::shared_ptr<arrow::Array>> values;
-        for (const auto& [name, value] : macro.defaults) {
-            fields.push_back(arrow::field(name, arrow::int64(), /*nullable=*/false));
-            arrow::Int64Builder builder;
-            (void)builder.Append(value);
-            std::shared_ptr<arrow::Array> array;
-            (void)builder.Finish(&array);
-            values.push_back(std::move(array));
-        }
-        defaults = wire::encode_ipc(arrow::RecordBatch::Make(arrow::schema(fields), 1, values));
-    }
+namespace {
+std::shared_ptr<arrow::Array> macro_struct(const std::shared_ptr<arrow::RecordBatch>& batch) {
+    return arrow::StructArray::Make(batch->columns(), batch->schema()->fields()).ValueOrDie();
+}
 
-    std::string arguments;
-    if (!macro.parameters.empty() || !macro.parameter_docs.empty()) {
-        arrow::FieldVector fields;
-        for (const auto& name : macro.parameters) {
-            const bool has_default =
-                std::any_of(macro.defaults.begin(), macro.defaults.end(),
-                            [&](const auto& entry) { return entry.first == name; });
-            auto field = arrow::field(name, has_default ? arrow::int64() : arrow::null(),
-                                      /*nullable=*/true);
-            const auto doc = std::find_if(macro.parameter_docs.begin(), macro.parameter_docs.end(),
-                                          [&](const auto& entry) { return entry.first == name; });
-            // Presence-only, as everywhere else: an empty doc is an absent key.
-            if (doc != macro.parameter_docs.end() && !doc->second.empty()) {
-                field = field->WithMetadata(arrow::key_value_metadata({"vgi_doc"}, {doc->second}));
+std::shared_ptr<arrow::Array> macro_record_list(const std::shared_ptr<arrow::DataType>& type,
+    const std::vector<std::shared_ptr<arrow::RecordBatch>>& records) {
+    const auto element = std::static_pointer_cast<arrow::ListType>(type)->value_type();
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    for (const auto& record : records) arrays.push_back(macro_struct(record));
+    const auto values = arrays.empty() ? arrow::MakeArrayOfNull(element, 0).ValueOrDie()
+        : arrow::Concatenate(arrays, arrow::default_memory_pool()).ValueOrDie();
+    arrow::Int32Builder offsets;
+    (void)offsets.Append(0);
+    (void)offsets.Append(static_cast<int32_t>(records.size()));
+    return arrow::ListArray::FromArrays(type, *offsets.Finish().ValueOrDie(), *values).ValueOrDie();
+}
+}  // namespace
+
+std::string Dispatcher::encode_macro_info(const CatalogMacro& macro, const SchemaPath& schema_path) {
+    const auto kind = macro.table_macro ? "table" : "scalar";
+    std::vector<std::shared_ptr<arrow::RecordBatch>> overloads;
+    if (macro.overloads) {
+        if (macro.overloads->empty() || !macro.parameters.empty() || !macro.definition.empty() ||
+            !macro.defaults.empty() || !macro.parameter_docs.empty()) {
+            throw std::invalid_argument("a nonempty macro family cannot coexist with simple-definition fields");
+        }
+        for (const auto& bytes : *macro.overloads) {
+            auto overload = wire::decode_ipc(bytes);
+            if (overload->num_rows() != 1 || !overload->schema()->Equals(gen::MacroOverloadSchema(), true) ||
+                wire::get_schema_path(overload) != schema_path || wire::get_string(overload, "macro_type") != kind) {
+                throw std::invalid_argument("macro overload shape, kind and owner must equal parent macro");
             }
-            fields.push_back(std::move(field));
+            const auto parameters = std::static_pointer_cast<arrow::ListArray>(wire::column(overload, "parameters"));
+            const auto entries = std::static_pointer_cast<arrow::StructArray>(parameters->values());
+            const auto expressions = entries->GetFieldByName("default_expression");
+            for (int64_t i = 0; i < expressions->length(); ++i) {
+                if (!expressions->IsNull(i)) throw std::invalid_argument("discovery macro defaults must be resolved values");
+            }
+            overloads.push_back(std::move(overload));
         }
-        arguments = wire::encode_schema(arrow::schema(fields));
-    }
-
-    auto builder = wire::ResultBuilder(gen::MacroInfoSchema());
-    builder.set_string("name", macro.name)
-        .set_string_list("schema_path", schema_path)
-        .set_enum("macro_type", macro.table_macro ? "table" : "scalar")
-        .set_string_list("parameters", macro.parameters)
-        .set_binary("parameter_default_values", defaults)
-        .set_string("definition", macro.definition)
-        .set_binary("arguments_schema", arguments);
-    if (macro.comment) {
-        builder.set_string("comment", *macro.comment);
     } else {
-        builder.set_null("comment");
+        if (macro.definition.empty() || macro.definition.find('\0') != std::string::npos) {
+            throw std::invalid_argument("macro definition must be nonempty SQL without NUL");
+        }
+        for (const auto& [name, _] : macro.defaults) {
+            if (std::find(macro.parameters.begin(), macro.parameters.end(), name) == macro.parameters.end())
+                throw std::invalid_argument("unknown macro default parameter");
+        }
+        for (const auto& [name, _] : macro.parameter_docs) {
+            if (std::find(macro.parameters.begin(), macro.parameters.end(), name) == macro.parameters.end())
+                throw std::invalid_argument("unknown documented macro parameter");
+        }
+        std::vector<std::string> names;
+        for (const auto& name : macro.parameters) {
+            std::string folded = name;
+            for (auto& ch : folded) if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+            if (name.empty() || name.find('\0') != std::string::npos ||
+                std::find(names.begin(), names.end(), folded) != names.end())
+                throw std::invalid_argument("invalid or duplicate macro parameter");
+            names.push_back(std::move(folded));
+            if (std::count_if(macro.defaults.begin(), macro.defaults.end(), [&](const auto& v) { return v.first == name; }) > 1 ||
+                std::count_if(macro.parameter_docs.begin(), macro.parameter_docs.end(), [&](const auto& v) { return v.first == name; }) > 1)
+                throw std::invalid_argument("duplicate macro default or documentation");
+        }
+        std::vector<std::shared_ptr<arrow::RecordBatch>> parameters;
+        bool seen_default = false;
+        for (const auto& name : macro.parameters) {
+            auto parameter = wire::ResultBuilder(gen::MacroParameterSchema());
+            parameter.set_string("name", name).set_null("declared_type").set_null("default_expression");
+            const auto value = std::find_if(macro.defaults.begin(), macro.defaults.end(),
+                [&](const auto& item) { return item.first == name; });
+            if (value != macro.defaults.end()) {
+                arrow::Int64Builder values;
+                (void)values.Append(value->second);
+                auto batch = arrow::RecordBatch::Make(arrow::schema({arrow::field(name, arrow::int64(), true)}),
+                    1, {values.Finish().ValueOrDie()});
+                parameter.set_binary("default_value", wire::encode_ipc(batch));
+                seen_default = true;
+            } else {
+                if (seen_default) throw std::invalid_argument("required parameter cannot follow a default");
+                parameter.set_null("default_value");
+            }
+            const auto doc = std::find_if(macro.parameter_docs.begin(), macro.parameter_docs.end(),
+                [&](const auto& item) { return item.first == name; });
+            if (doc == macro.parameter_docs.end()) parameter.set_null("documentation");
+            else parameter.set_string("documentation", doc->second);
+            parameters.push_back(parameter.finish());
+        }
+        auto context = wire::ResultBuilder(gen::QueryEvaluationContextSchema())
+            .set_string("timezone", "UTC").set_string("collation", "binary")
+            .set_string("default_order", "asc").set_string("default_null_order", "nulls_last")
+            .set_bool("preserve_insertion_order", true).finish();
+        auto overload = wire::ResultBuilder(gen::MacroOverloadSchema());
+        overload.set_array("parameters", macro_record_list(gen::MacroOverloadSchema()->GetFieldByName("parameters")->type(), parameters))
+            .set_string("definition", macro.definition).set_string("profile", "duckdb.macro.v1")
+            .set_string_list("schema_path", schema_path).set_string("macro_type", kind)
+            .set_array("evaluation_context", macro_struct(context));
+        overloads.push_back(overload.finish());
     }
+    auto builder = wire::ResultBuilder(gen::MacroInfoSchema());
+    builder.set_string("name", macro.name).set_string_list("schema_path", schema_path).set_enum("macro_type", kind)
+        .set_array("overloads", macro_record_list(gen::MacroInfoSchema()->GetFieldByName("overloads")->type(), overloads))
+        .set_optional_string("comment", macro.comment);
     return wire::encode_ipc(builder.fill_defaults().finish());
 }
 

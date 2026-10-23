@@ -180,12 +180,14 @@ struct CatalogMacro {
     // A table macro is called in FROM, a scalar one in an expression.
     bool table_macro = false;
     std::optional<std::string> comment;
-    // Defaults for trailing parameters, by name. Integers only, which is what
-    // the wire carries.
+    // Defaults for the simple descriptor, by name. This convenience form accepts integers;
+    // canonical overload records can represent other typed values and declarations.
     std::vector<std::pair<std::string, int64_t>> defaults;
     // Per-parameter descriptions, surfaced by `vgi_function_arguments()`
     // through the same `vgi_doc` channel a function's arguments use.
     std::vector<std::pair<std::string, std::string>> parameter_docs;
+    // Complete MacroOverload IPC records; simple-definition fields must be empty.
+    std::optional<std::vector<std::string>> overloads;
 };
 
 // An option a caller may set in the ATTACH statement.
