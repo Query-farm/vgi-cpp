@@ -743,9 +743,9 @@ void declare_catalog(vgi::Worker& worker) {
         auto generated = backed_by(
             "generated_sequence", "sequence",
             arrow::schema({arrow::field("n", arrow::int64(), /*nullable=*/true),
-                           tagged("doubled", arrow::int64(), {"generated_expression"}, {"n * 2"}),
-                           tagged("label", arrow::utf8(), {"generated_expression"},
-                                  {"'item_' || CAST(n AS VARCHAR)"})}),
+                           tagged("doubled", arrow::int64(), {"vgi.column.generated.v1", "vgi.column.generation.v1"}, {vgi::generated_expression_metadata("n * 2", {"data"}), "virtual"}),
+                           tagged("label", arrow::utf8(), {"vgi.column.generated.v1", "vgi.column.generation.v1"},
+                                  {vgi::generated_expression_metadata("'item_' || CAST(n AS VARCHAR)", {"data"}), "virtual"})}),
             "Table with generated columns backed by sequence(10)");
         generated.scan_arguments = vgi::serialize_scan_arguments({int64_arg(10)});
         generated.cardinality = 10;

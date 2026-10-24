@@ -12,6 +12,7 @@
 
 #include "catalog_contents.h"
 #include "column_metadata.h"
+#include "column_expressions.h"
 #include "methods.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "wire.h"
@@ -438,6 +439,7 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         }
         const auto columns_schema = wire::decode_schema(wire::get_binary(params, "columns"));
         validate_column_metadata(columns_schema);
+        validate_column_expressions(columns_schema, path, false);
         for (const auto& field : columns_schema->fields()) {
             require_unconstrained_field(field, true);
         }

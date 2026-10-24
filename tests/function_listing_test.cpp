@@ -973,3 +973,38 @@ TEST_CASE("column metadata survives CREATE and discovery and invalid metadata ha
     }
     CHECK(per_schema(worker,"catalog_schema_contents_tables",gen::CatalogSchemaContentsTablesParamsSchema(),handle,{"main"}).size()==4);
 }
+
+TEST_CASE("canonical generated discovery and unsupported CREATE preserve authority", "[catalog][generated-columns]") {
+    std::ifstream input(VGI_CATALOG_CONTRACT_VECTORS);
+    const auto vectors = nlohmann::json::parse(input).at("generated_column_schemas");
+    vgi::Dispatcher dispatcher; dispatcher.catalog().name = "alpha";
+    vgi::MemoryCatalogOptions options; options.name = "mem"; dispatcher.register_memory_catalog(options);
+    Served worker(dispatcher); const auto handle = attach(worker, "mem");
+    for (const auto& group : {"valid", "invalid"}) for (const auto& item : vectors.at(group).items()) {
+        INFO(std::string(group) + "/" + item.key());
+        const auto raw = vgi::wire::base64_decode(item.value().get<std::string>());
+        vgi::Dispatcher readonly; readonly.catalog().name = "meta";
+        vgi::CatalogTable table; table.name = item.key(); table.columns = vgi::wire::decode_schema(raw);
+        readonly.catalog().schema("main").tables.push_back(table);
+        Served reader(readonly); const auto token = attach(reader, "meta");
+        if (std::string(group) == "invalid") {
+            REQUIRE_THROWS(per_schema(reader, "catalog_schema_contents_tables", gen::CatalogSchemaContentsTablesParamsSchema(), token, {"main"}));
+        } else {
+            const auto items = per_schema(reader, "catalog_schema_contents_tables", gen::CatalogSchemaContentsTablesParamsSchema(), token, {"main"});
+            REQUIRE(items.size() == 1);
+            CHECK(vgi::wire::get_binary(vgi::wire::decode_ipc(items[0]), "columns") == vgi::wire::encode_schema(table.columns));
+        }
+        const auto request = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+            .set_binary("attach_opaque_data", handle).set_string_list("schema_path", {"main"})
+            .set_string("name", item.key()).set_binary("columns", raw).set_enum("on_conflict", "ERROR").fill_defaults().finish();
+        const auto params = vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema()).set_binary("request", vgi::wire::encode_ipc(request)).finish();
+        const auto before = version_of(worker, handle);
+        if (std::string(group) == "valid" && item.key() == "ordinary") worker.call_void("catalog_table_create", params);
+        else { REQUIRE_THROWS(worker.call_void("catalog_table_create", params)); CHECK(version_of(worker, handle) == before); }
+    }
+    CHECK(per_schema(worker, "catalog_schema_contents_tables", gen::CatalogSchemaContentsTablesParamsSchema(), handle, {"main"}).size() == 1);
+    const auto encoded = vgi::generated_expression_metadata("n * 2", {"raw.schema"});
+    const auto expression = vgi::wire::decode_ipc(vgi::wire::base64_decode(encoded));
+    CHECK(vgi::wire::get_string_list(expression, "schema_path") == vgi::SchemaPath{"raw.schema"});
+    CHECK(vgi::wire::get_string(expression, "sql") == "n * 2");
+}

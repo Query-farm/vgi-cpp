@@ -18,6 +18,10 @@
 
 namespace vgi {
 
+// Translate a VIRTUAL SQL convenience value with explicit owner and default context.
+// Returns canonical base64 SqlExpression IPC; does not bind or execute SQL.
+std::string generated_expression_metadata(const std::string& sql, const SchemaPath& owner);
+
 // One source a multi-branch table reads from.
 //
 // A multi-branch table is one logical relation stitched from several scans —

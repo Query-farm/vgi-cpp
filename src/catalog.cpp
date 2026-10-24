@@ -28,6 +28,7 @@
 #include "dispatcher.h"
 #include "catalog_contents.h"
 #include "column_metadata.h"
+#include "column_expressions.h"
 #include "enums.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "methods.h"
@@ -38,6 +39,20 @@
 #include <arrow/array/concatenate.h>
 
 namespace vgi {
+std::string generated_expression_metadata(const std::string& sql, const SchemaPath& owner) {
+    auto context = wire::ResultBuilder(generated::QueryEvaluationContextSchema())
+        .set_string("timezone", "UTC").set_string("collation", "binary")
+        .set_string("default_order", "asc").set_string("default_null_order", "nulls_last")
+        .set_bool("preserve_insertion_order", true).finish();
+    auto expression = wire::ResultBuilder(generated::SqlExpressionSchema())
+        .set_string("sql", sql).set_string("profile", "vgi.expression.duckdb.scalar.v1")
+        .set_string_list("schema_path", owner)
+        .set_array("evaluation_context", arrow::StructArray::Make(context->columns(), context->schema()->fields()).ValueOrDie()).finish();
+    auto encoded = arrow::util::base64_encode(wire::encode_ipc(expression));
+    validate_generated_expression(encoded, owner);
+    return encoded;
+}
+
 namespace {
 // The options this attachment was made with: the declared defaults, with
 // whatever the ATTACH statement set on top.
@@ -839,6 +854,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
 
     const auto& shape = version ? version->columns : table.columns;
     validate_column_metadata(shape);
+    validate_column_expressions(shape, schema_path);
     const auto& constraints = version && version->constraints ? *version->constraints : table.constraints;
     const auto& revision = version ? version->definition_revision : table.definition_revision;
 
