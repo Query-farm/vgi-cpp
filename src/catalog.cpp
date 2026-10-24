@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <optional>
 #include <random>
+#include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -21,6 +23,8 @@
 #include "portable.h"
 
 #include <arrow/array/util.h>
+#include <arrow/io/memory.h>
+#include <arrow/ipc/reader.h>
 #include <arrow/compute/api.h>
 #include <arrow/util/base64.h>
 
@@ -54,6 +58,49 @@ std::string generated_expression_metadata(const std::string& sql, const SchemaPa
 }
 
 namespace {
+std::shared_ptr<arrow::RecordBatch> capability_record(
+    const std::string& bytes, const std::shared_ptr<arrow::Schema>& schema) {
+    if (bytes.empty() || bytes.size() > 8 * 1024 * 1024)
+        throw std::invalid_argument("invalid catalog capability record size");
+    auto source = std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(bytes));
+    auto opened = arrow::ipc::RecordBatchStreamReader::Open(source);
+    if (!opened.ok()) throw std::invalid_argument(opened.status().ToString());
+    auto reader = opened.MoveValueUnsafe();
+    std::shared_ptr<arrow::RecordBatch> batch;
+    auto status = reader->ReadNext(&batch);
+    if (!status.ok()) throw std::invalid_argument(status.ToString());
+    if (!batch || batch->num_rows() != 1 || !batch->schema()->Equals(*schema, true) ||
+        !batch->ValidateFull().ok())
+        throw std::invalid_argument("invalid catalog capability record");
+    for (int i = 0; i < batch->num_columns(); ++i)
+        if (!schema->field(i)->nullable() && batch->column(i)->IsNull(0))
+            throw std::invalid_argument("null required catalog capability field");
+    const auto tail = bytes.substr(static_cast<size_t>(source->Tell().ValueOrDie()));
+    if (!tail.empty() && tail != std::string(4, '\0') &&
+        tail != std::string("\xff\xff\xff\xff\0\0\0\0", 8))
+        throw std::invalid_argument("trailing catalog capability data");
+    return batch;
+}
+
+void validate_read_profiles(const std::vector<std::string>& profiles) {
+    static const std::regex identifier("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*\\.v[1-9][0-9]*$");
+    std::set<std::string> seen;
+    if (profiles.size() > 256) throw std::invalid_argument("too many catalog capability profiles");
+    for (const auto& profile : profiles)
+        if (profile.size() > 256 || !std::regex_match(profile, identifier) ||
+            !seen.insert(profile).second)
+            throw std::invalid_argument("invalid or duplicate catalog capability profile");
+}
+
+std::string encode_read_profiles(const std::vector<std::string>& profiles) {
+    return wire::encode_ipc(wire::ResultBuilder(generated::CatalogCapabilitiesSchema())
+                                .set_string_list("read", profiles)
+                                .set_string_list("ddl", {})
+                                .set_string_list("write", {})
+                                .set_string_list("transaction", {})
+                                .finish());
+}
+
 // The options this attachment was made with: the declared defaults, with
 // whatever the ATTACH statement set on top.
 //
@@ -104,7 +151,7 @@ std::shared_ptr<arrow::RecordBatch> merge_attach_options(
         if (!value) value = option.default_value;
         if (!value) {
             if (option.required) {
-                throw std::invalid_argument("ATTACH option '" + option.name + "' is required");
+                throw std::invalid_argument("Missing required option '" + option.name + "' for ATTACH");
             }
             value = arrow::MakeArrayOfNull(option.type, 1).ValueOrDie();
         }
@@ -600,6 +647,39 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request, vgi_
                      .set_binary_list("settings", encode_settings(model))
                      .set_binary_list("secret_types", encode_secret_types(model))
                      .set_bool("supports_catalog_contents", model.supports_catalog_contents);
+    if (!model.catalog_read_profiles.empty()) {
+        validate_read_profiles(model.catalog_read_profiles);
+        std::vector<std::string> selected;
+        if (auto bytes = wire::get_optional_binary(attach, "client_capabilities")) {
+            auto client = capability_record(*bytes, gen::ClientCapabilitiesSchema());
+            if (auto catalog_bytes = wire::get_optional_binary(client, "catalog")) {
+                auto offer = capability_record(*catalog_bytes, gen::CatalogCapabilitiesSchema());
+                for (const auto& category : {"read", "ddl", "write", "transaction"}) {
+                    auto list =
+                        std::static_pointer_cast<arrow::ListArray>(wire::column(offer, category));
+                    if (list->IsNull(0) || list->value_slice(0)->null_count() != 0)
+                        throw std::invalid_argument("null catalog capability profile");
+                    auto offered = wire::get_string_list(offer, category);
+                    validate_read_profiles(offered);
+                    if (std::string(category) == "read")
+                        for (const auto& profile : model.catalog_read_profiles)
+                            if (std::find(offered.begin(), offered.end(), profile) != offered.end())
+                                selected.push_back(profile);
+                }
+            }
+        }
+        // This bounded scalar read offer describes CHECK expressions inside
+        // canonical constraints, so it cannot outlive the containing profile.
+        if (std::find(model.catalog_read_profiles.begin(), model.catalog_read_profiles.end(),
+                      "vgi.constraint.records.read.v1") != model.catalog_read_profiles.end() &&
+            std::find(selected.begin(), selected.end(), "vgi.constraint.records.read.v1") ==
+                selected.end())
+            selected.erase(
+                std::remove(selected.begin(), selected.end(), "vgi.expression.duckdb.scalar.v1"),
+                selected.end());
+        batch.set_binary("catalog_capabilities", encode_read_profiles(model.catalog_read_profiles));
+        batch.set_binary("selected_capabilities", encode_read_profiles(selected));
+    }
     if (model.comment) {
         batch.set_string("comment", *model.comment);
     } else {

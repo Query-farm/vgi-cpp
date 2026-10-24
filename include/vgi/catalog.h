@@ -358,6 +358,11 @@ struct CatalogModel {
     // defaults are what an attachment that sets none is given.
     std::vector<AttachOptionSpec> attach_options;
 
+    // Explicit read-only protocol offers. Empty keeps capability negotiation
+    // absent; ATTACH selects only the client's offered subset. The provider
+    // remains responsible for the semantic guarantees of each named profile.
+    std::vector<std::string> catalog_read_profiles;
+
     // Function names this catalog asks the engine to publish into its global,
     // catalog-independent namespace, each under `global_function_prefix`.
     //

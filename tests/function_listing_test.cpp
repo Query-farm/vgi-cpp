@@ -626,6 +626,97 @@ TEST_CASE("ATTACH advertises catalog_contents unless the catalog opts out", "[ca
     }
 }
 
+TEST_CASE("catalog read profiles require provider and client opt-in", "[catalog][capabilities]") {
+    const std::vector<std::string> profiles = {"vgi.constraint.records.read.v1",
+                                              "vgi.expression.duckdb.scalar.v1"};
+    for (const bool provider_enabled : {false, true}) {
+        for (const int offer_count : {-1, 0, 1, 2, 3}) {
+            INFO(provider_enabled << " / " << offer_count);
+            vgi::Dispatcher dispatcher;
+            dispatcher.catalog().name = "alpha";
+            if (provider_enabled) dispatcher.catalog().catalog_read_profiles = profiles;
+            Served worker(dispatcher);
+            auto request = vgi::wire::ResultBuilder(gen::CatalogAttachRequestSchema())
+                               .set_string("name", "alpha");
+            if (offer_count >= 0) {
+                auto offer =
+                    vgi::wire::ResultBuilder(gen::CatalogCapabilitiesSchema())
+                        .set_string_list(
+                            "read", offer_count == 3
+                                        ? std::vector<std::string>{profiles[1]}
+                                        : std::vector<std::string>(profiles.begin(),
+                                                                   profiles.begin() + offer_count))
+                        .set_string_list("ddl", {})
+                        .set_string_list("write", {})
+                        .set_string_list("transaction", {})
+                        .finish();
+                auto client = vgi::wire::ResultBuilder(gen::ClientCapabilitiesSchema())
+                                  .set_binary("catalog", vgi::wire::encode_ipc(offer))
+                                  .fill_defaults()
+                                  .finish();
+                request.set_binary("client_capabilities", vgi::wire::encode_ipc(client));
+            }
+            auto result = worker.call(
+                "catalog_attach",
+                vgi::wire::ResultBuilder(gen::CatalogAttachParamsSchema())
+                    .set_binary("request", vgi::wire::encode_ipc(request.fill_defaults().finish()))
+                    .finish());
+            auto selected = vgi::wire::get_optional_binary(result, "selected_capabilities");
+            auto available = vgi::wire::get_optional_binary(result, "catalog_capabilities");
+            if (!provider_enabled) {
+                CHECK_FALSE(selected.has_value());
+                CHECK_FALSE(available.has_value());
+            } else {
+                REQUIRE(selected.has_value());
+                REQUIRE(available.has_value());
+                auto agreement = vgi::wire::decode_ipc(*selected);
+                CHECK(vgi::wire::get_string_list(agreement, "read").size() ==
+                      static_cast<size_t>(offer_count == 3 ? 0 : std::max(offer_count, 0)));
+                CHECK(vgi::wire::get_string_list(agreement, "write").empty());
+                CHECK(vgi::wire::get_string_list(vgi::wire::decode_ipc(*available), "read") ==
+                      profiles);
+            }
+        }
+    }
+}
+
+TEST_CASE("catalog capability negotiation rejects invalid and trailing offers",
+          "[catalog][capabilities]") {
+    for (const std::string mode : {"duplicate", "invalid_name", "trailing", "provider_duplicate"}) {
+        INFO(mode);
+        vgi::Dispatcher dispatcher;
+        dispatcher.catalog().name = "alpha";
+        dispatcher.catalog().catalog_read_profiles = {"vgi.constraint.records.read.v1"};
+        if (mode == "provider_duplicate")
+            dispatcher.catalog().catalog_read_profiles.push_back("vgi.constraint.records.read.v1");
+        Served worker(dispatcher);
+        std::vector<std::string> profiles = {"vgi.constraint.records.read.v1"};
+        if (mode == "duplicate") profiles.push_back(profiles.front());
+        if (mode == "invalid_name") profiles[0] = "not-a-versioned-profile";
+        auto offer =
+            vgi::wire::encode_ipc(vgi::wire::ResultBuilder(gen::CatalogCapabilitiesSchema())
+                                      .set_string_list("read", profiles)
+                                      .set_string_list("ddl", {})
+                                      .set_string_list("write", {})
+                                      .set_string_list("transaction", {})
+                                      .finish());
+        if (mode == "trailing") offer.push_back('\0');
+        auto client = vgi::wire::ResultBuilder(gen::ClientCapabilitiesSchema())
+                          .set_binary("catalog", offer)
+                          .fill_defaults()
+                          .finish();
+        auto request = vgi::wire::ResultBuilder(gen::CatalogAttachRequestSchema())
+                           .set_string("name", "alpha")
+                           .set_binary("client_capabilities", vgi::wire::encode_ipc(client))
+                           .fill_defaults()
+                           .finish();
+        REQUIRE_THROWS(
+            worker.call("catalog_attach", vgi::wire::ResultBuilder(gen::CatalogAttachParamsSchema())
+                                              .set_binary("request", vgi::wire::encode_ipc(request))
+                                              .finish()));
+    }
+}
+
 namespace {
 
 std::shared_ptr<arrow::RecordBatch> contents_call(Served& worker, const std::string& handle,

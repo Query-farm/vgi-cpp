@@ -100,3 +100,9 @@ target_include_directories(catalog_contracts_test PRIVATE ${CMAKE_SOURCE_DIR}/sr
 target_compile_definitions(catalog_contracts_test PRIVATE
     VGI_CATALOG_CONTRACT_VECTORS="${CMAKE_SOURCE_DIR}/conformance/catalog-contracts.json")
 catch_discover_tests(catalog_contracts_test)
+
+# The immutable example rows are the proof behind trusted catalog constraints.
+add_executable(constraint_fixtures_test constraint_fixtures_test.cpp
+    ../example-worker/constraint_fixtures.cpp)
+target_link_libraries(constraint_fixtures_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+catch_discover_tests(constraint_fixtures_test)

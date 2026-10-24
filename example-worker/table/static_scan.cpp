@@ -27,6 +27,7 @@
 #include <vgi/worker.h>
 
 #include "scalar/util.h"
+#include "constraint_fixtures.h"
 
 namespace example {
 namespace {
@@ -100,7 +101,7 @@ std::shared_ptr<arrow::RecordBatch> project(const std::shared_ptr<arrow::Schema>
 // A no-argument scan over a fixed set of rows.
 class StaticScan : public vgi::TableFunction {
 public:
-    StaticScan(std::string name, Columns columns)
+    StaticScan(std::string name, Columns columns, std::string constraint_table = {})
         : name_(std::move(name)), columns_(std::move(columns)) {
         std::vector<std::shared_ptr<arrow::Field>> fields;
         fields.reserve(columns_.size());
@@ -108,6 +109,10 @@ public:
             fields.push_back(arrow::field(column, array->type(), /*nullable=*/true));
         }
         schema_ = arrow::schema(std::move(fields));
+        if (!constraint_table.empty()) {
+            constraint_fixtures::validate_rows(constraint_table, columns_);
+            schema_ = constraint_fixtures::required_schema(schema_, constraint_table);
+        }
     }
 
     std::string name() const override { return name_; }
@@ -329,15 +334,8 @@ private:
 // Both schema and rows change per version, which is what makes
 // `SELECT email FROM … AT (VERSION => 1)` a binder error rather than a NULL.
 Columns constraints_version(int64_t version) {
-    if (version == 1) {
-        return {{"id", int64_column({1, 2})}, {"name", string_column({"Alice", "Bob"})}};
-    }
-    Columns columns = {{"id", int64_column({1, 2, 3})},
-                       {"name", string_column({"Alice", "Bob", "Carol"})},
-                       {"email", string_column({"a@co", "b@co", "c@co"})}};
-    // Version 3 is the fallback: an unknown version has already been rejected
-    // by the catalog, so reaching here means "current".
-    if (version != 2) columns.push_back({"department_id", int64_column({1, 2, 1})});
+    auto columns = constraint_fixtures::rows("versioned_constraints", version);
+    constraint_fixtures::validate_rows("versioned_constraints", columns, version);
     return columns;
 }
 
@@ -365,7 +363,9 @@ public:
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
-        return columns_schema(constraints_version(params.arguments.const_int64(0).value_or(3)));
+        const auto version = params.arguments.const_int64(0).value_or(3);
+        return constraint_fixtures::required_schema(
+            columns_schema(constraints_version(version)), "versioned_constraints", version);
     }
 
     vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
@@ -687,29 +687,12 @@ void register_versioned_tables_scans(vgi::Worker& worker) {
 }
 
 void register_static_scans(vgi::Worker& worker) {
-    // The reference tables the constraint, comment, default and statistics
-    // tests read. Values are pinned by those tests, not chosen here.
-    worker.register_table(std::make_shared<StaticScan>(
-        "departments_scan", Columns{{"id", int64_column({1, 2, 3})},
-                                    {"name", string_column({"Engineering", "Sales", "HR"})},
-                                    {"budget", double_column({500000.0, 300000.0, 200000.0})}}));
-    worker.register_table(std::make_shared<StaticScan>(
-        "products_scan", Columns{{"id", int64_column({1, 2, 3})},
-                                 {"name", string_column({"Widget", "Gadget", "Doohickey"})},
-                                 {"quantity", int64_column({100, 50, 200})},
-                                 {"price", double_column({9.99, 24.99, 4.99})}}));
-    worker.register_table(std::make_shared<StaticScan>(
-        "employees_scan",
-        Columns{{"id", int64_column({1, 2, 3, 4, 5})},
-                {"name", string_column({"Alice", "Bob", "Carol", "Dave", "Eve"})},
-                {"email", string_column({"alice@co.com", "bob@co.com", "carol@co.com",
-                                         "dave@co.com", "eve@co.com"})},
-                {"department_id", int64_column({1, 1, 2, 2, 3})}}));
-    worker.register_table(std::make_shared<StaticScan>(
-        "projects_scan",
-        Columns{{"department_id", int64_column({1, 1, 2})},
-                {"project_code", string_column({"P001", "P002", "P003"})},
-                {"title", string_column({"Backend API", "Frontend UI", "Sales Portal"})}}));
+    // Catalog facts and scans share these immutable arrays. Validate before
+    // registration, so an invalid fixture cannot publish trusted constraints.
+    for (const std::string table : {"departments", "products", "employees", "projects"}) {
+        worker.register_table(std::make_shared<StaticScan>(
+            table + "_scan", constraint_fixtures::rows(table), table));
+    }
     // Ordered by id, not by the ENUM ordinal the statistics are derived from:
     // the two disagreeing is exactly what `column_statistics.test` checks.
     worker.register_table(std::make_shared<StaticScan>(

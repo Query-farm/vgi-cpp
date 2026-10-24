@@ -18,7 +18,7 @@ namespace gen = ::vgi::generated;
 using vgi::wire::encode_ipc;
 using vgi::wire::ResultBuilder;
 
-// Fixed provider keys, not engine OIDs or invented enforcement guarantees.
+// Fixed provider keys, not engine OIDs.
 inline std::string ref(const std::string& table, const std::string& key) {
     return encode_ipc(ResultBuilder(gen::CatalogObjectRefSchema())
                           .set_string("kind", "constraint")
@@ -81,8 +81,8 @@ inline std::string constraint(const std::string& table, const std::string& key,
     auto info = ResultBuilder(gen::ConstraintInfoSchema());
     info.set_binary("ref", ref(table, key))
         .set_binary("definition", encode_ipc(definition.finish()))
-        .set_enum("enforcement", "METADATA_ONLY")
-        .set_enum("validation", "UNVALIDATED");
+        .set_enum("enforcement", "ENFORCED")
+        .set_enum("validation", "ALL_ROWS");
     if (foreign.empty())
         info.set_null("referenced_constraint");
     else
@@ -90,9 +90,9 @@ inline std::string constraint(const std::string& table, const std::string& key,
     return encode_ipc(info.finish());
 }
 
-// The example worker describes these definitions; it has no storage layer
-// that enforces them or validates existing rows. All user fields stay nullable.
-inline std::vector<std::string> records(const std::string& table, int64_t version = 0) {
+// Private fixture definitions. records() validates the immutable scan arrays
+// before publishing these trusted facts; there is no writable table endpoint.
+inline std::vector<std::string> definitions(const std::string& table, int64_t version = 0) {
     if (table == "departments") {
         return {
             constraint(table, "fixture:departments:nn:id", "NOT_NULL", {{"id"}}),
@@ -135,12 +135,12 @@ inline std::vector<std::string> records(const std::string& table, int64_t versio
             throw std::invalid_argument("unknown constraint fixture version");
         std::vector<std::string> result = {
             constraint(table, "fixture:versioned_constraints:nn:id", "NOT_NULL", {{"id"}}),
-            constraint(table, "fixture:versioned_constraints:nn:name", "NOT_NULL", {{"name"}}),
-            constraint(table, "fixture:versioned_constraints:primary", "PRIMARY_KEY", {{"id"}}),
         };
-        if (version >= 2)
-            result.push_back(constraint(table, "fixture:versioned_constraints:unique:email",
-                                        "UNIQUE", {{"email"}}));
+        if (version >= 2) {
+            result.push_back(constraint(table, "fixture:versioned_constraints:nn:name", "NOT_NULL", {{"name"}}));
+            result.push_back(constraint(table, "fixture:versioned_constraints:primary", "PRIMARY_KEY", {{"id"}}));
+            result.push_back(constraint(table, "fixture:versioned_constraints:unique:email", "UNIQUE", {{"email"}}));
+        }
         if (version >= 3)
             result.push_back(constraint(table, "fixture:versioned_constraints:fk:department",
                                         "FOREIGN_KEY", {{"department_id"}}, {},
@@ -148,6 +148,18 @@ inline std::vector<std::string> records(const std::string& table, int64_t versio
         return result;
     }
     throw std::invalid_argument("unknown constraint fixture table: " + table);
+}
+
+using Columns = std::vector<std::pair<std::string, std::shared_ptr<arrow::Array>>>;
+
+// The one source of rows for both the scan and its constraint proof.
+Columns rows(const std::string& table, int64_t version = 0);
+void validate_rows(const std::string& table, const Columns& columns, int64_t version = 0);
+std::shared_ptr<arrow::Schema> required_schema(const std::shared_ptr<arrow::Schema>& schema,
+                                               const std::string& table, int64_t version = 0);
+inline std::vector<std::string> records(const std::string& table, int64_t version = 0) {
+    validate_rows(table, rows(table, version), version);
+    return definitions(table, version);
 }
 
 }  // namespace constraint_fixtures

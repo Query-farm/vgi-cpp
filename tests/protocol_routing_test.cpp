@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <functional>
 #include <set>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -300,7 +301,8 @@ TEST_CASE("http: the worker serves {prefix}/vgi.v2/{method}", "[protocol][http]"
     }
 }
 
-TEST_CASE("example constraint discovery preserves canonical untrusted snapshots", "[catalog][constraints][stdio]") {
+TEST_CASE("example constraint discovery preserves validated immutable snapshots",
+          "[catalog][constraints][stdio]") {
     auto client = vgi_rpc::RpcClient::spawn({kWorker}, raw_options(kProtocol));
     const auto request = vgi::wire::ResultBuilder(gen::CatalogAttachRequestSchema())
                              .set_string("name", "example")
@@ -311,36 +313,50 @@ TEST_CASE("example constraint discovery preserves canonical untrusted snapshots"
                               .set_binary("request", vgi::wire::encode_ipc(request))
                               .finish());
     const auto attach = vgi::wire::get_binary(
-        vgi::wire::decode_ipc(vgi::wire::get_binary(attached.batch, "result")), "attach_opaque_data");
+        vgi::wire::decode_ipc(vgi::wire::get_binary(attached.batch, "result")),
+        "attach_opaque_data");
     const auto read = [&](const std::string& name, int version = 0) {
         auto params = vgi::wire::ResultBuilder(gen::CatalogTableGetParamsSchema());
         params.set_binary("attach_opaque_data", attach)
             .set_string_list("schema_path", {"data"})
             .set_string("name", name);
-        if (version) params.set_string("at_unit", "VERSION").set_string("at_value", std::to_string(version));
-        const auto response = client.call_unary("catalog_table_get", params.fill_defaults().finish());
+        if (version)
+            params.set_string("at_unit", "VERSION").set_string("at_value", std::to_string(version));
+        const auto response =
+            client.call_unary("catalog_table_get", params.fill_defaults().finish());
         const auto payload = vgi::wire::decode_ipc(vgi::wire::get_binary(response.batch, "result"));
         REQUIRE(payload != nullptr);
         const auto items = vgi::wire::get_binary_list(payload, "items");
         REQUIRE(items.size() == 1);
         return vgi::wire::decode_ipc(items.front());
     };
-    for (const auto& [name, count] : std::vector<std::pair<std::string, size_t>>{
-             {"departments", 5}, {"products", 2}, {"employees", 6}, {"projects", 5}, {"versioned_constraints", 5}}) {
+    for (const auto& [name, count] :
+         std::vector<std::pair<std::string, size_t>>{{"departments", 5},
+                                                     {"products", 2},
+                                                     {"employees", 6},
+                                                     {"projects", 5},
+                                                     {"versioned_constraints", 5}}) {
         const auto table = read(name);
         REQUIRE(table != nullptr);
         REQUIRE(table->schema()->Equals(*gen::TableInfoSchema(), true));
         const auto columns = vgi::wire::get_schema(table, "columns");
         REQUIRE(columns != nullptr);
-        for (const auto& field : columns->fields()) CHECK(field->nullable());
+        const std::map<std::string, std::set<std::string>> required = {
+            {"departments", {"id", "name"}},
+            {"products", {"id"}},
+            {"employees", {"id", "name", "email"}},
+            {"projects", {"department_id", "project_code", "title"}},
+            {"versioned_constraints", {"id", "name"}}};
+        for (const auto& field : columns->fields())
+            CHECK(field->nullable() == !required.at(name).contains(field->name()));
         const auto constraints = vgi::wire::get_binary_list(table, "constraints");
         REQUIRE(constraints.size() == count);
         std::set<std::string> keys;
         for (const auto& encoded : constraints) {
             const auto info = vgi::wire::decode_ipc(encoded);
             REQUIRE(info->schema()->Equals(*gen::ConstraintInfoSchema(), true));
-            CHECK(vgi::wire::get_enum(info, "enforcement") == "METADATA_ONLY");
-            CHECK(vgi::wire::get_enum(info, "validation") == "UNVALIDATED");
+            CHECK(vgi::wire::get_enum(info, "enforcement") == "ENFORCED");
+            CHECK(vgi::wire::get_enum(info, "validation") == "ALL_ROWS");
             const auto ref = vgi::wire::get_ipc(info, "ref");
             CHECK(vgi::wire::get_string(ref, "owner_table") == name);
             CHECK(keys.insert(vgi::wire::get_string(ref, "name")).second);
@@ -356,7 +372,10 @@ TEST_CASE("example constraint discovery preserves canonical untrusted snapshots"
     for (int version = 1; version <= 3; ++version) {
         const auto table = read("versioned_constraints", version);
         const auto constraints = vgi::wire::get_binary_list(table, "constraints");
-        REQUIRE(constraints.size() == static_cast<size_t>(version + 2));
+        REQUIRE(constraints.size() == static_cast<size_t>(version == 1 ? 1 : version + 2));
+        const auto columns = vgi::wire::get_schema(table, "columns");
+        CHECK_FALSE(columns->GetFieldByName("id")->nullable());
+        CHECK(columns->GetFieldByName("name")->nullable() == (version == 1));
         for (size_t i = 0; i < previous.size(); ++i) CHECK(previous[i] == constraints[i]);
         previous = constraints;
     }

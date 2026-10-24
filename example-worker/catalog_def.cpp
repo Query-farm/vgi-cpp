@@ -621,9 +621,8 @@ void declare_catalog(vgi::Worker& worker) {
                   columns({{"a", arrow::int64()}, {"b", arrow::int64()}, {"c", arrow::int64()}}),
                   "Projection-pushdown cacheable result (SELECT a vs b are distinct keys)"));
 
-    // The constraint / reference tables. Their rows are almost incidental:
-    // what the suite reads from them is metadata — comments, defaults,
-    // column statistics — so the declarations here are the fixture.
+    // Read-only reference tables. Constraint facts are validated against the
+    // exact immutable scan rows before publication.
     {
         auto departments =
             backed_by("departments", "departments_scan",
@@ -633,6 +632,7 @@ void declare_catalog(vgi::Worker& worker) {
                       "Department reference table");
         departments.cardinality = 3;
         departments.constraints = constraint_fixtures::records("departments");
+        departments.columns = constraint_fixtures::required_schema(departments.columns, "departments");
         // Bounds wider than the three rows on purpose: they describe the table
         // the fixture stands in for, and `column_statistics.test` folds
         // `id > 100` to EMPTY_RESULT against them, not against the data.
@@ -659,6 +659,7 @@ void declare_catalog(vgi::Worker& worker) {
                       "Product table with column defaults");
         products.cardinality = 3;
         products.constraints = constraint_fixtures::records("products");
+        products.columns = constraint_fixtures::required_schema(products.columns, "products");
         products.column_statistics = {
             stat("id", vgi::StatValue::integer(1), vgi::StatValue::integer(100), 100),
             string_stat("name", "Anvil", "Zebra Tape", 100, 30),
@@ -680,6 +681,7 @@ void declare_catalog(vgi::Worker& worker) {
                                    "Employee table with FK to departments");
         employees.cardinality = 5;
         employees.constraints = constraint_fixtures::records("employees");
+        employees.columns = constraint_fixtures::required_schema(employees.columns, "employees");
         data.tables.push_back(std::move(employees));
     }
 
@@ -693,6 +695,7 @@ void declare_catalog(vgi::Worker& worker) {
         // Composite, which is what this table is here for: a single-column key
         // would not tell a reader whether the list-of-lists survived the wire.
         projects.constraints = constraint_fixtures::records("projects");
+        projects.columns = constraint_fixtures::required_schema(projects.columns, "projects");
         data.tables.push_back(std::move(projects));
     }
 
@@ -900,7 +903,8 @@ void declare_catalog(vgi::Worker& worker) {
         for (int64_t version = 1; version <= 3; ++version) {
             vgi::TimeTravelVersion entry;
             entry.version = version;
-            entry.columns = columns(per_version[static_cast<size_t>(version) - 1]);
+            entry.columns = constraint_fixtures::required_schema(
+                columns(per_version[static_cast<size_t>(version) - 1]), "versioned_constraints", version);
             entry.scan_function = "versioned_constraints_scan";
             entry.scan_arguments = vgi::serialize_scan_arguments({int64_arg(version)});
             entry.timestamp_year = constraint_years[version - 1];
