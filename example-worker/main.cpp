@@ -86,6 +86,7 @@ int main(int argc, char** argv) {
     example::register_large_state(worker);
     example::register_source_shapes(worker);
     example::register_blended(worker);
+    example::register_paged(worker);
     example::register_versioned(worker);
     example::register_static_scans(worker);
     example::register_window_aggregates(worker);

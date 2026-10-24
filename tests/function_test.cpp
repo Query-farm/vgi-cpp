@@ -1,5 +1,6 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <array>
 #include <cmath>
@@ -686,4 +687,95 @@ TEST_CASE("split token bind failures precede stale anchors", "[split-token]") {
     REQUIRE(
         vgi::split_token::open(token, fingerprint, current_anchor, std::nullopt, anonymous).error ==
         vgi::split_token::OpenError::SnapshotExpired);
+}
+
+TEST_CASE("a result never carries a null where its schema forbids one", "[wire]") {
+    // A null cell in a non-nullable column, or a null item in a list whose item
+    // field is non-nullable, is refused by the reference's decoder, so the
+    // builder refuses it first and names the field.
+    const auto item = arrow::field("item", arrow::utf8(), /*nullable=*/false);
+    const auto schema = arrow::schema({
+        arrow::field("strict_items", arrow::list(item), /*nullable=*/false),
+        arrow::field("tags", arrow::map(arrow::utf8(), arrow::utf8()), /*nullable=*/false),
+    });
+
+    const auto list_with = [&](bool null_item) {
+        arrow::ListBuilder list(arrow::default_memory_pool(),
+                                std::make_shared<arrow::StringBuilder>(), arrow::list(item));
+        REQUIRE(list.Append().ok());
+        auto* values = static_cast<arrow::StringBuilder*>(list.value_builder());
+        REQUIRE(values->Append("a").ok());
+        REQUIRE((null_item ? values->AppendNull() : values->Append("b")).ok());
+        std::shared_ptr<arrow::Array> out;
+        REQUIRE(list.Finish(&out).ok());
+        return out;
+    };
+
+    CHECK_NOTHROW(vgi::wire::ResultBuilder(schema)
+                      .set_array("strict_items", list_with(false))
+                      .fill_defaults()
+                      .finish());
+    CHECK_THROWS_WITH(vgi::wire::ResultBuilder(schema)
+                          .set_array("strict_items", list_with(true))
+                          .fill_defaults()
+                          .finish(),
+                      Catch::Matchers::ContainsSubstring("strict_items.item"));
+    CHECK_THROWS_WITH(
+        vgi::wire::ResultBuilder(schema).set_null("strict_items").fill_defaults().finish(),
+        Catch::Matchers::ContainsSubstring("strict_items"));
+    CHECK_THROWS_WITH(vgi::wire::ResultBuilder(schema)
+                          .set_array("strict_items", list_with(false))
+                          .set_null("tags")
+                          .finish(),
+                      Catch::Matchers::ContainsSubstring("tags"));
+}
+
+TEST_CASE("nullable result parents mask their required child storage", "[wire]") {
+    const auto child = arrow::field("required", arrow::utf8(), false);
+    const auto type = arrow::struct_({child});
+    const auto schema = arrow::schema({arrow::field("optional", type, true)});
+    CHECK_NOTHROW(vgi::wire::ResultBuilder(schema).set_null("optional").finish());
+
+    const auto null_child = arrow::MakeArrayOfNull(arrow::utf8(), 1).ValueOrDie();
+    const auto present = std::make_shared<arrow::StructArray>(
+        type, 1, arrow::ArrayVector{null_child});
+    CHECK_THROWS_WITH(vgi::wire::ResultBuilder(schema)
+                          .set_array("optional", present)
+                          .finish(),
+                      Catch::Matchers::ContainsSubstring("optional.required"));
+}
+
+TEST_CASE("every non-nullable FunctionInfo list and map defaults to empty, not null", "[wire]") {
+    const auto batch = vgi::wire::ResultBuilder(vgi::generated::FunctionInfoSchema())
+                           .set_string("name", "f")
+                           .set_enum("function_type", "SCALAR")
+                           .fill_defaults()
+                           .finish();
+    for (int i = 0; i < batch->num_columns(); ++i) {
+        const auto& field = batch->schema()->field(i);
+        if (!field->nullable()) {
+            INFO(field->name());
+            CHECK(batch->column(i)->null_count() == 0);
+        }
+    }
+}
+
+TEST_CASE("a dictionary binary cell naming a null entry is null, not empty", "[wire]") {
+    // FunctionInfo's schema-valued fields are dictionary<int32, binary>: a
+    // valid index can still point at a null dictionary value.
+    arrow::BinaryBuilder values;
+    REQUIRE(values.AppendNull().ok());
+    REQUIRE(values.Append(std::string("bytes")).ok());
+    arrow::Int32Builder indices;
+    REQUIRE(indices.AppendValues({0, 1}).ok());
+    REQUIRE(indices.AppendNull().ok());
+    const auto type = arrow::dictionary(arrow::int32(), arrow::binary());
+    const auto column = arrow::DictionaryArray::FromArrays(type, indices.Finish().ValueOrDie(),
+                                                           values.Finish().ValueOrDie())
+                            .ValueOrDie();
+    const auto batch =
+        arrow::RecordBatch::Make(arrow::schema({arrow::field("s", type)}), 3, {column});
+    CHECK_FALSE(vgi::wire::get_optional_binary(batch->Slice(0, 1), "s"));
+    CHECK(vgi::wire::get_optional_binary(batch->Slice(1, 1), "s") == std::string("bytes"));
+    CHECK_FALSE(vgi::wire::get_optional_binary(batch->Slice(2, 1), "s"));
 }

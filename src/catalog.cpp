@@ -146,6 +146,18 @@ std::string join_quoted(const std::vector<std::string>& values) {
     return out;
 }
 
+// A function kind as `FunctionInfo.function_type` spells it: the Python
+// `FunctionType` member name, never the lowercase internal key.
+const char* function_type_wire_value(std::string_view kind) {
+    if (kind == enums::function_type::kScalar) return enums::function_type_name::kScalar;
+    if (kind == enums::function_type::kTable) return enums::function_type_name::kTable;
+    if (kind == enums::function_type::kTableBuffering) {
+        return enums::function_type_name::kTableBuffering;
+    }
+    if (kind == enums::function_type::kAggregate) return enums::function_type_name::kAggregate;
+    throw std::logic_error("unknown function kind: " + std::string(kind));
+}
+
 const char* stability_wire_value(Stability stability) {
     switch (stability) {
         case Stability::Volatile: return enums::stability::kVolatile;
@@ -1096,7 +1108,8 @@ std::string Dispatcher::encode_macro_info(const CatalogMacro& macro, const Schem
         overloads.push_back(overload.finish());
     }
     auto builder = wire::ResultBuilder(gen::MacroInfoSchema());
-    builder.set_string("name", macro.name).set_string_list("schema_path", schema_path).set_enum("macro_type", kind)
+    builder.set_string("name", macro.name).set_string_list("schema_path", schema_path)
+        .set_enum("macro_type", macro.table_macro ? enums::macro_type::kTable : enums::macro_type::kScalar)
         .set_array("overloads", macro_record_list(gen::MacroInfoSchema()->GetFieldByName("overloads")->type(), overloads))
         .set_optional_string("comment", macro.comment);
     return wire::encode_ipc(builder.fill_defaults().finish());
@@ -1121,8 +1134,7 @@ vgi_rpc::Result Dispatcher::catalog_index_get(const vgi_rpc::Request&, vgi_rpc::
     return empty_items("catalog_index_get");
 }
 
-std::string Dispatcher::encode_schema_info(const std::string& owner, const std::string& handle,
-                                           const CatalogSchema& schema,
+std::string Dispatcher::encode_schema_info(const std::string& owner, const CatalogSchema& schema,
                                            const CatalogSchema* contents) const {
     // `contents` is what this attachment will actually be shown, which is not
     // `schema` for a catalog whose table set varies by resolved data version:
@@ -1141,11 +1153,7 @@ std::string Dispatcher::encode_schema_info(const std::string& owner, const std::
         wire::ResultBuilder(gen::SchemaInfoSchema())
             .set_string_list("path", schema.path)
             .set_string_map("tags", schema.tags)
-            // The sealed handle, not the bare catalog name: this
-            // field is what a client would send back, and only the
-            // five-field seal survives `attachment_of`. `owner` is
-            // the catalog name the scopes below are counted in.
-            .set_binary("attach_opaque_data", handle)
+            // `owner` is the catalog name the scopes below are counted in.
             .set_int64_map(
                 "estimated_object_count",
                 {{"view", static_cast<int64_t>(contents->views.size())},
@@ -1172,16 +1180,12 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request,
                                             vgi_rpc::CallContext&) {
     std::vector<std::string> items;
 
-    // The full seal, not the bare catalog name: `attach_opaque_data` is a
-    // handle, and a client that took one from a SchemaInfo and sent it back
-    // would fail `attachment_of`'s field-count check.
     const auto attachment = attachment_of(request);
-    const auto owner = handle_of(attachment);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
-        items.push_back(encode_schema_info(attachment.catalog, owner, *schema,
-                                           schema_for(request, schema->path)));
+        items.push_back(
+            encode_schema_info(attachment.catalog, *schema, schema_for(request, schema->path)));
     }
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schemas"))
                         .set_binary_list("items", items)
@@ -1191,7 +1195,6 @@ vgi_rpc::Result Dispatcher::catalog_schemas(const vgi_rpc::Request& request,
 vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request,
                                              vgi_rpc::CallContext&) {
     const auto attachment = attachment_of(request);
-    const auto owner = handle_of(attachment);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     const int64_t version = *current_catalog_version(request);
@@ -1200,7 +1203,7 @@ vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request,
     call.catalog_name = attachment.catalog;
     call.catalog_version = version;
     call.if_none_match = wire::get_optional_string(request.batch(), "if_none_match");
-    call.contents = [&]() { return compose_catalog_contents(request, attachment, owner, *model); };
+    call.contents = [&]() { return compose_catalog_contents(request, attachment, *model); };
     return envelope(encode_catalog_contents(
         version, answer_catalog_contents(model->catalog_contents_handler,
                                          model->catalog_contents_etag, call)));
@@ -1208,7 +1211,6 @@ vgi_rpc::Result Dispatcher::catalog_contents(const vgi_rpc::Request& request,
 
 std::vector<SchemaContents> Dispatcher::compose_catalog_contents(const vgi_rpc::Request& request,
                                                                  const Attachment& attachment,
-                                                                 const std::string& owner,
                                                                  const CatalogModel& model) const {
     // Parents before children, otherwise in declaration order: the engine
     // creates schemas as it reads them. Stable, so a flat catalog keeps the
@@ -1229,7 +1231,7 @@ std::vector<SchemaContents> Dispatcher::compose_catalog_contents(const vgi_rpc::
 
         SchemaContents row;
         row.path = path;
-        row.schema = encode_schema_info(attachment.catalog, owner, *schema, contents);
+        row.schema = encode_schema_info(attachment.catalog, *schema, contents);
         if (contents) {
             for (const auto& table : contents->tables) {
                 row.tables.push_back(
@@ -1262,13 +1264,12 @@ vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request,
     const auto wanted = wire::get_schema_path(request.batch(), "path");
     std::vector<std::string> items;
     const auto attachment = attachment_of(request);
-    const auto owner = handle_of(attachment);
     const auto* model = find_catalog(attachment.catalog);
     if (!model) model = &catalog();
     for (const auto& schema : model->schemas) {
         if (schema->path != wanted) continue;
         items.push_back(
-            encode_schema_info(attachment.catalog, owner, *schema, schema_for(request, wanted)));
+            encode_schema_info(attachment.catalog, *schema, schema_for(request, wanted)));
     }
     // Zero or one item; the engine reads absence as "no such schema".
     return envelope(wire::ResultBuilder(payload_schema_of("catalog_schema_get"))
@@ -1296,7 +1297,7 @@ wire::ResultBuilder Dispatcher::common_function_info(
         wire::ResultBuilder(gen::FunctionInfoSchema())
             .set_string("name", name)
             .set_string_list("schema_path", schema_path)
-            .set_enum("function_type", function_type)
+            .set_enum("function_type", function_type_wire_value(function_type))
             .set_binary("arguments", wire::encode_schema(build_arg_schema(specs)))
             .set_binary("output_schema", wire::encode_schema(output_schema))
             .set_enum("stability", stability_wire_value(metadata.stability))
@@ -1381,12 +1382,14 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
     const auto metadata = fn.metadata();
     // The engine sees a table-in-out as a table function that happens to take
     // a table argument, so it is advertised as one.
-    return wire::encode_ipc(common_function_info(fn.name(), schema_path,
-                                                 enums::function_type::kTable, fn.argument_specs(),
-                                                 arrow::schema({}), metadata)
-                                .set_bool("has_finalize", fn.has_finish())
-                                .fill_defaults()
-                                .finish());
+    auto builder = common_function_info(fn.name(), schema_path, enums::function_type::kTable,
+                                        fn.argument_specs(), arrow::schema({}), metadata);
+    builder.set_bool("has_finalize", fn.has_finish());
+    // Validated at registration: a positive count, on a blended function.
+    if (metadata.input_rows_per_call) {
+        builder.set_int64("input_rows_per_call", *metadata.input_rows_per_call);
+    }
+    return wire::encode_ipc(builder.fill_defaults().finish());
 }
 
 std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
@@ -1483,14 +1486,6 @@ std::string Dispatcher::seal_attachment(const Attachment& attachment) const {
         carried ? arrow::util::base64_encode(wire::encode_ipc(carried)) : std::string{};
     return attachment.catalog + '\0' + attachment.data_version + '\0' + attachment.alias + '\0' +
            attachment.id + '\0' + options;
-}
-
-std::string Dispatcher::handle_of(const Attachment& attachment) const {
-    // A SchemaInfo's handle is what a client would send back: the value it
-    // sent, never a freshly built one (which would be plaintext on HTTP).
-    const auto* call = opaque::current();
-    if (call && call->attach_as_sent()) return *call->attach_as_sent();
-    return seal_attachment(attachment);
 }
 
 Dispatcher::Attachment Dispatcher::attachment_of(

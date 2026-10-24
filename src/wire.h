@@ -115,6 +115,12 @@ std::shared_ptr<arrow::RecordBatch> get_ipc(const std::shared_ptr<arrow::RecordB
 
 std::string encode_ipc(const std::shared_ptr<arrow::RecordBatch>& batch);
 
+// One IPC stream holding the batch of every item in `groups`, in order, where
+// each item is itself a one-batch IPC stream (as encode_ipc writes) of one
+// shared schema. Null when there are no items. Each batch keeps its own
+// dictionaries, which the stream carries as replacements.
+std::optional<std::string> concat_ipc(const std::vector<const std::vector<std::string>*>& groups);
+
 // An IPC stream carrying a schema and no batches.
 //
 // Distinct from encode_ipc on purpose: the `arguments` and `output_schema`
@@ -208,10 +214,6 @@ public:
     // The `examples` column: a list of {sql, description, expected_output}.
     ResultBuilder& set_examples(const std::string& field,
                                 const std::vector<FunctionExample>& examples);
-    // The `schemas` column of CatalogContentsResponse: a list of inline
-    // SchemaContents structs, built against the schema's own struct type.
-    ResultBuilder& set_schema_contents(const std::string& field,
-                                       const std::vector<SchemaContents>& rows);
     // A list<{namespace: utf8, name: utf8, version: uint64}> capability field.
     ResultBuilder& set_filter_identities(
         const std::string& field,

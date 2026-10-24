@@ -363,7 +363,7 @@ std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
                     where + ": '" + name + "' claims the reserved '" +
                     vgi_rpc::kReservedProtocolPrefix +
                     "' prefix. Framework protocols are not supplied through this hook: "
-                    "reflection is hosted automatically, and vgi_rpc.Identity.v1 is enabled "
+                    "reflection is hosted automatically, and vgi_rpc.Identity.v2 is enabled "
                     "with Worker::set_resolve_token / Worker::set_mint_grant.");
             }
             if (!valid_routing_key(name)) {
@@ -385,7 +385,7 @@ std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
         for (auto& protocol : hosted) builder.add_protocol(std::move(protocol));
     }
 
-    // vgi_rpc.Identity.v1, on the transport that authenticates callers.  Its
+    // vgi_rpc.Identity.v2, on the transport that authenticates callers.  Its
     // allowlist is a list of principals, which stdio, unix and TCP do not
     // have, so it is not hosted there.  Absent unless a hook is set: hosted
     // and refusing would still be an oracle a dependency upgrade grew.
@@ -458,7 +458,7 @@ std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
                 // worker that resolves credentials and forgot the allowlist
                 // must not start.
                 throw std::invalid_argument(
-                    "this worker sets a resolve_token hook, which hosts the vgi_rpc.Identity.v1 "
+                    "this worker sets a resolve_token hook, which hosts the vgi_rpc.Identity.v2 "
                     "protocol, but no introspector allowlist was configured. Set "
                     "VGI_INTROSPECT_PRINCIPALS (comma-separated), pass --introspect-principals, "
                     "or call Worker::set_introspect_principals. There is no permissive default "

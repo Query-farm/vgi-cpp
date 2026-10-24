@@ -38,6 +38,19 @@ vgi_rpc::LogLevel to_rpc_level(LogLevel level);
 // A sink that writes a function's messages into `context`'s in-band channel.
 std::function<void(LogLevel, const std::string&)> client_log_sink(vgi_rpc::CallContext* context);
 
+// The exchange state that drives a table-in-out stream (every phase but
+// FINALIZE). `init_context` is the init call, whose channel `initial_state`
+// logs through; null logs nowhere. Defined in function_dispatch.cpp, declared
+// here so the exchange's turn rules can be tested without a transport.
+std::shared_ptr<vgi_rpc::ExchangeState> make_table_in_out_exchange(
+    std::shared_ptr<TableInOutFunction> fn, ProcessParams params,
+    vgi_rpc::CallContext* init_context);
+
+// The batches of a table-in-out's `finish()`, for its FINALIZE producer.
+// Refuses `more`: a producer stream has no ticks to ask for it with.
+std::vector<std::shared_ptr<arrow::RecordBatch>> finalize_batches(
+    const TableInOutFunction& fn, std::vector<EmittedBatch> emitted);
+
 // The `init` stream's header schema (`GlobalInitResponse`). Defined in
 // function_dispatch.cpp; registration needs it, and so does the handler.
 const std::shared_ptr<arrow::Schema>& global_init_response_schema();
@@ -294,10 +307,8 @@ private:
     // One `SchemaInfo` entry, with the object counts the engine treats as a
     // hard guarantee: a declared zero lets it skip both the bulk listing and
     // every per-name lookup for that kind.
-    // `owner` is the catalog name the counts are scoped in; `handle` is the
-    // sealed `attach_opaque_data` the record carries back to the caller.
-    std::string encode_schema_info(const std::string& owner, const std::string& handle,
-                                   const CatalogSchema& schema,
+    // `owner` is the catalog name the counts are scoped in.
+    std::string encode_schema_info(const std::string& owner, const CatalogSchema& schema,
                                    const CatalogSchema* contents) const;
     static std::string encode_macro_info(const CatalogMacro& macro, const SchemaPath& schema_path);
     static std::string encode_view_info(const CatalogView& view, const SchemaPath& schema_path);
@@ -379,8 +390,6 @@ private:
     // The plaintext attach value. On a transport that does not seal it, the
     // catalog's secret options are left out and kept server-side.
     std::string seal_attachment(const Attachment& attachment) const;
-    // What a response echoes as `attach_opaque_data`: the value the caller sent.
-    std::string handle_of(const Attachment& attachment) const;
     // Put back the secret options an unsealed value left server-side.
     void restore_secret_options(Attachment& attachment) const;
     // The attachment a request belongs to. Falls back to the primary catalog
@@ -392,7 +401,6 @@ private:
     // declared catalog: every schema, parents first, with all its items.
     std::vector<SchemaContents> compose_catalog_contents(const vgi_rpc::Request& request,
                                                          const Attachment& attachment,
-                                                         const std::string& owner,
                                                          const CatalogModel& model) const;
 
     // Serve a `catalog_*` call addressed to a memory catalog, when it is one:

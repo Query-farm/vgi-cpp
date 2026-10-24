@@ -232,6 +232,13 @@ struct FunctionMetadata {
     // Without it neither call site resolves, because the engine is looking for
     // a table argument the function does not declare.
     bool input_from_args = false;
+    // For a blended (`input_from_args`) table-in-out only: the most input rows
+    // one call receives. The engine's batched LATERAL splits each input chunk,
+    // after dedup, into calls of at most this many rows — a bound on what one
+    // call fetches when each row is an upstream request. Absent sends a whole
+    // chunk per call. Must be positive, and registration refuses it otherwise
+    // or on a classic table-in-out; any other kind of function ignores it.
+    std::optional<int64_t> input_rows_per_call;
     // How this function's output is partitioned. Declaring
     // SINGLE_VALUE_PARTITIONS says each batch holds exactly one distinct value
     // of the partition column, which is what lets the engine cache and skip

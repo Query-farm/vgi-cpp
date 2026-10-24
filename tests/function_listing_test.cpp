@@ -35,10 +35,13 @@
 #include <vector>
 
 #include <arrow/array.h>
+#include <arrow/io/memory.h>
+#include <arrow/ipc/reader.h>
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
 #include <vgi_rpc/client.h>
+#include <vgi_rpc/crypto.h>
 #include <vgi_rpc/server.h>
 #include <vgi_rpc/wire.h>
 
@@ -426,43 +429,50 @@ struct ContentsRow {
     std::string schema;
 };
 
-std::vector<std::string> binary_list_at(const std::shared_ptr<arrow::Array>& column, int64_t row) {
-    const auto list = std::static_pointer_cast<arrow::ListArray>(column);
-    const auto values = std::static_pointer_cast<arrow::BinaryArray>(list->values());
-    std::vector<std::string> out;
-    for (int64_t i = list->value_offset(row); i < list->value_offset(row + 1); ++i) {
-        out.push_back(values->GetString(i));
+// The rows of one catalog_contents collection, each re-encoded as the
+// one-row IPC item the per-schema listings answer with. Null is no rows.
+std::vector<std::shared_ptr<arrow::RecordBatch>> collection_rows(
+    const std::shared_ptr<arrow::RecordBatch>& payload, const std::string& field) {
+    const auto column =
+        std::static_pointer_cast<arrow::BinaryArray>(payload->GetColumnByName(field));
+    std::vector<std::shared_ptr<arrow::RecordBatch>> rows;
+    if (column->IsNull(0)) return rows;
+    auto source =
+        std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(column->GetString(0)));
+    auto reader = arrow::ipc::RecordBatchStreamReader::Open(source).ValueOrDie();
+    std::shared_ptr<arrow::RecordBatch> batch;
+    while (reader->ReadNext(&batch).ok() && batch) {
+        for (int64_t r = 0; r < batch->num_rows(); ++r) rows.push_back(batch->Slice(r, 1));
     }
-    return out;
+    return rows;
 }
 
 std::map<std::vector<std::string>, ContentsRow> contents_by_path(
     const std::shared_ptr<arrow::RecordBatch>& payload) {
-    const auto schemas =
-        std::static_pointer_cast<arrow::ListArray>(payload->GetColumnByName("schemas"));
-    const auto rows = std::static_pointer_cast<arrow::StructArray>(schemas->values());
     std::map<std::vector<std::string>, ContentsRow> out;
-    for (int64_t r = schemas->value_offset(0); r < schemas->value_offset(1); ++r) {
-        const auto path_list =
-            std::static_pointer_cast<arrow::ListArray>(rows->GetFieldByName("path"));
-        const auto path_values = std::static_pointer_cast<arrow::StringArray>(path_list->values());
-        std::vector<std::string> path;
-        for (int64_t i = path_list->value_offset(r); i < path_list->value_offset(r + 1); ++i) {
-            path.push_back(path_values->GetString(i));
-        }
-        ContentsRow row;
-        row.schema = std::static_pointer_cast<arrow::BinaryArray>(rows->GetFieldByName("schema"))
-                         ->GetString(r);
-        row.tables = binary_list_at(rows->GetFieldByName("tables"), r);
-        row.views = binary_list_at(rows->GetFieldByName("views"), r);
-        row.scalar_functions = binary_list_at(rows->GetFieldByName("scalar_functions"), r);
-        row.aggregate_functions = binary_list_at(rows->GetFieldByName("aggregate_functions"), r);
-        row.table_functions = binary_list_at(rows->GetFieldByName("table_functions"), r);
-        row.scalar_macros = binary_list_at(rows->GetFieldByName("scalar_macros"), r);
-        row.table_macros = binary_list_at(rows->GetFieldByName("table_macros"), r);
-        row.indexes = binary_list_at(rows->GetFieldByName("indexes"), r);
-        out[path] = std::move(row);
+    for (const auto& row : collection_rows(payload, "schemas")) {
+        out[vgi::wire::get_schema_path(row, "path")].schema = vgi::wire::encode_ipc(row);
     }
+    const auto place = [&](const char* field, auto pick) {
+        for (const auto& row : collection_rows(payload, field)) {
+            pick(out[vgi::wire::get_schema_path(row, "schema_path")], row)
+                .push_back(vgi::wire::encode_ipc(row));
+        }
+    };
+    using Row = std::shared_ptr<arrow::RecordBatch>;
+    place("tables", [](ContentsRow& c, const Row&) -> auto& { return c.tables; });
+    place("views", [](ContentsRow& c, const Row&) -> auto& { return c.views; });
+    place("indexes", [](ContentsRow& c, const Row&) -> auto& { return c.indexes; });
+    place("functions", [](ContentsRow& c, const Row& row) -> auto& {
+        const auto kind = vgi::wire::get_optional_enum(row, "function_type").value_or("");
+        if (kind == "SCALAR") return c.scalar_functions;
+        if (kind == "AGGREGATE") return c.aggregate_functions;
+        return c.table_functions;
+    });
+    place("macros", [](ContentsRow& c, const Row& row) -> auto& {
+        return vgi::wire::get_optional_enum(row, "macro_type") == "TABLE" ? c.table_macros
+                                                                          : c.scalar_macros;
+    });
     return out;
 }
 
@@ -918,22 +928,155 @@ TEST_CASE("catalog_contents revalidates: a handler's etag and the content hash",
     }
 }
 
-TEST_CASE("catalog_contents_digest is deterministic and covers every part", "[catalog][contents]") {
-    vgi::SchemaContents schema;
-    schema.path = {"main"};
-    schema.schema = "info";
-    schema.tables = {"t"};
-    const auto digest = vgi::catalog_contents_digest({schema});
-    // Computed by vgi-python's catalog_contents_digest over the same snapshot:
-    // the content-hash etag must agree byte for byte across SDKs.
-    CHECK(digest == "c46f04af1c42014e1663526c9a195044c7eef5346e97a7d1ffad5aa95164ee0f");
-    auto moved = schema;
-    moved.tables.clear();
-    moved.views = {"t"};
-    CHECK(vgi::catalog_contents_digest({moved}) != digest);
-    // The empty answer: SHA-256 of one zero length prefix.
+namespace {
+
+// vgi-python 2.2's contents_codec.contents_digest, restated independently of
+// the SDK: the content-hash etag must be this framing over the six collection
+// streams the response actually carries.
+std::string python_contents_digest(const std::shared_ptr<arrow::RecordBatch>& payload) {
+    std::string framed("vgi.catalog.contents.2.2", 24);
+    framed.push_back('\0');
+    for (const char* kind : {"schemas", "tables", "views", "functions", "macros", "indexes"}) {
+        framed += kind;
+        framed.push_back('\0');
+        const auto data = vgi::wire::get_optional_binary(payload, kind);
+        framed.push_back(data ? '\1' : '\0');
+        if (!data) continue;
+        for (int b = 0; b < 8; ++b)
+            framed.push_back(static_cast<char>(uint64_t(data->size()) >> (8 * b)));
+        framed += *data;
+    }
+    vgi_rpc::crypto::Sha256 hash;
+    hash.update(framed);
+    return hash.hex_digest();
+}
+
+}  // namespace
+
+TEST_CASE("catalog_contents_digest hashes the 2.2 collection streams", "[catalog][contents]") {
+    // The empty answer (every collection null) is the one catalog whose etag
+    // agrees across SDKs; this value is vgi-python a34e949's
+    // contents_codec.contents_digest({kind: None for kind in CATEGORY_TYPES}).
+    // A non-empty catalog cannot agree byte for byte: vgi-python packs up to
+    // 1024 rows per batch, this SDK one batch per item.
     CHECK(vgi::catalog_contents_digest({}) ==
-          "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc");
+          "57f8bf1399afe1637da5a2dde8329befa007315fe4a6cb842cc152edbefaf0fc");
+
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "digest";
+    dispatcher.catalog().catalog_contents_etag = vgi::CatalogContentsEtag::ContentHash;
+    dispatcher.register_table(std::make_shared<Table>("t", "table"));
+    Served worker(dispatcher);
+    const auto payload = contents_call(worker, attach(worker, "digest"), std::nullopt);
+    const auto etag = etag_of(payload);
+    REQUIRE(etag);
+    CHECK(*etag == python_contents_digest(payload));
+    // The public digest of the same snapshot (one schema, so order is moot).
+    std::vector<vgi::SchemaContents> snapshot;
+    for (const auto& [path, row] : contents_by_path(payload)) {
+        snapshot.push_back({path, row.schema, row.tables, row.views, row.scalar_functions,
+                            row.aggregate_functions, row.table_functions, row.scalar_macros,
+                            row.table_macros, row.indexes});
+    }
+    REQUIRE(snapshot.size() == 1);
+    CHECK(vgi::catalog_contents_digest(snapshot) == *etag);
+}
+
+namespace {
+
+// A dictionary-encoded enum cell, as decoded.
+std::string enum_of(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+    return vgi::wire::get_enum(batch, field);
+}
+
+}  // namespace
+
+TEST_CASE("function and macro kinds travel as the Python enum member names",
+          "[catalog][listing][enum]") {
+    // `FunctionInfo.function_type` and `MacroInfo.macro_type` are the
+    // reference's `FunctionType` / `MacroType` *member names*, not their
+    // lowercase values: a strict decoder rejects `scalar`.
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "kinds";
+    dispatcher.register_scalar(std::make_shared<Scalar>("s", "scalar"));
+    dispatcher.register_table(std::make_shared<Table>("t", "table"));
+    dispatcher.register_aggregate(std::make_shared<Aggregate>("a", "aggregate"));
+    auto& main = dispatcher.catalog().schema("main");
+    main.macros.push_back({"m_scalar", {"x"}, "x + 1", /*table_macro=*/false});
+    main.macros.push_back({"m_table", {}, "SELECT 1", /*table_macro=*/true});
+
+    Served worker(dispatcher);
+    const auto handle = attach(worker, "kinds");
+    const auto kind_of = [&](const std::string& filter) {
+        std::vector<std::string> kinds;
+        for (const auto& item : list(worker, handle, {"main"}, filter)) {
+            kinds.push_back(enum_of(vgi::wire::decode_ipc(item), "function_type"));
+        }
+        return kinds;
+    };
+    CHECK(kind_of("SCALAR_FUNCTION") == Names{"SCALAR"});
+    CHECK(kind_of("TABLE_FUNCTION") == Names{"TABLE"});
+    CHECK(kind_of("AGGREGATE_FUNCTION") == Names{"AGGREGATE"});
+
+    const auto macros = [&](const std::string& filter) {
+        const auto params = vgi::wire::ResultBuilder(gen::CatalogSchemaContentsMacrosParamsSchema())
+                                .set_binary("attach_opaque_data", handle)
+                                .set_string_list("path", {"main"})
+                                .set_enum("type", filter)
+                                .fill_defaults()
+                                .finish();
+        std::vector<std::string> kinds;
+        for (const auto& item : vgi::wire::get_binary_list(
+                 worker.call("catalog_schema_contents_macros", params), "items")) {
+            kinds.push_back(enum_of(vgi::wire::decode_ipc(item), "macro_type"));
+        }
+        return kinds;
+    };
+    CHECK(macros("SCALAR_MACRO") == Names{"SCALAR"});
+    CHECK(macros("TABLE_MACRO") == Names{"TABLE"});
+}
+
+namespace {
+
+// A table-in-out that only declares itself, for registration checks.
+class Sliced final : public vgi::TableInOutFunction {
+public:
+    Sliced(bool blended, std::optional<int64_t> rows) : blended_(blended), rows_(rows) {}
+    std::string name() const override { return "sliced"; }
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata metadata;
+        metadata.input_from_args = blended_;
+        metadata.input_rows_per_call = rows_;
+        return metadata;
+    }
+    std::vector<vgi::ArgSpec> argument_specs() const override {
+        return {vgi::ArgSpec::column("n", 0, "int64")};
+    }
+    std::vector<vgi::EmittedBatch> process(
+        const vgi::ProcessParams&, const std::shared_ptr<arrow::RecordBatch>&) const override {
+        return {};
+    }
+
+private:
+    bool blended_;
+    std::optional<int64_t> rows_;
+};
+
+}  // namespace
+
+TEST_CASE("input_rows_per_call is advertised for a blended function and refused elsewhere",
+          "[catalog][listing]") {
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "rows";
+    CHECK_THROWS(dispatcher.register_table_in_out(std::make_shared<Sliced>(true, 0)));
+    CHECK_THROWS(dispatcher.register_table_in_out(std::make_shared<Sliced>(false, 3)));
+    dispatcher.register_table_in_out(std::make_shared<Sliced>(true, 3));
+
+    Served worker(dispatcher);
+    const auto items = list(worker, attach(worker, "rows"), {"main"}, "TABLE_FUNCTION");
+    REQUIRE(items.size() == 1);
+    CHECK(vgi::wire::get_optional_int64(vgi::wire::decode_ipc(items[0]), "input_rows_per_call") ==
+          3);
 }
 
 TEST_CASE("column metadata survives CREATE and discovery and invalid metadata has no effects", "[catalog][column-metadata]") {

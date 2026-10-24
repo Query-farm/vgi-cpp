@@ -17,7 +17,9 @@ Every function shape the protocol has, and the catalog surface around them.
    ids, late materialization, required filters, time travel.
 3. **Table-in-out functions** — the exchange path with fan-out and the
    per-output-row provenance a batched correlated LATERAL needs, per-substream
-   finalize, per-emission cache advertisements and conditional requests.
+   finalize, per-emission cache advertisements and conditional requests,
+   continued output (`EmittedBatch::more`, `ResumableTableInOutFunction`)
+   and a blended function's `input_rows_per_call`.
 4. **Aggregates** — bind / update / combine / finalize / destructor, windowed
    and batched-window, streaming-partitioned, with per-group state in
    cross-process storage.
