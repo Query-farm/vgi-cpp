@@ -938,6 +938,24 @@ static bool valid_projection_profiles(const std::vector<std::string>& profiles) 
     return true;
 }
 
+static std::string repeatability_wire_value(BindRepeatability value) {
+    switch (value) {
+    case BindRepeatability::Unknown: return "UNKNOWN";
+    case BindRepeatability::StableWithinQuery: return "STABLE_WITHIN_QUERY";
+    }
+    throw std::invalid_argument("invalid bind repeatability");
+}
+
+static BindRepeatability read_repeatability(const std::shared_ptr<arrow::RecordBatch>& row) {
+    const auto value = wire::get_enum(row, "repeatability");
+    const auto dictionary = std::static_pointer_cast<arrow::DictionaryArray>(wire::column(row, "repeatability"));
+    if (dictionary->dictionary()->IsNull(dictionary->GetValueIndex(0)))
+        throw std::invalid_argument("null bind repeatability dictionary value");
+    if (value == "UNKNOWN") return BindRepeatability::Unknown;
+    if (value == "STABLE_WITHIN_QUERY") return BindRepeatability::StableWithinQuery;
+    throw std::invalid_argument("invalid bind repeatability");
+}
+
 vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request, vgi_rpc::CallContext&) {
     auto bind_call = wire::get_ipc(request.batch(), "request");
     if (!bind_call) throw std::runtime_error("bind: empty request");
@@ -958,6 +976,7 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request, vgi_rpc::CallC
     const bool prefers_table = declared_kind == enums::function_type::kTable;
     std::shared_ptr<arrow::Schema> output_schema;
     std::vector<std::string> projection_profiles;
+    auto repeatability = BindRepeatability::Unknown;
     std::shared_ptr<TableBufferingFunction> sink;
     if (!prefers_table) sink = find_buffering(function_name, scope_of(params));
     if (sink) {
@@ -970,6 +989,7 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request, vgi_rpc::CallC
         check_arg_constraints(function_name, table->argument_specs(), params.arguments);
         output_schema = table->bind(params);
         projection_profiles = table->projection_expression_profiles(params);
+        repeatability = table->repeatability(params);
         if (!valid_projection_profiles(projection_profiles)) throw std::invalid_argument("unsupported projection profile offer");
     } else if (auto late = find_buffering(function_name, scope_of(params))) {
         // Declared `table` but no table function of that name: the declaration
@@ -1009,6 +1029,7 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request, vgi_rpc::CallC
                        // travels — the engine treats it as opaque.
                        .set_binary("opaque_data", "")
                        .set_string_list("projection_expression_profiles", projection_profiles)
+                       .set_enum("repeatability", repeatability_wire_value(repeatability))
                        .fill_defaults()
                        .finish();
     return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
@@ -1085,6 +1106,7 @@ vgi_rpc::Result Dispatcher::table_function_projection(const vgi_rpc::Request& re
     input.source_schema = wire::get_schema(original, "output_schema");
     input.result_schema = wire::get_schema(proposal, "result_schema");
     input.bind_opaque_data = wire::get_optional_binary(original, "opaque_data").value_or("");
+    input.repeatability = read_repeatability(original);
     const auto expressions = wire::get_binary_list(proposal, "expressions");
     if (expressions.empty() || expressions.size() > 1024 || !input.source_schema || !input.result_schema || input.result_schema->num_fields() != static_cast<int>(expressions.size()) || (input.result_schema->metadata() && input.result_schema->metadata()->size())) throw std::invalid_argument("invalid projection result schema/count");
     std::set<std::string> names;
@@ -1108,7 +1130,7 @@ vgi_rpc::Result Dispatcher::table_function_projection(const vgi_rpc::Request& re
     if (accepted.output_schema) {
         auto expected = arrow::schema(fields, input.source_schema->metadata());
         if (!expected->Equals(*accepted.output_schema, true)) throw std::invalid_argument("accepted projection changed append-only schema");
-        replacement = wire::encode_ipc(wire::ResultBuilder(payload_schema_of("bind")).set_binary("output_schema", wire::encode_schema(accepted.output_schema)).set_binary("opaque_data", accepted.opaque_data).set_string_list("projection_expression_profiles", profiles).fill_defaults().finish());
+        replacement = wire::encode_ipc(wire::ResultBuilder(payload_schema_of("bind")).set_binary("output_schema", wire::encode_schema(accepted.output_schema)).set_binary("opaque_data", accepted.opaque_data).set_string_list("projection_expression_profiles", profiles).set_enum("repeatability", repeatability_wire_value(input.repeatability)).fill_defaults().finish());
     }
     auto values = std::make_shared<arrow::Int64Builder>(); arrow::ListBuilder indices(arrow::default_memory_pool(), values); (void)indices.Append(); (void)values->AppendValues(accepted.accepted_indices); std::shared_ptr<arrow::Array> index_array; (void)indices.Finish(&index_array);
     arrow::BinaryBuilder result; if (replacement) (void)result.Append(*replacement); else (void)result.AppendNull(); std::shared_ptr<arrow::Array> result_array; (void)result.Finish(&result_array);

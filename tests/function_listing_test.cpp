@@ -1013,6 +1013,8 @@ namespace {
 class ProjectionContractTable : public vgi::TableFunction {
 public:
     std::atomic<int> mode{0};
+    vgi::BindRepeatability claim = vgi::BindRepeatability::Unknown;
+    vgi::BindRepeatability repeatability(const vgi::BindParams&) const override { return claim; }
     std::string name() const override { return "projection_contract"; }
     vgi::FunctionMetadata metadata() const override { return {}; }
     std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
@@ -1032,16 +1034,122 @@ public:
     }
 };
 }
-TEST_CASE("scalar projection validates provider acceptance before changing a scan", "[projection]") {
-    vgi::Dispatcher dispatcher; dispatcher.catalog().name="projection";
-    auto function=std::make_shared<ProjectionContractTable>(); dispatcher.register_table(function);
+TEST_CASE("scalar projection validates provider acceptance before changing a scan",
+          "[projection]") {
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "projection";
+    auto function = std::make_shared<ProjectionContractTable>();
+    dispatcher.register_table(function);
     Served worker(dispatcher);
-    const auto call=vgi::wire::ResultBuilder(gen::BindRequestSchema()).set_string("function_name",function->name()).set_enum("function_type","TABLE").set_binary("arguments",vgi::wire::encode_schema(arrow::schema({}))).set_string_list("schema_path",{"main"}).fill_defaults().finish();
-    const auto bind=worker.call("bind",vgi::wire::ResultBuilder(gen::BindParamsSchema()).set_binary("request",vgi::wire::encode_ipc(call)).finish());
-    CHECK(vgi::wire::get_string_list(bind,"projection_expression_profiles")==std::vector<std::string>{vgi::SCALAR_PROJECTION_PROFILE,"vendor.scalar.v3"});
-    const auto result=arrow::schema({arrow::field("wide",arrow::int64(),true,arrow::key_value_metadata({"result"},{"keep"}))});
-    const auto raw=vgi::wire::base64_decode(vgi::generated_expression_metadata("CAST(\"n\" AS BIGINT)",{"main"}));
-    const auto request=vgi::wire::ResultBuilder(gen::TableFunctionProjectionRequestSchema()).set_binary("bind_call",vgi::wire::encode_ipc(call)).set_binary("bind_result",vgi::wire::encode_ipc(bind)).set_binary_list("expressions",{raw}).set_binary("result_schema",vgi::wire::encode_schema(result)).finish();
-    const auto params=vgi::wire::ResultBuilder(gen::TableFunctionProjectionParamsSchema()).set_binary("request",vgi::wire::encode_ipc(request)).finish();
-    for(int mode=0;mode<=6;++mode){function->mode=mode;INFO(mode);if(mode==0||mode==3){auto response=worker.call("table_function_projection",params);if(mode==0){auto accepted=vgi::wire::get_ipc(response,"bind_result");CHECK(vgi::wire::get_binary(accepted,"opaque_data")=="provider-state");CHECK(vgi::wire::get_schema(accepted,"output_schema")->field(1)->Equals(result->field(0),true));}else CHECK(vgi::wire::column(response,"bind_result")->IsNull(0));}else CHECK_THROWS(worker.call("table_function_projection",params));}
+    const auto call = vgi::wire::ResultBuilder(gen::BindRequestSchema())
+                          .set_string("function_name", function->name())
+                          .set_enum("function_type", "TABLE")
+                          .set_binary("arguments", vgi::wire::encode_schema(arrow::schema({})))
+                          .set_string_list("schema_path", {"main"})
+                          .fill_defaults()
+                          .finish();
+    for (auto claim :
+         {vgi::BindRepeatability::Unknown, vgi::BindRepeatability::StableWithinQuery}) {
+        function->claim = claim;
+        const auto bind =
+            worker.call("bind", vgi::wire::ResultBuilder(gen::BindParamsSchema())
+                                    .set_binary("request", vgi::wire::encode_ipc(call))
+                                    .finish());
+        const auto expected_claim =
+            claim == vgi::BindRepeatability::Unknown ? "UNKNOWN" : "STABLE_WITHIN_QUERY";
+        CHECK(vgi::wire::get_enum(bind, "repeatability") == expected_claim);
+        CHECK(vgi::wire::get_string_list(bind, "projection_expression_profiles") ==
+              std::vector<std::string>{vgi::SCALAR_PROJECTION_PROFILE, "vendor.scalar.v3"});
+        const auto result = arrow::schema({arrow::field(
+            "wide", arrow::int64(), true, arrow::key_value_metadata({"result"}, {"keep"}))});
+        const auto raw = vgi::wire::base64_decode(
+            vgi::generated_expression_metadata("CAST(\"n\" AS BIGINT)", {"main"}));
+        const auto request = vgi::wire::ResultBuilder(gen::TableFunctionProjectionRequestSchema())
+                                 .set_binary("bind_call", vgi::wire::encode_ipc(call))
+                                 .set_binary("bind_result", vgi::wire::encode_ipc(bind))
+                                 .set_binary_list("expressions", {raw})
+                                 .set_binary("result_schema", vgi::wire::encode_schema(result))
+                                 .finish();
+        const auto params = vgi::wire::ResultBuilder(gen::TableFunctionProjectionParamsSchema())
+                                .set_binary("request", vgi::wire::encode_ipc(request))
+                                .finish();
+        for (int mode = 0; mode <= 6; ++mode) {
+            function->mode = mode;
+            INFO(mode);
+            if (mode == 0 || mode == 3) {
+                auto response = worker.call("table_function_projection", params);
+                if (mode == 0) {
+                    auto accepted = vgi::wire::get_ipc(response, "bind_result");
+                    CHECK(vgi::wire::get_enum(accepted, "repeatability") == expected_claim);
+                    CHECK(vgi::wire::get_binary(accepted, "opaque_data") == "provider-state");
+                    CHECK(vgi::wire::get_schema(accepted, "output_schema")
+                              ->field(1)
+                              ->Equals(result->field(0), true));
+                } else
+                    CHECK(vgi::wire::column(response, "bind_result")->IsNull(0));
+            } else
+                CHECK_THROWS(worker.call("table_function_projection", params));
+        }
+        function->mode = 0;
+        for (const auto& value : {std::string(""), std::string("unknown"), std::string("ALWAYS")}) {
+            auto invalid =
+                vgi::wire::ResultBuilder(gen::BindResultSchema())
+                    .set_binary("output_schema", vgi::wire::get_binary(bind, "output_schema"))
+                    .set_string_list("projection_expression_profiles",
+                                     {vgi::SCALAR_PROJECTION_PROFILE})
+                    .set_enum("repeatability", value)
+                    .fill_defaults()
+                    .finish();
+            auto bad_request = vgi::wire::ResultBuilder(gen::TableFunctionProjectionRequestSchema())
+                                   .set_binary("bind_call", vgi::wire::encode_ipc(call))
+                                   .set_binary("bind_result", vgi::wire::encode_ipc(invalid))
+                                   .set_binary_list("expressions", {raw})
+                                   .set_binary("result_schema", vgi::wire::encode_schema(result))
+                                   .finish();
+            CHECK_THROWS(
+                worker.call("table_function_projection",
+                            vgi::wire::ResultBuilder(gen::TableFunctionProjectionParamsSchema())
+                                .set_binary("request", vgi::wire::encode_ipc(bad_request))
+                                .finish()));
+        }
+    }
+    // A NULL dictionary entry may retain valid enum bytes beneath its bitmap.
+    // Reading the raw string alone must not turn that semantic NULL into UNKNOWN.
+    auto hidden =
+        vgi::wire::ResultBuilder(gen::BindResultSchema())
+            .set_binary("output_schema",
+                        vgi::wire::encode_schema(function->bind(vgi::BindParams{})))
+            .set_string_list("projection_expression_profiles", {vgi::SCALAR_PROJECTION_PROFILE})
+            .set_enum("repeatability", "UNKNOWN")
+            .fill_defaults()
+            .finish();
+    auto dictionary = std::static_pointer_cast<arrow::DictionaryArray>(
+        vgi::wire::column(hidden, "repeatability"));
+    auto null_data = dictionary->dictionary()->data()->Copy();
+    null_data->buffers[0] = arrow::Buffer::FromString(std::string(1, '\0'));
+    null_data->SetNullCount(1);
+    auto null_entry =
+        arrow::DictionaryArray::FromArrays(dictionary->indices(), arrow::MakeArray(null_data))
+            .ValueOrDie();
+    auto hidden_columns = hidden->columns();
+    hidden_columns.back() = null_entry;
+    hidden = arrow::RecordBatch::Make(hidden->schema(), 1, hidden_columns);
+    auto hidden_request =
+        vgi::wire::ResultBuilder(gen::TableFunctionProjectionRequestSchema())
+            .set_binary("bind_call", vgi::wire::encode_ipc(call))
+            .set_binary("bind_result", vgi::wire::encode_ipc(hidden))
+            .set_binary_list("expressions",
+                             {vgi::wire::base64_decode(vgi::generated_expression_metadata(
+                                 "CAST(\"n\" AS BIGINT)", {"main"}))})
+            .set_binary("result_schema", vgi::wire::encode_schema(
+                                             arrow::schema({arrow::field("wide", arrow::int64())})))
+            .finish();
+    CHECK_THROWS(worker.call("table_function_projection",
+                             vgi::wire::ResultBuilder(gen::TableFunctionProjectionParamsSchema())
+                                 .set_binary("request", vgi::wire::encode_ipc(hidden_request))
+                                 .finish()));
+    function->claim = static_cast<vgi::BindRepeatability>(99);
+    CHECK_THROWS(worker.call("bind", vgi::wire::ResultBuilder(gen::BindParamsSchema())
+                                         .set_binary("request", vgi::wire::encode_ipc(call))
+                                         .finish()));
 }

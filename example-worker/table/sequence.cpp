@@ -170,6 +170,7 @@ public:
     std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override { return arrow::schema({arrow::field("n", arrow::int32(), true)}); }
     std::vector<std::string> projection_expression_profiles(const vgi::BindParams&) const override { return {vgi::SCALAR_PROJECTION_PROFILE}; }
+    vgi::BindRepeatability repeatability(const vgi::BindParams&) const override { return vgi::BindRepeatability::StableWithinQuery; }
     vgi::ProjectionAcceptance projection(const vgi::BindParams&, const vgi::ProjectionProposal& p) const override {
         vgi::ProjectionAcceptance result; auto fields = p.source_schema->fields();
         for (size_t i = 0; i < p.expressions.size(); ++i) {

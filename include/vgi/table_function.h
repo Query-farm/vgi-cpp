@@ -147,10 +147,14 @@ struct PlanResult {
 // bind — from its arguments, or from a resource it inspects — so `bind` is
 // required rather than defaulted.
 inline constexpr const char* SCALAR_PROJECTION_PROFILE = "vgi.expression.duckdb.scalar.v1";
+// A promise about equivalent scans of the same bound state within one statement.
+// It does not authorize retries or reuse of results across statements.
+enum class BindRepeatability { Unknown, StableWithinQuery };
 struct ProjectionProposal {
     std::shared_ptr<arrow::Schema> source_schema;
     std::shared_ptr<arrow::Schema> result_schema;
     std::string bind_opaque_data;
+    BindRepeatability repeatability = BindRepeatability::Unknown;
     std::vector<std::shared_ptr<arrow::RecordBatch>> expressions;
 };
 struct ProjectionAcceptance {
@@ -171,6 +175,8 @@ public:
     virtual std::unique_ptr<TableProducer> init(const ProcessParams& params) const = 0;
     // Explicit per-bind offer. Ordinary column selection never enables this hook.
     virtual std::vector<std::string> projection_expression_profiles(const BindParams&) const { return {}; }
+    // Opt in only when the bound source/transaction fixes the logical rows.
+    virtual BindRepeatability repeatability(const BindParams&) const { return BindRepeatability::Unknown; }
     // Pure planning: no resources allocated, rows consumed, or effects produced.
     virtual ProjectionAcceptance projection(const BindParams&, const ProjectionProposal&) const { return {}; }
 
