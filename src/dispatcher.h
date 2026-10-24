@@ -159,6 +159,7 @@ public:
     // easier to review beside its siblings than in a 5,000-line switch.
 
     vgi_rpc::Result bind(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result table_function_projection(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     vgi_rpc::Result table_function_plan(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     vgi_rpc::Result table_function_cardinality(const vgi_rpc::Request&,
                                                vgi_rpc::CallContext&) override;

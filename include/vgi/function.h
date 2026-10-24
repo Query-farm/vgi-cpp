@@ -109,6 +109,8 @@ struct ScanHints {
 // statement.  Splitting it from BindParams is what lets one bound function
 // serve many batches without re-deciding its output shape.
 struct ProcessParams {
+    // Complete provider state from bind or accepted scalar projection.
+    std::string bind_opaque_data;
     std::shared_ptr<arrow::Schema> output_schema;
     Arguments arguments;
     Settings settings;

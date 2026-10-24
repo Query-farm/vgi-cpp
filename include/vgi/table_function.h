@@ -146,6 +146,18 @@ struct PlanResult {
 
 // bind — from its arguments, or from a resource it inspects — so `bind` is
 // required rather than defaulted.
+inline constexpr const char* SCALAR_PROJECTION_PROFILE = "vgi.expression.duckdb.scalar.v1";
+struct ProjectionProposal {
+    std::shared_ptr<arrow::Schema> source_schema;
+    std::shared_ptr<arrow::Schema> result_schema;
+    std::string bind_opaque_data;
+    std::vector<std::shared_ptr<arrow::RecordBatch>> expressions;
+};
+struct ProjectionAcceptance {
+    std::vector<int64_t> accepted_indices;
+    std::shared_ptr<arrow::Schema> output_schema;
+    std::string opaque_data;
+};
 class TableFunction {
 public:
     virtual ~TableFunction() = default;
@@ -157,6 +169,10 @@ public:
     virtual std::shared_ptr<arrow::Schema> bind(const BindParams& params) const = 0;
 
     virtual std::unique_ptr<TableProducer> init(const ProcessParams& params) const = 0;
+    // Explicit per-bind offer. Ordinary column selection never enables this hook.
+    virtual std::vector<std::string> projection_expression_profiles(const BindParams&) const { return {}; }
+    // Pure planning: no resources allocated, rows consumed, or effects produced.
+    virtual ProjectionAcceptance projection(const BindParams&, const ProjectionProposal&) const { return {}; }
 
     // The planner's estimate. The default declines to guess, which is what
     // most generators should do.

@@ -565,6 +565,7 @@ void declare_catalog(vgi::Worker& worker) {
     // In `main`, not `data`: a view is looked up by the schema the user names,
     // and the suite names `main` for these two.
     auto& main = worker.catalog().schema("main");
+    main.tables.push_back(backed_by("projection_rows", "projection_sequence", arrow::schema({arrow::field("n", arrow::int32(), true)}), "Finite optional scalar projection example"));
     main.comment = "Example functions for testing VGI";
     main.tables.push_back(backed_by("test_same_name_table", "test_same_name_table_scan",
                                     columns({{"tag", arrow::utf8()}}),

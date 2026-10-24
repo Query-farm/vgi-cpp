@@ -47,7 +47,7 @@ inline void validate_generated_expression(const std::string& encoded, const Sche
         wire::get_string(row, "profile") != "vgi.expression.duckdb.scalar.v1")
         throw std::invalid_argument("unsupported generated profile or empty SQL");
     const auto path = wire::get_string_list(row, "schema_path");
-    if (path.empty() || path.size() > 32 || path != owner)
+    if (path.size() > 32 || path != owner)
         throw std::invalid_argument("generated expression owner differs from table schema");
     for (const auto& part : path) generated_text(part, 4096);
     const auto context =

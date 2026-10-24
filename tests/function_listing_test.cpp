@@ -1008,3 +1008,40 @@ TEST_CASE("canonical generated discovery and unsupported CREATE preserve authori
     CHECK(vgi::wire::get_string_list(expression, "schema_path") == vgi::SchemaPath{"raw.schema"});
     CHECK(vgi::wire::get_string(expression, "sql") == "n * 2");
 }
+
+namespace {
+class ProjectionContractTable : public vgi::TableFunction {
+public:
+    std::atomic<int> mode{0};
+    std::string name() const override { return "projection_contract"; }
+    vgi::FunctionMetadata metadata() const override { return {}; }
+    std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override { return arrow::schema({arrow::field("n", arrow::int32(), true)}, arrow::key_value_metadata({"source"},{"keep"})); }
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams&) const override { return nullptr; }
+    std::vector<std::string> projection_expression_profiles(const vgi::BindParams&) const override { return {vgi::SCALAR_PROJECTION_PROFILE, "vendor.scalar.v3"}; }
+    vgi::ProjectionAcceptance projection(const vgi::BindParams&,const vgi::ProjectionProposal& input) const override {
+        if (mode == 3) return {};
+        auto fields = input.source_schema->fields(); fields.push_back(input.result_schema->field(0));
+        vgi::ProjectionAcceptance result{{0},arrow::schema(fields,input.source_schema->metadata()),"provider-state"};
+        if (mode == 1) result.accepted_indices = {0,0};
+        if (mode == 2) result.output_schema = arrow::schema(fields);
+        if (mode == 4) result.output_schema = nullptr;
+        if (mode == 5) result.accepted_indices = {1};
+        if (mode == 6) {fields.back() = arrow::field("wide",arrow::int64(),true); result.output_schema = arrow::schema(fields,input.source_schema->metadata());}
+        return result;
+    }
+};
+}
+TEST_CASE("scalar projection validates provider acceptance before changing a scan", "[projection]") {
+    vgi::Dispatcher dispatcher; dispatcher.catalog().name="projection";
+    auto function=std::make_shared<ProjectionContractTable>(); dispatcher.register_table(function);
+    Served worker(dispatcher);
+    const auto call=vgi::wire::ResultBuilder(gen::BindRequestSchema()).set_string("function_name",function->name()).set_enum("function_type","TABLE").set_binary("arguments",vgi::wire::encode_schema(arrow::schema({}))).set_string_list("schema_path",{"main"}).fill_defaults().finish();
+    const auto bind=worker.call("bind",vgi::wire::ResultBuilder(gen::BindParamsSchema()).set_binary("request",vgi::wire::encode_ipc(call)).finish());
+    CHECK(vgi::wire::get_string_list(bind,"projection_expression_profiles")==std::vector<std::string>{vgi::SCALAR_PROJECTION_PROFILE,"vendor.scalar.v3"});
+    const auto result=arrow::schema({arrow::field("wide",arrow::int64(),true,arrow::key_value_metadata({"result"},{"keep"}))});
+    const auto raw=vgi::wire::base64_decode(vgi::generated_expression_metadata("CAST(\"n\" AS BIGINT)",{"main"}));
+    const auto request=vgi::wire::ResultBuilder(gen::TableFunctionProjectionRequestSchema()).set_binary("bind_call",vgi::wire::encode_ipc(call)).set_binary("bind_result",vgi::wire::encode_ipc(bind)).set_binary_list("expressions",{raw}).set_binary("result_schema",vgi::wire::encode_schema(result)).finish();
+    const auto params=vgi::wire::ResultBuilder(gen::TableFunctionProjectionParamsSchema()).set_binary("request",vgi::wire::encode_ipc(request)).finish();
+    for(int mode=0;mode<=6;++mode){function->mode=mode;INFO(mode);if(mode==0||mode==3){auto response=worker.call("table_function_projection",params);if(mode==0){auto accepted=vgi::wire::get_ipc(response,"bind_result");CHECK(vgi::wire::get_binary(accepted,"opaque_data")=="provider-state");CHECK(vgi::wire::get_schema(accepted,"output_schema")->field(1)->Equals(result->field(0),true));}else CHECK(vgi::wire::column(response,"bind_result")->IsNull(0));}else CHECK_THROWS(worker.call("table_function_projection",params));}
+}
