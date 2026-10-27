@@ -82,7 +82,7 @@ directory, and `VGI_CPP_TEST_CACHE` at a scratch directory — the last matters
 when two runs go at once, since they would otherwise share one log.
 
 See [Hosted protocols and Identity](docs/hosted-protocols.md) for serving
-other vgi-rpc protocols beside `vgi.v2` and for hosting `vgi_rpc.Identity.v2`.
+other vgi-rpc protocols beside `vgi.v3` and for hosting `vgi_rpc.Identity.v2`.
 
 See [Attach tickets](docs/attach-tickets.md) for letting a runner reattach a
 user's catalog later, as that user, with a grant and a sealed `vgia1.` ticket

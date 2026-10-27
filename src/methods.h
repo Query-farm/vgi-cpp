@@ -17,7 +17,7 @@ enum class MethodKind {
     Stream,  // init(): an exchange stream with a header
 };
 
-// One vgi.v2 method as handler code sees it: a view of a row of the generated
+// One vgi.v3 method as handler code sees it: a view of a row of the generated
 // registration table (`generated::VGI_METHODS`, src/generated/vgi_service.hpp),
 // which is what the server registers.
 struct MethodSpec {

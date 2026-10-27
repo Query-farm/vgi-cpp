@@ -333,7 +333,7 @@ std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
     vgi_rpc::ServerBuilder builder;
     // The wire name is the routing key every request must carry: dispatch
     // resolves the pair (protocol, method), and over HTTP the name is also the
-    // path segment (`{prefix}/vgi.v2/{method}`). It is generated from
+    // path segment (`{prefix}/vgi.v3/{method}`). It is generated from
     // vgi-python rather than spelled here, because a worker declaring any
     // other name answers ProtocolNotSupported to every client that exists.
     // Only the version is overridable: `bad_protocol` must reach the version

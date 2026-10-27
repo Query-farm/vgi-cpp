@@ -2,13 +2,14 @@
 #include "landing.h"
 #include <nlohmann/json.hpp>
 #include "landing_assets.h"
+#include "vgi/generated/vgi_protocol_names.hpp"
 
 namespace vgi {
 void configure_landing(vgi_rpc::HttpConfig& config, const std::string& name,
                        const std::string& server_id, const std::string& doc) {
     const nlohmann::json status = {{"status", "ok"},
                                    {"server_id", server_id},
-                                   {"protocol", "vgi.v2"},
+                                   {"protocol", std::string(generated::VGI_PROTOCOL_NAME)},
                                    {"worker", name},
                                    {"doc", doc},
                                    {"version", VGI_SDK_VERSION},

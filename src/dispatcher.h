@@ -162,10 +162,10 @@ public:
     vgi_rpc::Request redeem_attach_ticket(const vgi_rpc::Request& request,
                                           const vgi_rpc::CallContext& ctx) const;
 
-    // ── vgi.v2 ────────────────────────────────────────────────────────────
+    // ── vgi.v3 ────────────────────────────────────────────────────────────
     //
     // The generated `VgiService` (src/generated/vgi_service.hpp) declares every
-    // vgi.v2 method and answers UNIMPLEMENTED for each; these overrides are what
+    // vgi.v3 method and answers UNIMPLEMENTED for each; these overrides are what
     // this SDK serves, and `install` registers all of them from the generated
     // table. They are grouped into translation units by area (catalog.cpp,
     // function_dispatch.cpp, …) rather than a single file: a handler is much

@@ -39,7 +39,7 @@ add_dependencies(protocol_routing_test vgi-example-worker)
 catch_discover_tests(protocol_routing_test)
 
 # Sealed grants end to end: mint through issue_grant, then authenticate a
-# vgi.v2 call with the grant, against the built example worker.
+# vgi.v3 call with the grant, against the built example worker.
 add_executable(grant_auth_test grant_auth_test.cpp)
 target_link_libraries(grant_auth_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
 target_include_directories(grant_auth_test PRIVATE ${CMAKE_SOURCE_DIR}/src)

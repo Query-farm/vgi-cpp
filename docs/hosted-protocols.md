@@ -1,6 +1,6 @@
 # Hosted protocols and Identity
 
-A worker always serves `vgi.v2`, the protocol the DuckDB extension speaks, and
+A worker always serves `vgi.v3`, the protocol the DuckDB extension speaks, and
 `vgi_rpc.Reflection.v1`, which vgi-rpc hosts itself. It can serve two more
 things from the same process and the same listener.
 
@@ -24,16 +24,16 @@ the handlers.
   or the environment, but the set it returns is fixed for the life of the
   process. That keeps reflection output and protocol hashes stable.
 - **Hosted on every transport**: stdio, `--unix`, `--http`, and the Iroh raw
-  upstream. They come after `vgi.v2`, in the order returned, so
-  `list_protocols` reports `vgi.v2` first.
-- **Routing is unchanged for `vgi.v2`.** Every request names its protocol, so
+  upstream. They come after `vgi.v3`, in the order returned, so
+  `list_protocols` reports `vgi.v3` first.
+- **Routing is unchanged for `vgi.v3`.** Every request names its protocol, so
   hosting more protocols cannot change how the extension's calls are
   dispatched.
 - **The protocol is the unit of optionality.** You cannot host part of a
   protocol. If a capability may be absent, make it its own protocol and
   return it from the hook or not.
 - **Names are validated at startup**, and the error names the hook. A name must
-  be a valid routing key, distinct from `vgi.v2` and from every other entry,
+  be a valid routing key, distinct from `vgi.v3` and from every other entry,
   and outside the reserved `vgi_rpc.` prefix. Reflection is automatic, and
   Identity is enabled as described below.
 
@@ -162,10 +162,10 @@ vgi-rpc's hosted-protocols group checks all of the above on every transport:
 ```bash
 pip install "vgi-rpc[http,conformance]" pytest pytest-timeout
 vgi-rpc-test-hosted --cmd build-release/example-worker/vgi-example-worker \
-    --expect vgi.v2,conformance.Secondary.v1
-vgi-rpc-test-hosted --unix /tmp/vgi.sock --expect vgi.v2,conformance.Secondary.v1
+    --expect vgi.v3,conformance.Secondary.v1
+vgi-rpc-test-hosted --unix /tmp/vgi.sock --expect vgi.v3,conformance.Secondary.v1
 vgi-rpc-test-hosted --url http://127.0.0.1:PORT \
-    --expect vgi.v2,conformance.Secondary.v1 --identity
+    --expect vgi.v3,conformance.Secondary.v1 --identity
 ```
 
 The example worker hosts `conformance.Secondary.v1` through the hook. With

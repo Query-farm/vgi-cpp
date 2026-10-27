@@ -111,15 +111,15 @@ public:
     void register_buffering_in(std::string catalog, SchemaPath schema_path,
                                std::shared_ptr<TableBufferingFunction> fn);
 
-    // Additional vgi-rpc protocols this worker hosts beside `vgi.v2`.
+    // Additional vgi-rpc protocols this worker hosts beside `vgi.v3`.
     //
     // The hook returns `(protocol, implementation)` pairs -- here one
     // `vgi_rpc::ProtocolBuilder` each: the protocol's wire name and version,
     // and the handlers that implement it.  It is called **once**, when
     // `run()` builds the server, and its answer is hosted on **every**
     // transport the worker serves (stdio, `--unix`, `--http`, the Iroh
-    // upstream), after `vgi.v2` and in the order returned -- so
-    // `vgi_rpc.Reflection.v1/list_protocols` reports `vgi.v2` first, then
+    // upstream), after `vgi.v3` and in the order returned -- so
+    // `vgi_rpc.Reflection.v1/list_protocols` reports `vgi.v3` first, then
     // these.  It may consult configuration or the environment, but the set is
     // fixed for the life of the process, so reflection output and protocol
     // hashes stay stable.
@@ -129,9 +129,9 @@ public:
     // returned here or not.
     //
     // Requests are routed on their `vgi_rpc.protocol` key, so a hosted
-    // protocol never changes how a `vgi.v2` request is dispatched.
+    // protocol never changes how a `vgi.v3` request is dispatched.
     //
-    // Each name must be a valid routing key, distinct from `vgi.v2` and from
+    // Each name must be a valid routing key, distinct from `vgi.v3` and from
     // every other entry, and outside the reserved `vgi_rpc.` prefix --
     // reflection is hosted automatically, and `vgi_rpc.Identity.v2` is
     // enabled with `set_resolve_token` / `set_mint_grant`.  A violation is a
@@ -210,7 +210,7 @@ private:
     enum class Transport { PIPE, UNIX, TCP, HTTP };
 
     // The one place this worker's server is built, for every transport: the
-    // vgi.v2 protocol, the hosted protocols, and -- on HTTP, when a hook is
+    // vgi.v3 protocol, the hosted protocols, and -- on HTTP, when a hook is
     // set -- vgi_rpc.Identity.v2.  Reflection is hosted by vgi-rpc itself.
     std::unique_ptr<vgi_rpc::Server> build_server(Transport transport,
                                                   const std::vector<std::string>& args);

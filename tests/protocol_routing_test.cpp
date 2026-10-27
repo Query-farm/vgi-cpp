@@ -6,7 +6,7 @@
 // server dispatches on the pair (protocol, method): the `vgi_rpc.protocol`
 // metadata key on the raw transports, and also the path segment over HTTP
 // (`{prefix}/{protocol}/{method}`). The name is therefore a cross-port wire
-// contract -- `vgi.v2`, which the DuckDB extension sends -- and a worker that
+// contract -- `vgi.v3`, which the DuckDB extension sends -- and a worker that
 // declares any other name answers ProtocolNotSupported to every real client.
 //
 // These tests drive the real example worker binary with vgi-rpc's own
@@ -58,16 +58,16 @@ const std::string kProtocol(gen::VGI_PROTOCOL_NAME);
 const std::string kVersion(gen::VGI_PROTOCOL_VERSION);
 // An incompatible major is a *different* name, and so a routing refusal rather
 // than a handler failing somewhere inside a payload it cannot read.
-const std::string kOtherMajor = "vgi.v1";
+const std::string kOtherMajor = "vgi.v2";
 
-// The reference vgi.v2 protocol hash: the unpublished combined contract, 74 methods. The
+// The reference vgi.v3 protocol hash: the unpublished combined contract, 85 methods. The
 // hash covers each method's type and its params, result and header schemas
 // (field names, order, nullability, types), not docs or defaults, so a
 // registration that drifts from the reference changes it. Every SDK reports
 // this same value. This is the changing development contract; the public
 // version transition remains gated on the complete combined protocol freeze.
 const std::string kReferenceProtocolHash =
-    "41f61f37c7ce42f63f3ca47f8861508f3f356d2422a5b8a0bab48ff92c0857a8";
+    "50e9404173bee3262e96b8939eb5c425463336abca2a17916812d68b6e0f6cad";
 
 // A worker serving a listening transport, owned for the length of one test.
 //
@@ -192,7 +192,8 @@ void require_hosts_vgi(const std::vector<vgi_rpc::HostedProtocol>& listing) {
     CHECK(application.name == kProtocol);
     CHECK(application.version == kVersion);
     // Byte-identical to the reference surface, on every transport.
-    CHECK(kVersion == "2.2.0");
+    CHECK(kProtocol == "vgi.v3");
+    CHECK(kVersion == "3.0.0");
     CHECK(application.hash == kReferenceProtocolHash);
 }
 
@@ -273,7 +274,7 @@ TEST_CASE("unix: the worker hosts the VGI wire name", "[protocol][unix]") {
         [&] { return vgi_rpc::RpcClient::connect_unix(socket, raw_options(kOtherMajor)); });
 }
 
-TEST_CASE("http: the worker serves {prefix}/vgi.v2/{method}", "[protocol][http]") {
+TEST_CASE("http: the worker serves {prefix}/vgi.v3/{method}", "[protocol][http]") {
     ServedWorker worker({"--http", "0"}, "PORT:");
     const auto base_url = "http://127.0.0.1:" + worker.ready();
 

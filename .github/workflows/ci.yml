@@ -115,14 +115,14 @@ jobs:
       # The example worker is the deliverable: if it does not start, nothing
       # downstream of it can work. The unit step above already drove it for
       # real -- tests/protocol_routing_test.cpp calls vgi_rpc.Reflection.v1 and
-      # a vgi.v2 method on it over stdio, a unix socket and HTTP.
+      # a vgi.v3 method on it over stdio, a unix socket and HTTP.
       - name: Smoke — the worker describes itself
         run: |
           python3 -m pip install --quiet 'vgi-rpc[http]' || true
           test -x build/example-worker/vgi-example-worker
           echo "worker built: $(build/example-worker/vgi-example-worker --help 2>&1 | head -1 || true)"
 
-      # vgi-rpc's hosted-protocols group: the worker hosts vgi.v2 and, through
+      # vgi-rpc's hosted-protocols group: the worker hosts vgi.v3 and, through
       # Worker::set_hosted_protocols, conformance.Secondary.v1 -- on stdio,
       # a unix socket and HTTP -- and over HTTP opts into vgi_rpc.Identity.v2
       # with the conformance fixture policy.
@@ -143,11 +143,11 @@ jobs:
           ../hosted-venv/bin/python -m pip install --quiet '../vgi-rpc-ref[http,conformance]' pytest pytest-timeout
           export PATH="$PWD/../hosted-venv/bin:$PATH"
           W="$PWD/build/example-worker/vgi-example-worker"
-          vgi-rpc-test-hosted --cmd "$W" --expect vgi.v2,conformance.Secondary.v1
+          vgi-rpc-test-hosted --cmd "$W" --expect vgi.v3,conformance.Secondary.v1
           SOCK=/tmp/vgi-hosted.sock
           "$W" --unix "$SOCK" & UNIX_PID=$!
           for _ in $(seq 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
-          vgi-rpc-test-hosted --unix "$SOCK" --expect vgi.v2,conformance.Secondary.v1
+          vgi-rpc-test-hosted --unix "$SOCK" --expect vgi.v3,conformance.Secondary.v1
           kill "$UNIX_PID"
           "$W" --http --host 127.0.0.1 --port 0 --conformance-identity \
             --introspect-principals conformance-introspector > /tmp/vgi-hosted-http.log 2>&1 & HTTP_PID=$!
@@ -157,7 +157,7 @@ jobs:
             [ -n "$PORT" ] && break; sleep 0.1
           done
           vgi-rpc-test-hosted --url "http://127.0.0.1:$PORT" \
-            --expect vgi.v2,conformance.Secondary.v1 --identity
+            --expect vgi.v3,conformance.Secondary.v1 --identity
           kill "$HTTP_PID"
 
   # The integration suite is the definition of done for this repo, and it needs

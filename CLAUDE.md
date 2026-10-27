@@ -55,10 +55,10 @@ That wraps the four `python -m vgi.codegen.cpp_*` generators, passes
 `--namespace vgi::generated`, and prints the resulting `VGI_PROTOCOL_VERSION`
 and `VGI_PROTOCOL_NAME`.
 
-The vgi.v2 **method registry** is generated too: `src/generated/vgi_service.hpp`
+The vgi.v3 **method registry** is generated too: `src/generated/vgi_service.hpp`
 (`vgi.codegen.cpp_registry`, also written by vgi-python's
 `scripts/regen_generated.py`, whose drift test compares it byte for byte). It
-holds `generated::VgiService`, one virtual per vgi.v2 method whose default
+holds `generated::VgiService`, one virtual per vgi.v3 method whose default
 answers UNIMPLEMENTED (`method_not_implemented`, "<method> is not implemented
 by this worker"), and `generated::VGI_METHODS`, the table binding each wire
 name to its params / result / payload / header schema factories and its
@@ -76,10 +76,10 @@ Two things to know:
   feature, and a worker built on this SDK links no DuckDB — so this repo
   passes `--namespace vgi::generated`. Leaving the default alone is what keeps
   the extension's own copies byte-identical.
-- **The wire name (`vgi.v2`) is the routing key, not a label.** Since vgi-rpc
+- **The wire name (`vgi.v3`) is the routing key, not a label.** Since vgi-rpc
   0.46 every request names the protocol it addresses — `vgi_rpc.protocol` in
   the batch metadata, and the path segment over HTTP
-  (`{prefix}/vgi.v2/{method}`) — and the server dispatches on the pair
+  (`{prefix}/vgi.v3/{method}`) — and the server dispatches on the pair
   `(protocol, method)`. A worker declaring any other name answers
   `ProtocolNotSupported` to every client, which is why it is generated rather
   than spelled in `worker.cpp`. The major is in the name, so an incompatible

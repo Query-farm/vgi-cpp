@@ -5,7 +5,7 @@
 // `vgi_rpc.Identity.v2`'s `issue_grant` mints a credential meant to be
 // presented later, by unattended automation, as an ordinary bearer.  With grant
 // keys configured (`--grant-key`, or `VGI_RPC_GRANT_KEYS`) the worker is the
-// minter and accepts the grant back: a vgi.v2 call carrying
+// minter and accepts the grant back: a vgi.v3 call carrying
 // `Authorization: Bearer <grant>` runs as the grant's owner.  These tests drive
 // the real example worker binary over HTTP; the owner is read back from the
 // worker's own access log, which records every call's resolved principal.
@@ -219,7 +219,7 @@ std::string mint(const std::string& base_url) {
     return vgi::wire::get_string(grant, "token");
 }
 
-// The access-log record of the first `vgi.v2` call to `method`.
+// The access-log record of the first `vgi.v3` call to `method`.
 std::optional<nlohmann::json> logged_call(const std::filesystem::path& log,
                                           const std::string& method) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -240,7 +240,7 @@ std::optional<nlohmann::json> logged_call(const std::filesystem::path& log,
 
 }  // namespace
 
-TEST_CASE("http: a minted grant authenticates a vgi.v2 call as its owner", "[grants][http]") {
+TEST_CASE("http: a minted grant authenticates a vgi.v3 call as its owner", "[grants][http]") {
     TempDir dir;
     const auto log = dir.path() / "access.jsonl";
     ServedWorker worker({"--http", "0", "--conformance-principal-header", "--grant-key", kGrantKey,

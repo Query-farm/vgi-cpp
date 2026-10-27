@@ -1,11 +1,11 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
-// The vgi-rpc cross-SDK fixtures this worker hosts beside vgi.v2.
+// The vgi-rpc cross-SDK fixtures this worker hosts beside vgi.v3.
 //
 // `conformance.Secondary.v1` is the shared fixture protocol every vgi-rpc
 // conformance worker and every VGI SDK fixture worker hosts
 // (vgi-rpc's tools/cross-port/specs/MULTI_PROTOCOL_HOSTING.md §2). It reaches
 // the server through Worker::set_hosted_protocols -- the public hook, not a
-// special case -- so `vgi-rpc-test-hosted --expect vgi.v2,conformance.Secondary.v1`
+// special case -- so `vgi-rpc-test-hosted --expect vgi.v3,conformance.Secondary.v1`
 // checks the hook on every transport.
 //
 // The identity policy is IDENTITY_CONFORMANCE_FIXTURE.md's, enabled only by
@@ -68,7 +68,7 @@ vgi_rpc::ProtocolBuilder secondary_protocol() {
     using vgi_rpc::StatusError;
 
     // No protocol_version, deliberately: a server gating every call against
-    // vgi.v2's version would refuse these.
+    // vgi.v3's version would refuse these.
     vgi_rpc::ProtocolBuilder secondary(kSecondaryName);
     secondary.add_unary(
         "echo_string", arrow::schema({required("value", arrow::utf8())}), utf8_result(),
