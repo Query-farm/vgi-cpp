@@ -137,9 +137,12 @@ inline std::vector<std::string> definitions(const std::string& table, int64_t ve
             constraint(table, "fixture:versioned_constraints:nn:id", "NOT_NULL", {{"id"}}),
         };
         if (version >= 2) {
-            result.push_back(constraint(table, "fixture:versioned_constraints:nn:name", "NOT_NULL", {{"name"}}));
-            result.push_back(constraint(table, "fixture:versioned_constraints:primary", "PRIMARY_KEY", {{"id"}}));
-            result.push_back(constraint(table, "fixture:versioned_constraints:unique:email", "UNIQUE", {{"email"}}));
+            result.push_back(
+                constraint(table, "fixture:versioned_constraints:nn:name", "NOT_NULL", {{"name"}}));
+            result.push_back(constraint(table, "fixture:versioned_constraints:primary",
+                                        "PRIMARY_KEY", {{"id"}}));
+            result.push_back(constraint(table, "fixture:versioned_constraints:unique:email",
+                                        "UNIQUE", {{"email"}}));
         }
         if (version >= 3)
             result.push_back(constraint(table, "fixture:versioned_constraints:fk:department",

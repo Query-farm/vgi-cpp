@@ -364,8 +364,8 @@ public:
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams& params) const override {
         const auto version = params.arguments.const_int64(0).value_or(3);
-        return constraint_fixtures::required_schema(
-            columns_schema(constraints_version(version)), "versioned_constraints", version);
+        return constraint_fixtures::required_schema(columns_schema(constraints_version(version)),
+                                                    "versioned_constraints", version);
     }
 
     vgi::TableCardinality cardinality(const vgi::ProcessParams& params) const override {
@@ -690,8 +690,8 @@ void register_static_scans(vgi::Worker& worker) {
     // Catalog facts and scans share these immutable arrays. Validate before
     // registration, so an invalid fixture cannot publish trusted constraints.
     for (const std::string table : {"departments", "products", "employees", "projects"}) {
-        worker.register_table(std::make_shared<StaticScan>(
-            table + "_scan", constraint_fixtures::rows(table), table));
+        worker.register_table(
+            std::make_shared<StaticScan>(table + "_scan", constraint_fixtures::rows(table), table));
     }
     // Ordered by id, not by the ENUM ordinal the statistics are derived from:
     // the two disagreeing is exactly what `column_statistics.test` checks.

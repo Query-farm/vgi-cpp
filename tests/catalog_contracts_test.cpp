@@ -13,11 +13,24 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         return vgi::wire::base64_decode(records.at(name).get<std::string>());
     };
     const auto expression_source = vgi::wire::decode_ipc(fixture("column_expression_metadata"));
-    const auto expression_restored = vgi::wire::decode_ipc(vgi::wire::encode_ipc(expression_source));
+    const auto expression_restored =
+        vgi::wire::decode_ipc(vgi::wire::encode_ipc(expression_source));
     REQUIRE(expression_source->Equals(*expression_restored, true));
-    REQUIRE(vgi::wire::base64_decode(expression_restored->schema()->field(0)->metadata()->Get("vgi.column.default.v1").ValueOrDie()) == fixture("column_default_expression"));
-    REQUIRE(vgi::wire::base64_decode(expression_restored->schema()->field(1)->metadata()->Get("vgi.column.generated.v1").ValueOrDie()) == fixture("column_generated_expression"));
-    REQUIRE(expression_restored->schema()->field(1)->metadata()->Get("vgi.column.generation.v1").ValueOrDie() == "virtual");
+    REQUIRE(vgi::wire::base64_decode(expression_restored->schema()
+                                         ->field(0)
+                                         ->metadata()
+                                         ->Get("vgi.column.default.v1")
+                                         .ValueOrDie()) == fixture("column_default_expression"));
+    REQUIRE(vgi::wire::base64_decode(expression_restored->schema()
+                                         ->field(1)
+                                         ->metadata()
+                                         ->Get("vgi.column.generated.v1")
+                                         .ValueOrDie()) == fixture("column_generated_expression"));
+    REQUIRE(expression_restored->schema()
+                ->field(1)
+                ->metadata()
+                ->Get("vgi.column.generation.v1")
+                .ValueOrDie() == "virtual");
     namespace gen = vgi::generated;
     const std::vector<std::pair<const char*, std::shared_ptr<arrow::Schema>>> cases = {
         {"attach_default_schema_none", gen::CatalogAttachResultSchema()},
@@ -141,8 +154,8 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
             } else {
                 REQUIRE_FALSE(payload->IsNull(0));
                 const auto bytes = payload->GetView(0);
-                const auto expression = vgi::wire::decode_ipc(
-                    std::string(bytes.begin(), bytes.end()));
+                const auto expression =
+                    vgi::wire::decode_ipc(std::string(bytes.begin(), bytes.end()));
                 REQUIRE(expression->schema()->Equals(gen::SqlExpressionSchema(), true));
                 REQUIRE(vgi::wire::get_string_list(expression, "schema_path") ==
                         vgi::wire::get_string_list(restored, "schema_path"));
@@ -152,10 +165,18 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     }
     REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("view_info")), "aliases") ==
             std::vector<std::string>{"a.b", "with\"quote"});
-    REQUIRE_FALSE(vgi::wire::get_optional_string(vgi::wire::decode_ipc(fixture("attach_default_schema_none")), "default_schema").has_value());
-    REQUIRE(vgi::wire::get_optional_string(vgi::wire::decode_ipc(fixture("attach_default_schema_main")), "default_schema") == "main");
-    REQUIRE(vgi::wire::get_optional_string(vgi::wire::decode_ipc(fixture("attach_default_schema_dotted")), "default_schema") == "sales.archive");
-    REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(fixture("view_info_barrier")), "security") == "barrier");
+    REQUIRE_FALSE(
+        vgi::wire::get_optional_string(vgi::wire::decode_ipc(fixture("attach_default_schema_none")),
+                                       "default_schema")
+            .has_value());
+    REQUIRE(vgi::wire::get_optional_string(
+                vgi::wire::decode_ipc(fixture("attach_default_schema_main")), "default_schema") ==
+            "main");
+    REQUIRE(vgi::wire::get_optional_string(
+                vgi::wire::decode_ipc(fixture("attach_default_schema_dotted")), "default_schema") ==
+            "sales.archive");
+    REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(fixture("view_info_barrier")),
+                                  "security") == "barrier");
     const auto membership = vgi::wire::decode_ipc(fixture("dependency_membership"));
     const auto owned = vgi::wire::decode_ipc(fixture("object_dependency"));
     REQUIRE_FALSE(vgi::wire::get_bool(membership, "blocks_alter"));
@@ -165,29 +186,42 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         REQUIRE(vgi::wire::column(edge, "dependent_column_path")->IsNull(0));
     }
     const auto dependency_paths = [](const std::shared_ptr<arrow::RecordBatch>& edge) {
-        const auto outer = std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(edge, "subject_column_paths"));
+        const auto outer = std::static_pointer_cast<arrow::ListArray>(
+            vgi::wire::column(edge, "subject_column_paths"));
         REQUIRE_FALSE(outer->IsNull(0));
         const auto inner = std::static_pointer_cast<arrow::ListArray>(outer->values());
         const auto parts = std::static_pointer_cast<arrow::StringArray>(inner->values());
         std::vector<std::vector<std::string>> result;
-        for (int64_t i = outer->value_offset(0); i < outer->value_offset(0) + outer->value_length(0); ++i) {
+        for (int64_t i = outer->value_offset(0);
+             i < outer->value_offset(0) + outer->value_length(0); ++i) {
             std::vector<std::string> path;
-            for (int64_t j = inner->value_offset(i); j < inner->value_offset(i) + inner->value_length(i); ++j) path.push_back(parts->GetString(j));
+            for (int64_t j = inner->value_offset(i);
+                 j < inner->value_offset(i) + inner->value_length(i); ++j)
+                path.push_back(parts->GetString(j));
             result.push_back(std::move(path));
         }
         return result;
     };
-    REQUIRE(dependency_paths(vgi::wire::decode_ipc(fixture("dependency_column_literal"))) == std::vector<std::vector<std::string>>{{"a.b"}});
-    REQUIRE(dependency_paths(vgi::wire::decode_ipc(fixture("dependency_column_nested"))) == std::vector<std::vector<std::string>>{{"record", "a.b"}});
+    REQUIRE(dependency_paths(vgi::wire::decode_ipc(fixture("dependency_column_literal"))) ==
+            std::vector<std::vector<std::string>>{{"a.b"}});
+    REQUIRE(dependency_paths(vgi::wire::decode_ipc(fixture("dependency_column_nested"))) ==
+            std::vector<std::vector<std::string>>{{"record", "a.b"}});
     const auto generated = vgi::wire::decode_ipc(fixture("dependency_generated"));
-    REQUIRE(vgi::wire::get_binary(generated, "dependent") == vgi::wire::get_binary(generated, "subject"));
-    REQUIRE(vgi::wire::get_string_list(generated, "dependent_column_path") == std::vector<std::string>{"generated"});
-    REQUIRE(dependency_paths(generated) == std::vector<std::vector<std::string>>{{"a.b"}, {"record", "a.b"}});
+    REQUIRE(vgi::wire::get_binary(generated, "dependent") ==
+            vgi::wire::get_binary(generated, "subject"));
+    REQUIRE(vgi::wire::get_string_list(generated, "dependent_column_path") ==
+            std::vector<std::string>{"generated"});
+    REQUIRE(dependency_paths(generated) ==
+            std::vector<std::vector<std::string>>{{"a.b"}, {"record", "a.b"}});
     const auto chain = vgi::wire::decode_ipc(fixture("dependency_generated_chain"));
-    REQUIRE(vgi::wire::get_string_list(chain, "dependent_column_path") == std::vector<std::string>{"second.generated"});
+    REQUIRE(vgi::wire::get_string_list(chain, "dependent_column_path") ==
+            std::vector<std::string>{"second.generated"});
     REQUIRE(dependency_paths(chain) == std::vector<std::vector<std::string>>{{"generated"}});
-    REQUIRE(vgi::wire::get_binary_list(vgi::wire::decode_ipc(fixture("dependency_column_snapshot")), "dependencies") ==
-        std::vector<std::string>{fixture("dependency_column_literal"), fixture("dependency_generated"), fixture("dependency_generated_chain")});
+    REQUIRE(vgi::wire::get_binary_list(vgi::wire::decode_ipc(fixture("dependency_column_snapshot")),
+                                       "dependencies") ==
+            std::vector<std::string>{fixture("dependency_column_literal"),
+                                     fixture("dependency_generated"),
+                                     fixture("dependency_generated_chain")});
 
     const auto index_info = vgi::wire::decode_ipc(fixture("index_info"));
     const auto index_create = vgi::wire::decode_ipc(fixture("index_create"));
@@ -196,23 +230,32 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     REQUIRE(vgi::wire::get_binary(index_create, "definition") == fixture("index_definition"));
     REQUIRE(vgi::wire::get_binary(index_info, "options") == fixture("state"));
     REQUIRE(vgi::wire::get_binary(index_definition, "options") == fixture("values"));
-    REQUIRE(vgi::wire::get_binary_list(index_definition, "keys") == std::vector<std::string>{fixture("index_key_column"), fixture("index_key_expression")});
-    REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("index_key_column")), "column_path") == std::vector<std::string>{"a.b"});
-    REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("index_key_nested")), "column_path") == std::vector<std::string>{"record", "a.b"});
+    REQUIRE(vgi::wire::get_binary_list(index_definition, "keys") ==
+            std::vector<std::string>{fixture("index_key_column"), fixture("index_key_expression")});
+    REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("index_key_column")),
+                                       "column_path") == std::vector<std::string>{"a.b"});
+    REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("index_key_nested")),
+                                       "column_path") == std::vector<std::string>{"record", "a.b"});
 
     const auto table_create = vgi::wire::decode_ipc(fixture("table_create"));
     const auto table_info = vgi::wire::decode_ipc(fixture("table_info"));
-    const auto constraint_definitions = vgi::wire::get_binary_list(table_create, "constraint_definitions");
+    const auto constraint_definitions =
+        vgi::wire::get_binary_list(table_create, "constraint_definitions");
     const auto constraints = vgi::wire::get_binary_list(table_info, "constraints");
     REQUIRE(constraint_definitions.size() == 1);
     REQUIRE(constraints.size() == 1);
-    REQUIRE(vgi::wire::get_binary_list(vgi::wire::decode_ipc(fixture("table_create_legacy")), "constraint_definitions").empty());
-    REQUIRE(vgi::wire::get_binary(table_info, "definition_revision") == std::string("revision\0\xff", 10));
+    REQUIRE(vgi::wire::get_binary_list(vgi::wire::decode_ipc(fixture("table_create_legacy")),
+                                       "constraint_definitions")
+                .empty());
+    REQUIRE(vgi::wire::get_binary(table_info, "definition_revision") ==
+            std::string("revision\0\xff", 10));
     const auto constraint = vgi::wire::decode_ipc(constraints[0]);
     REQUIRE(vgi::wire::get_binary(constraint, "definition") == constraint_definitions[0]);
-    REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(vgi::wire::get_binary(constraint, "ref")), "name") == "fixture-stable-key");
+    REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(vgi::wire::get_binary(constraint, "ref")),
+                                  "name") == "fixture-stable-key");
     const auto constraint_definition = vgi::wire::decode_ipc(constraint_definitions[0]);
-    const auto paths = std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(constraint_definition, "column_paths"));
+    const auto paths = std::static_pointer_cast<arrow::ListArray>(
+        vgi::wire::column(constraint_definition, "column_paths"));
     REQUIRE(paths->value_length(0) == 1);
     const auto path = std::static_pointer_cast<arrow::ListArray>(paths->values());
     REQUIRE(path->value_length(0) == 2);
@@ -224,17 +267,26 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
     const auto changes = vgi::wire::decode_ipc(fixture("changes"));
     REQUIRE(vgi::wire::get_binary(changes, "set_values") == fixture("values"));
     const auto macro = vgi::wire::decode_ipc(fixture("macro_create"));
-    const auto overloads = std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(macro, "overloads"));
+    const auto overloads =
+        std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(macro, "overloads"));
     REQUIRE(overloads->value_length(0) == 2);
-    REQUIRE(std::static_pointer_cast<arrow::ListArray>(vgi::wire::column(vgi::wire::decode_ipc(fixture("macro_create_single")), "overloads"))->value_length(0) == 1);
+    REQUIRE(
+        std::static_pointer_cast<arrow::ListArray>(
+            vgi::wire::column(vgi::wire::decode_ipc(fixture("macro_create_single")), "overloads"))
+            ->value_length(0) == 1);
     const auto parameter = vgi::wire::decode_ipc(fixture("macro_parameter"));
-    const auto default_value = vgi::wire::decode_ipc(vgi::wire::get_binary(parameter, "default_value"));
+    const auto default_value =
+        vgi::wire::decode_ipc(vgi::wire::get_binary(parameter, "default_value"));
     REQUIRE(default_value->column(0)->IsNull(0));
-    REQUIRE(default_value->schema()->field(0)->metadata()->Get("domain").ValueOrDie() == "retained");
+    REQUIRE(default_value->schema()->field(0)->metadata()->Get("domain").ValueOrDie() ==
+            "retained");
     REQUIRE(vgi::wire::column(parameter, "default_expression")->IsNull(0));
-    REQUIRE(vgi::wire::column(vgi::wire::decode_ipc(fixture("macro_parameter_untyped")), "declared_type")->IsNull(0));
-    for (const auto* name : {"logical_tuple", "logical_struct", "logical_variant_sql_null",
-                            "logical_variant_null", "logical_variant_absent", "logical_variant_null_member"}) {
+    REQUIRE(vgi::wire::column(vgi::wire::decode_ipc(fixture("macro_parameter_untyped")),
+                              "declared_type")
+                ->IsNull(0));
+    for (const auto* name :
+         {"logical_tuple", "logical_struct", "logical_variant_sql_null", "logical_variant_null",
+          "logical_variant_absent", "logical_variant_null_member"}) {
         INFO(name);
         const auto source = vgi::wire::decode_ipc(fixture(name));
         const auto restored = vgi::wire::decode_ipc(vgi::wire::encode_ipc(source));
@@ -246,9 +298,11 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         } else {
             REQUIRE(field->metadata()->Get("vgi.logical_type.v1").ValueOrDie() == "tuple");
         }
-        REQUIRE(restored->column(0)->IsNull(0) == (std::string(name) == "logical_variant_sql_null"));
+        REQUIRE(restored->column(0)->IsNull(0) ==
+                (std::string(name) == "logical_variant_sql_null"));
         if (std::string(name).find("logical_variant_") == 0) {
-            REQUIRE(field->metadata()->Get("ARROW:extension:name").ValueOrDie() == "arrow.parquet.variant");
+            REQUIRE(field->metadata()->Get("ARROW:extension:name").ValueOrDie() ==
+                    "arrow.parquet.variant");
             REQUIRE(field->metadata()->Get("ARROW:extension:metadata").ValueOrDie() == "");
             const auto storage = std::static_pointer_cast<arrow::StructType>(field->type());
             REQUIRE(storage->num_fields() == 2);
@@ -257,14 +311,23 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
             REQUIRE(storage->field(1)->name() == "value");
             REQUIRE(storage->field(1)->nullable());
             if (std::string(name) != "logical_variant_sql_null") {
-                const auto column = std::static_pointer_cast<arrow::StructArray>(restored->column(0));
-                const std::string expected_metadata = std::string(name) == "logical_variant_null_member"
-                    ? std::string("\x01\x01\x00\x07present", 11) : std::string("\x01\x00\x00", 3);
+                const auto column =
+                    std::static_pointer_cast<arrow::StructArray>(restored->column(0));
+                const std::string expected_metadata =
+                    std::string(name) == "logical_variant_null_member"
+                        ? std::string("\x01\x01\x00\x07present", 11)
+                        : std::string("\x01\x00\x00", 3);
                 const std::string expected_value = std::string(name) == "logical_variant_null"
-                    ? std::string("\x00", 1) : std::string(name) == "logical_variant_absent"
-                    ? std::string("\x02\x00\x00", 3) : std::string("\x02\x01\x00\x00\x01\x00", 6);
-                REQUIRE(std::static_pointer_cast<arrow::BinaryArray>(column->field(0))->GetString(0) == expected_metadata);
-                REQUIRE(std::static_pointer_cast<arrow::BinaryArray>(column->field(1))->GetString(0) == expected_value);
+                                                       ? std::string("\x00", 1)
+                                                   : std::string(name) == "logical_variant_absent"
+                                                       ? std::string("\x02\x00\x00", 3)
+                                                       : std::string("\x02\x01\x00\x00\x01\x00", 6);
+                REQUIRE(
+                    std::static_pointer_cast<arrow::BinaryArray>(column->field(0))->GetString(0) ==
+                    expected_metadata);
+                REQUIRE(
+                    std::static_pointer_cast<arrow::BinaryArray>(column->field(1))->GetString(0) ==
+                    expected_value);
             }
         }
     }
@@ -282,7 +345,8 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
             REQUIRE(restored->num_columns() == 0);
         } else {
             REQUIRE(restored->column(0)->IsNull(0));
-            const auto type = std::static_pointer_cast<arrow::StructType>(restored->schema()->field(1)->type());
+            const auto type =
+                std::static_pointer_cast<arrow::StructType>(restored->schema()->field(1)->type());
             REQUIRE(type->field(0)->metadata()->Get("nested").ValueOrDie() == "retained");
         }
     }

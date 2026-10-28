@@ -266,7 +266,8 @@ void register_rff(vgi::Worker& worker) {
 // The `rff_*` tables, declared by the catalog.
 std::vector<vgi::CatalogTable> rff_tables() {
     const auto table = [](std::string name, std::shared_ptr<arrow::Schema> columns,
-                          std::string scan, std::vector<std::vector<std::vector<std::string>>> required) {
+                          std::string scan,
+                          std::vector<std::vector<std::vector<std::string>>> required) {
         vgi::CatalogTable entry;
         entry.name = std::move(name);
         entry.columns = std::move(columns);

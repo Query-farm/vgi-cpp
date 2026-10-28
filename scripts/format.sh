@@ -37,8 +37,16 @@ CF="$(find_clang_format)" || {
 # Generated sources are excluded: they are rewritten from the protocol
 # definition, and formatting them only guarantees the next regeneration
 # produces a diff.
+if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "format.sh requires a Git checkout to enumerate source files." >&2
+  exit 2
+fi
 mapfile -t FILES < <(cd "$ROOT" && git ls-files '*.cpp' '*.h' '*.hpp' \
   | grep -v '^include/vgi/generated/' | grep -v '^src/generated/' | grep -v '^vcpkg/')
+if [[ ${#FILES[@]} == 0 ]]; then
+  echo "format.sh found no tracked C++ sources." >&2
+  exit 2
+fi
 
 if [[ "${1:-}" == "--check" ]]; then
   failed=0

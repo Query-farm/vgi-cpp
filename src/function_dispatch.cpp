@@ -1049,24 +1049,26 @@ BindParams Dispatcher::read_bind_request(
 }
 
 static bool valid_projection_profiles(const std::vector<std::string>& profiles) {
-    if (profiles.size()>64) return false;
+    if (profiles.size() > 64) return false;
     const std::regex pattern("[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*\\.v[1-9][0-9]*");
     std::set<std::string> seen;
-    for (const auto& p:profiles) if (p.size()>256 || !std::regex_match(p,pattern) || !seen.insert(p).second) return false;
+    for (const auto& p : profiles)
+        if (p.size() > 256 || !std::regex_match(p, pattern) || !seen.insert(p).second) return false;
     return true;
 }
 
 static std::string repeatability_wire_value(BindRepeatability value) {
     switch (value) {
-    case BindRepeatability::Unknown: return "UNKNOWN";
-    case BindRepeatability::StableWithinQuery: return "STABLE_WITHIN_QUERY";
+        case BindRepeatability::Unknown: return "UNKNOWN";
+        case BindRepeatability::StableWithinQuery: return "STABLE_WITHIN_QUERY";
     }
     throw std::invalid_argument("invalid bind repeatability");
 }
 
 static BindRepeatability read_repeatability(const std::shared_ptr<arrow::RecordBatch>& row) {
     const auto value = wire::get_enum(row, "repeatability");
-    const auto dictionary = std::static_pointer_cast<arrow::DictionaryArray>(wire::column(row, "repeatability"));
+    const auto dictionary =
+        std::static_pointer_cast<arrow::DictionaryArray>(wire::column(row, "repeatability"));
     if (dictionary->dictionary()->IsNull(dictionary->GetValueIndex(0)))
         throw std::invalid_argument("null bind repeatability dictionary value");
     if (value == "UNKNOWN") return BindRepeatability::Unknown;
@@ -1108,7 +1110,8 @@ vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request, vgi_rpc::CallC
         output_schema = table->bind(params);
         projection_profiles = table->projection_expression_profiles(params);
         repeatability = table->repeatability(params);
-        if (!valid_projection_profiles(projection_profiles)) throw std::invalid_argument("unsupported projection profile offer");
+        if (!valid_projection_profiles(projection_profiles))
+            throw std::invalid_argument("unsupported projection profile offer");
     } else if (auto late = find_buffering(function_name, scope_of(params))) {
         // Declared `table` but no table function of that name: the declaration
         // is a hint, not a guarantee.
@@ -1210,52 +1213,110 @@ static std::shared_ptr<arrow::RecordBatch> projection_record(
     return row;
 }
 
-vgi_rpc::Result Dispatcher::table_function_projection(const vgi_rpc::Request& request, vgi_rpc::CallContext&) {
-    if (wire::get_optional_binary(request.batch(), "request").value_or("").size() > 8 * 1024 * 1024) throw std::invalid_argument("projection exceeds 8MiB");
-    auto proposal = projection_record(wire::get_optional_binary(request.batch(), "request").value_or(""), gen::TableFunctionProjectionRequestSchema());
-    auto call = projection_record(wire::get_optional_binary(proposal, "bind_call").value_or(""), gen::BindRequestSchema());
-    auto original = projection_record(wire::get_optional_binary(proposal, "bind_result").value_or(""), gen::BindResultSchema());
+vgi_rpc::Result Dispatcher::table_function_projection(const vgi_rpc::Request& request,
+                                                      vgi_rpc::CallContext&) {
+    if (wire::get_optional_binary(request.batch(), "request").value_or("").size() > 8 * 1024 * 1024)
+        throw std::invalid_argument("projection exceeds 8MiB");
+    auto proposal =
+        projection_record(wire::get_optional_binary(request.batch(), "request").value_or(""),
+                          gen::TableFunctionProjectionRequestSchema());
+    auto call = projection_record(wire::get_optional_binary(proposal, "bind_call").value_or(""),
+                                  gen::BindRequestSchema());
+    auto original = projection_record(
+        wire::get_optional_binary(proposal, "bind_result").value_or(""), gen::BindResultSchema());
     const auto params = read_bind_request(call);
-    if ((wire::get_optional_enum(call, "function_type") != enums::function_type::kTable && wire::get_optional_enum(call, "function_type") != "TABLE") || params.input_schema || !wire::column(call, "schema_path") || wire::column(call, "schema_path")->IsNull(0)) throw std::invalid_argument("projection requires ordinary table and explicit owner");
+    if ((wire::get_optional_enum(call, "function_type") != enums::function_type::kTable &&
+         wire::get_optional_enum(call, "function_type") != "TABLE") ||
+        params.input_schema || !wire::column(call, "schema_path") ||
+        wire::column(call, "schema_path")->IsNull(0))
+        throw std::invalid_argument("projection requires ordinary table and explicit owner");
     const auto profiles = wire::get_string_list(original, "projection_expression_profiles");
-    if (!valid_projection_profiles(profiles)) throw std::invalid_argument("unsupported projection profile offer");
-    for (const auto* field : {"lookup_secret_types", "lookup_scopes", "lookup_names"}) if (!wire::get_string_list(original, field).empty()) throw std::invalid_argument("projection cannot request secrets");
+    if (!valid_projection_profiles(profiles))
+        throw std::invalid_argument("unsupported projection profile offer");
+    for (const auto* field : {"lookup_secret_types", "lookup_scopes", "lookup_names"})
+        if (!wire::get_string_list(original, field).empty())
+            throw std::invalid_argument("projection cannot request secrets");
     ProjectionProposal input;
     input.source_schema = wire::get_schema(original, "output_schema");
     input.result_schema = wire::get_schema(proposal, "result_schema");
     input.bind_opaque_data = wire::get_optional_binary(original, "opaque_data").value_or("");
     input.repeatability = read_repeatability(original);
     const auto expressions = wire::get_binary_list(proposal, "expressions");
-    if (expressions.empty() || expressions.size() > 1024 || !input.source_schema || !input.result_schema || input.result_schema->num_fields() != static_cast<int>(expressions.size()) || (input.result_schema->metadata() && input.result_schema->metadata()->size())) throw std::invalid_argument("invalid projection result schema/count");
+    if (expressions.empty() || expressions.size() > 1024 || !input.source_schema ||
+        !input.result_schema ||
+        input.result_schema->num_fields() != static_cast<int>(expressions.size()) ||
+        (input.result_schema->metadata() && input.result_schema->metadata()->size()))
+        throw std::invalid_argument("invalid projection result schema/count");
     std::set<std::string> names;
-    for (const auto& schema : {input.source_schema, input.result_schema}) for (const auto& field : schema->fields()) { auto name = field->name(); generated_text(name, 4096); std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); }); if (!names.insert(name).second) throw std::invalid_argument("ambiguous projection column names"); }
+    for (const auto& schema : {input.source_schema, input.result_schema})
+        for (const auto& field : schema->fields()) {
+            auto name = field->name();
+            generated_text(name, 4096);
+            std::transform(name.begin(), name.end(), name.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (!names.insert(name).second)
+                throw std::invalid_argument("ambiguous projection column names");
+        }
     std::shared_ptr<arrow::Array> context;
     for (const auto& raw : expressions) {
         validate_generated_expression(arrow::util::base64_encode(raw), params.schema_path);
-        if (std::find(profiles.begin(), profiles.end(), SCALAR_PROJECTION_PROFILE) == profiles.end()) throw std::invalid_argument("projection profile was not offered");
+        if (std::find(profiles.begin(), profiles.end(), SCALAR_PROJECTION_PROFILE) ==
+            profiles.end())
+            throw std::invalid_argument("projection profile was not offered");
         auto expression = wire::decode_ipc(raw);
         auto current = wire::column(expression, "evaluation_context");
-        if (context && !context->Equals(current)) throw std::invalid_argument("projection contexts differ");
-        context = current; input.expressions.push_back(expression);
+        if (context && !context->Equals(current))
+            throw std::invalid_argument("projection contexts differ");
+        context = current;
+        input.expressions.push_back(expression);
     }
     auto table = find_table(wire::get_string(call, "function_name"), scope_of(params), &params);
     if (!table) throw std::invalid_argument("projection requires ordinary table");
     auto accepted = table->projection(params, input);
-    if (accepted.accepted_indices.empty() != !accepted.output_schema) throw std::invalid_argument("indices and accepted bind result must occur together");
-    auto fields = input.source_schema->fields(); int64_t previous = -1;
-    for (auto index : accepted.accepted_indices) { if (index <= previous || index >= static_cast<int64_t>(expressions.size())) throw std::invalid_argument("invalid accepted projection index"); previous = index; fields.push_back(input.result_schema->field(static_cast<int>(index))); }
+    if (accepted.accepted_indices.empty() != !accepted.output_schema)
+        throw std::invalid_argument("indices and accepted bind result must occur together");
+    auto fields = input.source_schema->fields();
+    int64_t previous = -1;
+    for (auto index : accepted.accepted_indices) {
+        if (index <= previous || index >= static_cast<int64_t>(expressions.size()))
+            throw std::invalid_argument("invalid accepted projection index");
+        previous = index;
+        fields.push_back(input.result_schema->field(static_cast<int>(index)));
+    }
     std::optional<std::string> replacement;
     if (accepted.output_schema) {
         auto expected = arrow::schema(fields, input.source_schema->metadata());
-        if (!expected->Equals(*accepted.output_schema, true)) throw std::invalid_argument("accepted projection changed append-only schema");
-        replacement = wire::encode_ipc(wire::ResultBuilder(payload_schema_of("bind")).set_binary("output_schema", wire::encode_schema(accepted.output_schema)).set_binary("opaque_data", accepted.opaque_data).set_string_list("projection_expression_profiles", profiles).set_enum("repeatability", repeatability_wire_value(input.repeatability)).fill_defaults().finish());
+        if (!expected->Equals(*accepted.output_schema, true))
+            throw std::invalid_argument("accepted projection changed append-only schema");
+        replacement = wire::encode_ipc(
+            wire::ResultBuilder(payload_schema_of("bind"))
+                .set_binary("output_schema", wire::encode_schema(accepted.output_schema))
+                .set_binary("opaque_data", accepted.opaque_data)
+                .set_string_list("projection_expression_profiles", profiles)
+                .set_enum("repeatability", repeatability_wire_value(input.repeatability))
+                .fill_defaults()
+                .finish());
     }
-    auto values = std::make_shared<arrow::Int64Builder>(); arrow::ListBuilder indices(arrow::default_memory_pool(), values); (void)indices.Append(); (void)values->AppendValues(accepted.accepted_indices); std::shared_ptr<arrow::Array> index_array; (void)indices.Finish(&index_array);
-    arrow::BinaryBuilder result; if (replacement) (void)result.Append(*replacement); else (void)result.AppendNull(); std::shared_ptr<arrow::Array> result_array; (void)result.Finish(&result_array);
-    auto payload = arrow::RecordBatch::Make(payload_schema_of("table_function_projection"), 1, {index_array, result_array});
+    auto values = std::make_shared<arrow::Int64Builder>();
+    arrow::ListBuilder indices(arrow::default_memory_pool(), values);
+    (void)indices.Append();
+    (void)values->AppendValues(accepted.accepted_indices);
+    std::shared_ptr<arrow::Array> index_array;
+    (void)indices.Finish(&index_array);
+    arrow::BinaryBuilder result;
+    if (replacement)
+        (void)result.Append(*replacement);
+    else
+        (void)result.AppendNull();
+    std::shared_ptr<arrow::Array> result_array;
+    (void)result.Finish(&result_array);
+    auto payload = arrow::RecordBatch::Make(payload_schema_of("table_function_projection"), 1,
+                                            {index_array, result_array});
     const auto encoded = wire::encode_ipc(payload);
-    if (encoded.size()>8*1024*1024) throw std::invalid_argument("projection response exceeds 8MiB");
-    return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema()).set_binary("result", encoded).finish());
+    if (encoded.size() > 8 * 1024 * 1024)
+        throw std::invalid_argument("projection response exceeds 8MiB");
+    return vgi_rpc::Result::value(
+        wire::ResultBuilder(envelope_schema()).set_binary("result", encoded).finish());
 }
 
 vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request,
@@ -1488,7 +1549,8 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
 
     ProcessParams params;
     params.output_schema = output_schema;
-    params.bind_opaque_data = wire::get_optional_binary(init_request, "bind_opaque_data").value_or("");
+    params.bind_opaque_data =
+        wire::get_optional_binary(init_request, "bind_opaque_data").value_or("");
     if (context.auth().authenticated) params.auth_principal = context.auth().principal;
     // Constant arguments were evaluated at bind and ride along on every call,
     // which is why a const parameter never appears in the input batch.

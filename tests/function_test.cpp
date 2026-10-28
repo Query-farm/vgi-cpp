@@ -737,11 +737,9 @@ TEST_CASE("nullable result parents mask their required child storage", "[wire]")
     CHECK_NOTHROW(vgi::wire::ResultBuilder(schema).set_null("optional").finish());
 
     const auto null_child = arrow::MakeArrayOfNull(arrow::utf8(), 1).ValueOrDie();
-    const auto present = std::make_shared<arrow::StructArray>(
-        type, 1, arrow::ArrayVector{null_child});
-    CHECK_THROWS_WITH(vgi::wire::ResultBuilder(schema)
-                          .set_array("optional", present)
-                          .finish(),
+    const auto present =
+        std::make_shared<arrow::StructArray>(type, 1, arrow::ArrayVector{null_child});
+    CHECK_THROWS_WITH(vgi::wire::ResultBuilder(schema).set_array("optional", present).finish(),
                       Catch::Matchers::ContainsSubstring("optional.required"));
 }
 

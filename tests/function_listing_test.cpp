@@ -567,40 +567,54 @@ TEST_CASE("catalog_contents answers exactly what the per-schema listings do",
     CHECK(contents.at({"main"}).table_macros.size() == 1);
     const auto info = vgi::wire::decode_ipc(contents.at({"main"}).scalar_macros[0]);
     CHECK(info->num_columns() == 6);
-    const auto families = std::static_pointer_cast<arrow::ListArray>(info->GetColumnByName("overloads"));
+    const auto families =
+        std::static_pointer_cast<arrow::ListArray>(info->GetColumnByName("overloads"));
     REQUIRE(families->value_length(0) == 1);
     const auto overload = std::static_pointer_cast<arrow::StructArray>(families->values());
-    const auto macro_params = std::static_pointer_cast<arrow::ListArray>(overload->GetFieldByName("parameters"));
+    const auto macro_params =
+        std::static_pointer_cast<arrow::ListArray>(overload->GetFieldByName("parameters"));
     const auto parameter = std::static_pointer_cast<arrow::StructArray>(macro_params->values());
     CHECK(parameter->GetFieldByName("declared_type")->IsNull(0));
     CHECK(parameter->GetFieldByName("default_expression")->IsNull(0));
     CHECK_FALSE(parameter->GetFieldByName("documentation")->IsNull(0));
-    CHECK(std::static_pointer_cast<arrow::StringArray>(parameter->GetFieldByName("documentation"))->GetString(0).empty());
-    const auto default_bytes = std::static_pointer_cast<arrow::BinaryArray>(parameter->GetFieldByName("default_value"))->GetString(0);
+    CHECK(std::static_pointer_cast<arrow::StringArray>(parameter->GetFieldByName("documentation"))
+              ->GetString(0)
+              .empty());
+    const auto default_bytes =
+        std::static_pointer_cast<arrow::BinaryArray>(parameter->GetFieldByName("default_value"))
+            ->GetString(0);
     const auto value = vgi::wire::decode_ipc(default_bytes);
     CHECK(value->schema()->field(0)->name() == "x");
     CHECK(std::static_pointer_cast<arrow::Int64Array>(value->column(0))->Value(0) == 7);
 
     // Direct provider families retain every overload, with no first-entry projection.
-    const auto overload_bytes = vgi::wire::encode_ipc(arrow::RecordBatch::Make(gen::MacroOverloadSchema(), 1, overload->fields()));
+    const auto overload_bytes = vgi::wire::encode_ipc(
+        arrow::RecordBatch::Make(gen::MacroOverloadSchema(), 1, overload->fields()));
     vgi::Dispatcher family_dispatcher;
     family_dispatcher.catalog().name = "family";
     vgi::CatalogMacro family_macro;
     family_macro.name = "many";
-    const auto second_overload = vgi::wire::ResultBuilder(gen::MacroOverloadSchema())
-        .set_string("definition", "1").set_string("profile", "duckdb.macro.v1")
-        .set_string_list("schema_path", {"main"}).set_string("macro_type", "scalar")
-        .set_array("evaluation_context", overload->GetFieldByName("evaluation_context"))
-        .fill_defaults().finish();
-    family_macro.overloads = std::vector<std::string>{overload_bytes, vgi::wire::encode_ipc(second_overload)};
+    const auto second_overload =
+        vgi::wire::ResultBuilder(gen::MacroOverloadSchema())
+            .set_string("definition", "1")
+            .set_string("profile", "duckdb.macro.v1")
+            .set_string_list("schema_path", {"main"})
+            .set_string("macro_type", "scalar")
+            .set_array("evaluation_context", overload->GetFieldByName("evaluation_context"))
+            .fill_defaults()
+            .finish();
+    family_macro.overloads =
+        std::vector<std::string>{overload_bytes, vgi::wire::encode_ipc(second_overload)};
     family_dispatcher.catalog().schema("main").macros.push_back(family_macro);
     Served family_worker(family_dispatcher);
     const auto family_handle = attach(family_worker, "family");
     const auto family_items = per_schema(family_worker, "catalog_schema_contents_macros",
-        gen::CatalogSchemaContentsMacrosParamsSchema(), family_handle, {"main"}, "SCALAR_MACRO");
+                                         gen::CatalogSchemaContentsMacrosParamsSchema(),
+                                         family_handle, {"main"}, "SCALAR_MACRO");
     REQUIRE(family_items.size() == 1);
     const auto restored = vgi::wire::decode_ipc(family_items[0]);
-    const auto full_family = std::static_pointer_cast<arrow::ListArray>(restored->GetColumnByName("overloads"));
+    const auto full_family =
+        std::static_pointer_cast<arrow::ListArray>(restored->GetColumnByName("overloads"));
     CHECK(full_family->value_length(0) == 2);
 
     CHECK(contents.at({"side"}).scalar_functions.size() == 1);
@@ -628,7 +642,7 @@ TEST_CASE("ATTACH advertises catalog_contents unless the catalog opts out", "[ca
 
 TEST_CASE("catalog read profiles require provider and client opt-in", "[catalog][capabilities]") {
     const std::vector<std::string> profiles = {"vgi.constraint.records.read.v1",
-                                              "vgi.expression.duckdb.scalar.v1"};
+                                               "vgi.expression.duckdb.scalar.v1"};
     for (const bool provider_enabled : {false, true}) {
         for (const int offer_count : {-1, 0, 1, 2, 3}) {
             INFO(provider_enabled << " / " << offer_count);
@@ -791,7 +805,8 @@ TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its versi
     create_view(worker, one, "v", "SELECT 1 AS x");
 
     const auto security_version = version_of(worker, one);
-    REQUIRE_THROWS_WITH(create_view(worker, one, "v", "SELECT 2", "barrier"), Catch::Matchers::ContainsSubstring("security"));
+    REQUIRE_THROWS_WITH(create_view(worker, one, "v", "SELECT 2", "barrier"),
+                        Catch::Matchers::ContainsSubstring("security"));
     REQUIRE(version_of(worker, one) == security_version);
     CHECK(version_of(worker, one) == 2);
     CHECK(view_names(worker, one) == Names{"v"});
@@ -822,69 +837,95 @@ TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its versi
                          .finish());
     CHECK(version_of(worker, one) == 4);
     // An unported provider must not manufacture an empty semantic dependency graph.
-    REQUIRE_THROWS(worker.call_void("catalog_dependencies", vgi::wire::ResultBuilder(gen::CatalogDependenciesParamsSchema())
-        .set_binary("attach_opaque_data", one).fill_defaults().finish()));
+    REQUIRE_THROWS(worker.call_void("catalog_dependencies",
+                                    vgi::wire::ResultBuilder(gen::CatalogDependenciesParamsSchema())
+                                        .set_binary("attach_opaque_data", one)
+                                        .fill_defaults()
+                                        .finish()));
     REQUIRE(version_of(worker, one) == 4);
-    // Unported index operations must fail before REPLACE, DROP or option binding can publish anything.
+    // Unported index operations must fail before REPLACE, DROP or option binding can publish
+    // anything.
     std::ifstream index_input(VGI_CATALOG_CONTRACT_VECTORS);
     REQUIRE(index_input.good());
     const auto index_records = nlohmann::json::parse(index_input).at("records");
-    const auto index_definition = vgi::wire::base64_decode(index_records.at("index_definition").get<std::string>());
+    const auto index_definition =
+        vgi::wire::base64_decode(index_records.at("index_definition").get<std::string>());
     for (const auto* conflict : {"ERROR", "IGNORE", "REPLACE"}) {
         const auto rejected = vgi::wire::ResultBuilder(gen::IndexCreateRequestSchema())
-            .set_binary("attach_opaque_data", one).set_string_list("schema_path", {"main"})
-            .set_string("name", "t1").set_binary("definition", index_definition)
-            .set_enum("on_conflict", conflict).fill_defaults().finish();
-        REQUIRE_THROWS(worker.call_void("catalog_index_create", vgi::wire::ResultBuilder(gen::CatalogIndexCreateParamsSchema())
-            .set_binary("request", vgi::wire::encode_ipc(rejected)).finish()));
+                                  .set_binary("attach_opaque_data", one)
+                                  .set_string_list("schema_path", {"main"})
+                                  .set_string("name", "t1")
+                                  .set_binary("definition", index_definition)
+                                  .set_enum("on_conflict", conflict)
+                                  .fill_defaults()
+                                  .finish();
+        REQUIRE_THROWS(worker.call_void(
+            "catalog_index_create", vgi::wire::ResultBuilder(gen::CatalogIndexCreateParamsSchema())
+                                        .set_binary("request", vgi::wire::encode_ipc(rejected))
+                                        .finish()));
     }
-    REQUIRE_THROWS(worker.call_void("catalog_index_drop", vgi::wire::ResultBuilder(gen::CatalogIndexDropParamsSchema())
-        .set_binary("attach_opaque_data", one).set_string_list("schema_path", {"main"}).set_string("name", "t1")
-        .set_bool("ignore_not_found", true).set_bool("cascade", true).fill_defaults().finish()));
-    REQUIRE_THROWS(worker.call_void("catalog_index_option_definitions", vgi::wire::ResultBuilder(gen::CatalogIndexOptionDefinitionsParamsSchema())
-        .set_binary("attach_opaque_data", one)
-        .set_binary("table", vgi::wire::base64_decode(index_records.at("object_ref").get<std::string>()))
-        .set_string("algorithm", "ART").fill_defaults().finish()));
+    REQUIRE_THROWS(worker.call_void("catalog_index_drop",
+                                    vgi::wire::ResultBuilder(gen::CatalogIndexDropParamsSchema())
+                                        .set_binary("attach_opaque_data", one)
+                                        .set_string_list("schema_path", {"main"})
+                                        .set_string("name", "t1")
+                                        .set_bool("ignore_not_found", true)
+                                        .set_bool("cascade", true)
+                                        .fill_defaults()
+                                        .finish()));
+    REQUIRE_THROWS(worker.call_void(
+        "catalog_index_option_definitions",
+        vgi::wire::ResultBuilder(gen::CatalogIndexOptionDefinitionsParamsSchema())
+            .set_binary("attach_opaque_data", one)
+            .set_binary("table",
+                        vgi::wire::base64_decode(index_records.at("object_ref").get<std::string>()))
+            .set_string("algorithm", "ART")
+            .fill_defaults()
+            .finish()));
     REQUIRE(version_of(worker, one) == 4);
     for (const auto* conflict : {"ERROR", "IGNORE", "REPLACE"}) {
-        const auto rejected = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
-                                  .set_binary("attach_opaque_data", one)
-                                  .set_string_list("schema_path", {"main"})
-                                  .set_string("name", "t1")
-                                  .set_binary("columns", vgi::wire::encode_schema(arrow::schema(
-                                                            {arrow::field("replacement", arrow::utf8())})))
-                                  .set_enum("on_conflict", conflict)
-                                  .set_binary_list("constraint_definitions", {"unsupported"})
-                                  .fill_defaults()
-                                  .finish();
-        REQUIRE_THROWS(worker.call_void("catalog_table_create",
-                           vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
-                               .set_binary("request", vgi::wire::encode_ipc(rejected))
-                               .finish()));
+        const auto rejected =
+            vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+                .set_binary("attach_opaque_data", one)
+                .set_string_list("schema_path", {"main"})
+                .set_string("name", "t1")
+                .set_binary("columns", vgi::wire::encode_schema(arrow::schema(
+                                           {arrow::field("replacement", arrow::utf8())})))
+                .set_enum("on_conflict", conflict)
+                .set_binary_list("constraint_definitions", {"unsupported"})
+                .fill_defaults()
+                .finish();
+        REQUIRE_THROWS(worker.call_void(
+            "catalog_table_create", vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                                        .set_binary("request", vgi::wire::encode_ipc(rejected))
+                                        .finish()));
         REQUIRE(version_of(worker, one) == 4);
     }
-    for (const auto& field : {
-             arrow::field("required", arrow::int32(), false),
-             arrow::field("nested", arrow::struct_({arrow::field("required", arrow::int32(), false)}))}) {
-        const auto rejected = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
-                                  .set_binary("attach_opaque_data", one)
-                                  .set_string_list("schema_path", {"main"})
-                                  .set_string("name", "t1")
-                                  .set_binary("columns", vgi::wire::encode_schema(arrow::schema({field})))
-                                  .set_enum("on_conflict", "REPLACE")
-                                  .fill_defaults()
-                                  .finish();
-        REQUIRE_THROWS(worker.call_void("catalog_table_create",
-                           vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
-                               .set_binary("request", vgi::wire::encode_ipc(rejected))
-                               .finish()));
+    for (const auto& field :
+         {arrow::field("required", arrow::int32(), false),
+          arrow::field("nested",
+                       arrow::struct_({arrow::field("required", arrow::int32(), false)}))}) {
+        const auto rejected =
+            vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+                .set_binary("attach_opaque_data", one)
+                .set_string_list("schema_path", {"main"})
+                .set_string("name", "t1")
+                .set_binary("columns", vgi::wire::encode_schema(arrow::schema({field})))
+                .set_enum("on_conflict", "REPLACE")
+                .fill_defaults()
+                .finish();
+        REQUIRE_THROWS(worker.call_void(
+            "catalog_table_create", vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                                        .set_binary("request", vgi::wire::encode_ipc(rejected))
+                                        .finish()));
         REQUIRE(version_of(worker, one) == 4);
     }
     const auto contents = contents_by_path(contents_call(worker, one, std::nullopt));
     REQUIRE(contents.size() == 2);
     CHECK(contents.at({"main"}).tables.size() == 1);
     const auto original_table = vgi::wire::decode_ipc(contents.at({"main"}).tables.front());
-    CHECK(vgi::wire::get_binary(original_table, "columns") == vgi::wire::get_binary(table_request, "columns"));
+    CHECK(vgi::wire::get_binary(original_table, "columns") ==
+          vgi::wire::get_binary(table_request, "columns"));
     CHECK(contents.at({"main"}).views.size() == 1);
     CHECK(contents.count({"s2"}) == 1);
 
@@ -1170,73 +1211,129 @@ TEST_CASE("input_rows_per_call is advertised for a blended function and refused 
           3);
 }
 
-TEST_CASE("column metadata survives CREATE and discovery and invalid metadata has no effects", "[catalog][column-metadata]") {
+TEST_CASE("column metadata survives CREATE and discovery and invalid metadata has no effects",
+          "[catalog][column-metadata]") {
     std::ifstream input(VGI_CATALOG_CONTRACT_VECTORS);
-    const auto vectors=nlohmann::json::parse(input).at("column_metadata_schemas");
-    vgi::Dispatcher dispatcher;dispatcher.catalog().name="alpha";
-    vgi::MemoryCatalogOptions options;options.name="mem";dispatcher.register_memory_catalog(options);
-    Served worker(dispatcher);const auto handle=attach(worker,"mem");
-    for(const auto& group:vectors.items())for(const auto& item:group.value().items()){
-        INFO(group.key()+"/"+item.key());
-        const auto raw=vgi::wire::base64_decode(item.value().get<std::string>());
-        const auto request=vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
-            .set_binary("attach_opaque_data",handle).set_string_list("schema_path",{"main"})
-            .set_string("name",item.key()).set_binary("columns",raw).set_enum("on_conflict","ERROR").fill_defaults().finish();
-        const auto params=vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema()).set_binary("request",vgi::wire::encode_ipc(request)).finish();
-        const auto before=version_of(worker,handle);
-        if(group.key()=="invalid"){
-            REQUIRE_THROWS(worker.call_void("catalog_table_create",params));
-            CHECK(version_of(worker,handle)==before);
-        }else{
-            worker.call_void("catalog_table_create",params);
-            const auto listed=per_schema(worker,"catalog_schema_contents_tables",gen::CatalogSchemaContentsTablesParamsSchema(),handle,{"main"});
-            bool found=false;
-            for(const auto& bytes:listed){const auto info=vgi::wire::decode_ipc(bytes);if(vgi::wire::get_string(info,"name")==item.key()){
-                CHECK(vgi::wire::get_binary(info,"columns")==raw);found=true;
-            }}
-            REQUIRE(found);
-            vgi::Dispatcher readonly;readonly.catalog().name="meta";
-            vgi::CatalogTable table;table.name=item.key();table.columns=vgi::wire::decode_schema(raw);
-            readonly.catalog().schema("main").tables.push_back(table);
-            Served reader(readonly);const auto token=attach(reader,"meta");
-            const auto items=per_schema(reader,"catalog_schema_contents_tables",gen::CatalogSchemaContentsTablesParamsSchema(),token,{"main"});
-            REQUIRE(items.size()==1);
-            const auto info=vgi::wire::decode_ipc(items[0]);
-            CHECK(vgi::wire::get_binary(info,"columns")==vgi::wire::encode_schema(table.columns));
+    const auto vectors = nlohmann::json::parse(input).at("column_metadata_schemas");
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "alpha";
+    vgi::MemoryCatalogOptions options;
+    options.name = "mem";
+    dispatcher.register_memory_catalog(options);
+    Served worker(dispatcher);
+    const auto handle = attach(worker, "mem");
+    for (const auto& group : vectors.items())
+        for (const auto& item : group.value().items()) {
+            INFO(group.key() + "/" + item.key());
+            const auto raw = vgi::wire::base64_decode(item.value().get<std::string>());
+            const auto request = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+                                     .set_binary("attach_opaque_data", handle)
+                                     .set_string_list("schema_path", {"main"})
+                                     .set_string("name", item.key())
+                                     .set_binary("columns", raw)
+                                     .set_enum("on_conflict", "ERROR")
+                                     .fill_defaults()
+                                     .finish();
+            const auto params = vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                                    .set_binary("request", vgi::wire::encode_ipc(request))
+                                    .finish();
+            const auto before = version_of(worker, handle);
+            if (group.key() == "invalid") {
+                REQUIRE_THROWS(worker.call_void("catalog_table_create", params));
+                CHECK(version_of(worker, handle) == before);
+            } else {
+                worker.call_void("catalog_table_create", params);
+                const auto listed =
+                    per_schema(worker, "catalog_schema_contents_tables",
+                               gen::CatalogSchemaContentsTablesParamsSchema(), handle, {"main"});
+                bool found = false;
+                for (const auto& bytes : listed) {
+                    const auto info = vgi::wire::decode_ipc(bytes);
+                    if (vgi::wire::get_string(info, "name") == item.key()) {
+                        CHECK(vgi::wire::get_binary(info, "columns") == raw);
+                        found = true;
+                    }
+                }
+                REQUIRE(found);
+                vgi::Dispatcher readonly;
+                readonly.catalog().name = "meta";
+                vgi::CatalogTable table;
+                table.name = item.key();
+                table.columns = vgi::wire::decode_schema(raw);
+                readonly.catalog().schema("main").tables.push_back(table);
+                Served reader(readonly);
+                const auto token = attach(reader, "meta");
+                const auto items =
+                    per_schema(reader, "catalog_schema_contents_tables",
+                               gen::CatalogSchemaContentsTablesParamsSchema(), token, {"main"});
+                REQUIRE(items.size() == 1);
+                const auto info = vgi::wire::decode_ipc(items[0]);
+                CHECK(vgi::wire::get_binary(info, "columns") ==
+                      vgi::wire::encode_schema(table.columns));
+            }
         }
-    }
-    CHECK(per_schema(worker,"catalog_schema_contents_tables",gen::CatalogSchemaContentsTablesParamsSchema(),handle,{"main"}).size()==4);
+    CHECK(per_schema(worker, "catalog_schema_contents_tables",
+                     gen::CatalogSchemaContentsTablesParamsSchema(), handle, {"main"})
+              .size() == 4);
 }
 
-TEST_CASE("canonical generated discovery and unsupported CREATE preserve authority", "[catalog][generated-columns]") {
+TEST_CASE("canonical generated discovery and unsupported CREATE preserve authority",
+          "[catalog][generated-columns]") {
     std::ifstream input(VGI_CATALOG_CONTRACT_VECTORS);
     const auto vectors = nlohmann::json::parse(input).at("generated_column_schemas");
-    vgi::Dispatcher dispatcher; dispatcher.catalog().name = "alpha";
-    vgi::MemoryCatalogOptions options; options.name = "mem"; dispatcher.register_memory_catalog(options);
-    Served worker(dispatcher); const auto handle = attach(worker, "mem");
-    for (const auto& group : {"valid", "invalid"}) for (const auto& item : vectors.at(group).items()) {
-        INFO(std::string(group) + "/" + item.key());
-        const auto raw = vgi::wire::base64_decode(item.value().get<std::string>());
-        vgi::Dispatcher readonly; readonly.catalog().name = "meta";
-        vgi::CatalogTable table; table.name = item.key(); table.columns = vgi::wire::decode_schema(raw);
-        readonly.catalog().schema("main").tables.push_back(table);
-        Served reader(readonly); const auto token = attach(reader, "meta");
-        if (std::string(group) == "invalid") {
-            REQUIRE_THROWS(per_schema(reader, "catalog_schema_contents_tables", gen::CatalogSchemaContentsTablesParamsSchema(), token, {"main"}));
-        } else {
-            const auto items = per_schema(reader, "catalog_schema_contents_tables", gen::CatalogSchemaContentsTablesParamsSchema(), token, {"main"});
-            REQUIRE(items.size() == 1);
-            CHECK(vgi::wire::get_binary(vgi::wire::decode_ipc(items[0]), "columns") == vgi::wire::encode_schema(table.columns));
+    vgi::Dispatcher dispatcher;
+    dispatcher.catalog().name = "alpha";
+    vgi::MemoryCatalogOptions options;
+    options.name = "mem";
+    dispatcher.register_memory_catalog(options);
+    Served worker(dispatcher);
+    const auto handle = attach(worker, "mem");
+    for (const auto& group : {"valid", "invalid"})
+        for (const auto& item : vectors.at(group).items()) {
+            INFO(std::string(group) + "/" + item.key());
+            const auto raw = vgi::wire::base64_decode(item.value().get<std::string>());
+            vgi::Dispatcher readonly;
+            readonly.catalog().name = "meta";
+            vgi::CatalogTable table;
+            table.name = item.key();
+            table.columns = vgi::wire::decode_schema(raw);
+            readonly.catalog().schema("main").tables.push_back(table);
+            Served reader(readonly);
+            const auto token = attach(reader, "meta");
+            if (std::string(group) == "invalid") {
+                REQUIRE_THROWS(per_schema(reader, "catalog_schema_contents_tables",
+                                          gen::CatalogSchemaContentsTablesParamsSchema(), token,
+                                          {"main"}));
+            } else {
+                const auto items =
+                    per_schema(reader, "catalog_schema_contents_tables",
+                               gen::CatalogSchemaContentsTablesParamsSchema(), token, {"main"});
+                REQUIRE(items.size() == 1);
+                CHECK(vgi::wire::get_binary(vgi::wire::decode_ipc(items[0]), "columns") ==
+                      vgi::wire::encode_schema(table.columns));
+            }
+            const auto request = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+                                     .set_binary("attach_opaque_data", handle)
+                                     .set_string_list("schema_path", {"main"})
+                                     .set_string("name", item.key())
+                                     .set_binary("columns", raw)
+                                     .set_enum("on_conflict", "ERROR")
+                                     .fill_defaults()
+                                     .finish();
+            const auto params = vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                                    .set_binary("request", vgi::wire::encode_ipc(request))
+                                    .finish();
+            const auto before = version_of(worker, handle);
+            if (std::string(group) == "valid" && item.key() == "ordinary")
+                worker.call_void("catalog_table_create", params);
+            else {
+                REQUIRE_THROWS(worker.call_void("catalog_table_create", params));
+                CHECK(version_of(worker, handle) == before);
+            }
         }
-        const auto request = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
-            .set_binary("attach_opaque_data", handle).set_string_list("schema_path", {"main"})
-            .set_string("name", item.key()).set_binary("columns", raw).set_enum("on_conflict", "ERROR").fill_defaults().finish();
-        const auto params = vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema()).set_binary("request", vgi::wire::encode_ipc(request)).finish();
-        const auto before = version_of(worker, handle);
-        if (std::string(group) == "valid" && item.key() == "ordinary") worker.call_void("catalog_table_create", params);
-        else { REQUIRE_THROWS(worker.call_void("catalog_table_create", params)); CHECK(version_of(worker, handle) == before); }
-    }
-    CHECK(per_schema(worker, "catalog_schema_contents_tables", gen::CatalogSchemaContentsTablesParamsSchema(), handle, {"main"}).size() == 1);
+    CHECK(per_schema(worker, "catalog_schema_contents_tables",
+                     gen::CatalogSchemaContentsTablesParamsSchema(), handle, {"main"})
+              .size() == 1);
     const auto encoded = vgi::generated_expression_metadata("n * 2", {"raw.schema"});
     const auto expression = vgi::wire::decode_ipc(vgi::wire::base64_decode(encoded));
     CHECK(vgi::wire::get_string_list(expression, "schema_path") == vgi::SchemaPath{"raw.schema"});
@@ -1252,22 +1349,35 @@ public:
     std::string name() const override { return "projection_contract"; }
     vgi::FunctionMetadata metadata() const override { return {}; }
     std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
-    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override { return arrow::schema({arrow::field("n", arrow::int32(), true)}, arrow::key_value_metadata({"source"},{"keep"})); }
-    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams&) const override { return nullptr; }
-    std::vector<std::string> projection_expression_profiles(const vgi::BindParams&) const override { return {vgi::SCALAR_PROJECTION_PROFILE, "vendor.scalar.v3"}; }
-    vgi::ProjectionAcceptance projection(const vgi::BindParams&,const vgi::ProjectionProposal& input) const override {
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("n", arrow::int32(), true)},
+                             arrow::key_value_metadata({"source"}, {"keep"}));
+    }
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams&) const override {
+        return nullptr;
+    }
+    std::vector<std::string> projection_expression_profiles(const vgi::BindParams&) const override {
+        return {vgi::SCALAR_PROJECTION_PROFILE, "vendor.scalar.v3"};
+    }
+    vgi::ProjectionAcceptance projection(const vgi::BindParams&,
+                                         const vgi::ProjectionProposal& input) const override {
         if (mode == 3) return {};
-        auto fields = input.source_schema->fields(); fields.push_back(input.result_schema->field(0));
-        vgi::ProjectionAcceptance result{{0},arrow::schema(fields,input.source_schema->metadata()),"provider-state"};
-        if (mode == 1) result.accepted_indices = {0,0};
+        auto fields = input.source_schema->fields();
+        fields.push_back(input.result_schema->field(0));
+        vgi::ProjectionAcceptance result{
+            {0}, arrow::schema(fields, input.source_schema->metadata()), "provider-state"};
+        if (mode == 1) result.accepted_indices = {0, 0};
         if (mode == 2) result.output_schema = arrow::schema(fields);
         if (mode == 4) result.output_schema = nullptr;
         if (mode == 5) result.accepted_indices = {1};
-        if (mode == 6) {fields.back() = arrow::field("wide",arrow::int64(),true); result.output_schema = arrow::schema(fields,input.source_schema->metadata());}
+        if (mode == 6) {
+            fields.back() = arrow::field("wide", arrow::int64(), true);
+            result.output_schema = arrow::schema(fields, input.source_schema->metadata());
+        }
         return result;
     }
 };
-}
+}  // namespace
 TEST_CASE("scalar projection validates provider acceptance before changing a scan",
           "[projection]") {
     vgi::Dispatcher dispatcher;

@@ -174,11 +174,17 @@ public:
 
     virtual std::unique_ptr<TableProducer> init(const ProcessParams& params) const = 0;
     // Explicit per-bind offer. Ordinary column selection never enables this hook.
-    virtual std::vector<std::string> projection_expression_profiles(const BindParams&) const { return {}; }
+    virtual std::vector<std::string> projection_expression_profiles(const BindParams&) const {
+        return {};
+    }
     // Opt in only when the bound source/transaction fixes the logical rows.
-    virtual BindRepeatability repeatability(const BindParams&) const { return BindRepeatability::Unknown; }
+    virtual BindRepeatability repeatability(const BindParams&) const {
+        return BindRepeatability::Unknown;
+    }
     // Pure planning: no resources allocated, rows consumed, or effects produced.
-    virtual ProjectionAcceptance projection(const BindParams&, const ProjectionProposal&) const { return {}; }
+    virtual ProjectionAcceptance projection(const BindParams&, const ProjectionProposal&) const {
+        return {};
+    }
 
     // The planner's estimate. The default declines to guess, which is what
     // most generators should do.

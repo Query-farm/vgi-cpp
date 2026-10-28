@@ -30,20 +30,24 @@ void require_unconstrained_field(const std::shared_ptr<arrow::Field>& field, boo
     bool logical = field->type()->id() == arrow::Type::EXTENSION;
     if (metadata) {
         for (const auto& key : metadata->keys()) {
-            logical = logical || key.rfind("ARROW:extension:", 0) == 0 || key.rfind("vgi.logical_type.", 0) == 0;
+            logical = logical || key.rfind("ARROW:extension:", 0) == 0 ||
+                      key.rfind("vgi.logical_type.", 0) == 0;
         }
     }
     if (logical || !field->nullable()) {
-        throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
-            "catalog_table_create: nonnullable or logical columns require supported canonical semantics",
-            vgi_rpc::Code::UNIMPLEMENTED);
+        throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED,
+                                   "MethodNotImplementedError",
+                                   "catalog_table_create: nonnullable or logical columns require "
+                                   "supported canonical semantics",
+                                   vgi_rpc::Code::UNIMPLEMENTED);
     }
     if (field->type()->id() == arrow::Type::STRUCT) {
         for (const auto& child : field->type()->fields()) require_unconstrained_field(child, false);
     }
 }
 
-std::map<std::string, std::string> view_map(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+std::map<std::string, std::string> view_map(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                            const std::string& field) {
     auto values = std::dynamic_pointer_cast<arrow::MapArray>(wire::column(batch, field));
     if (!values) throw std::invalid_argument("view metadata must be a string map");
     std::map<std::string, std::string> result;
@@ -54,13 +58,15 @@ std::map<std::string, std::string> view_map(const std::shared_ptr<arrow::RecordB
     const auto begin = values->value_offset(0);
     const auto end = begin + values->value_length(0);
     for (auto i = begin; i < end; ++i) {
-        if (keys->IsNull(i) || items->IsNull(i)) throw std::invalid_argument("view metadata cannot contain null entries");
+        if (keys->IsNull(i) || items->IsNull(i))
+            throw std::invalid_argument("view metadata cannot contain null entries");
         result.emplace(keys->GetString(i), items->GetString(i));
     }
     return result;
 }
 
-std::vector<std::pair<std::string, std::string>> view_pairs(const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
+std::vector<std::pair<std::string, std::string>> view_pairs(
+    const std::shared_ptr<arrow::RecordBatch>& batch, const std::string& field) {
     const auto values = view_map(batch, field);
     return {values.begin(), values.end()};
 }
@@ -262,7 +268,8 @@ void MemoryCatalog::schema_create(const std::string& attach,
             throw std::invalid_argument("Schema " + path_display(parent) + " does not exist");
         }
     }
-    st.schemas[path_key(path)] = Schema{path, wire::get_optional_string(params, "comment"), view_map(params, "tags"), {}, {}};
+    st.schemas[path_key(path)] = Schema{
+        path, wire::get_optional_string(params, "comment"), view_map(params, "tags"), {}, {}};
     ++st.version;
 }
 
@@ -409,8 +416,10 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
     // DDL.
     if (method == "catalog_schema_create") {
         if (wire::get_optional_binary(params, "options").has_value()) {
-            throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
-                "catalog_schema_create requires negotiated vgi.schema.options.create.v1", vgi_rpc::Code::UNIMPLEMENTED);
+            throw vgi_rpc::KindedError(
+                vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
+                "catalog_schema_create requires negotiated vgi.schema.options.create.v1",
+                vgi_rpc::Code::UNIMPLEMENTED);
         }
         schema_create(attach, params);
         return std::nullopt;
@@ -421,14 +430,19 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
     }
     if (method == "catalog_table_create") {
         if (!wire::get_binary_list(params, "constraint_definitions").empty()) {
-            throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
-                "catalog_table_create: canonical constraint enforcement is not supported", vgi_rpc::Code::UNIMPLEMENTED);
+            throw vgi_rpc::KindedError(
+                vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
+                "catalog_table_create: canonical constraint enforcement is not supported",
+                vgi_rpc::Code::UNIMPLEMENTED);
         }
         for (const char* field : {"comment", "tags", "options", "layout"}) {
-            if (params->schema()->GetFieldIndex(field) >= 0 && !wire::column(params, field)->IsNull(0)) {
-                throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
-                    "catalog_table_create: table metadata/options/layout profiles are not supported",
-                    vgi_rpc::Code::UNIMPLEMENTED);
+            if (params->schema()->GetFieldIndex(field) >= 0 &&
+                !wire::column(params, field)->IsNull(0)) {
+                throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED,
+                                           "MethodNotImplementedError",
+                                           "catalog_table_create: table metadata/options/layout "
+                                           "profiles are not supported",
+                                           vgi_rpc::Code::UNIMPLEMENTED);
             }
         }
         const auto name = wire::get_string(params, "name");
@@ -464,8 +478,10 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         std::vector<std::string> column_path;
         if (column) {
             column_path = wire::get_string_list(params, "column_path");
-            if (column_path.size() != 1 || column_path[0].empty() || column_path[0].find('\0') != std::string::npos)
-                throw std::invalid_argument("view column comments require one raw output identifier");
+            if (column_path.size() != 1 || column_path[0].empty() ||
+                column_path[0].find('\0') != std::string::npos)
+                throw std::invalid_argument(
+                    "view column comments require one raw output identifier");
         }
         const auto name = wire::get_string(params, "name");
         const auto path = wire::get_schema_path(params, "schema_path");
@@ -489,10 +505,13 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         if (column) {
             field = "column_comments";
             auto comments = view_map(batch, field);
-            if (comment) comments[column_path[0]] = *comment;
-            else comments.erase(column_path[0]);
+            if (comment)
+                comments[column_path[0]] = *comment;
+            else
+                comments.erase(column_path[0]);
             replacement.set_string_map(field, {comments.begin(), comments.end()});
-        } else replacement.set_optional_string(field, comment);
+        } else
+            replacement.set_optional_string(field, comment);
         auto values = replacement.fill_defaults().finish()->GetColumnByName(field);
         const auto index = batch->schema()->GetFieldIndex(field);
         auto updated = batch->SetColumn(index, batch->schema()->field(index), values);
@@ -512,15 +531,16 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
             if (entry.first.empty() || entry.first.find('\0') != std::string::npos)
                 throw std::invalid_argument("view column comments require raw output identifiers");
         }
-        auto info = wire::ResultBuilder(gen::ViewInfoSchema())
-                        .set_string("name", name)
-                        .set_string_list("schema_path", path)
-                        .set_string("definition", wire::get_string(params, "definition"))
-                        .set_string_list("aliases", wire::get_string_list(params, "aliases"))
-                        .set_string("security", "regular")
-                        .set_optional_string("comment", wire::get_optional_string(params, "comment"))
-                        .set_string_map("tags", view_pairs(params, "tags"))
-                        .set_string_map("column_comments", column_comments);
+        auto info =
+            wire::ResultBuilder(gen::ViewInfoSchema())
+                .set_string("name", name)
+                .set_string_list("schema_path", path)
+                .set_string("definition", wire::get_string(params, "definition"))
+                .set_string_list("aliases", wire::get_string_list(params, "aliases"))
+                .set_string("security", "regular")
+                .set_optional_string("comment", wire::get_optional_string(params, "comment"))
+                .set_string_map("tags", view_pairs(params, "tags"))
+                .set_string_map("column_comments", column_comments);
         put_object(attach, path, name, "View",
                    wire::get_optional_enum(params, "on_conflict").value_or(""), true,
                    wire::encode_ipc(info.fill_defaults().finish()));

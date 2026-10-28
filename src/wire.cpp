@@ -515,12 +515,16 @@ ResultBuilder& ResultBuilder::set_null(const std::string& field) {
 
 ResultBuilder& ResultBuilder::set_binary_list(const std::string& field,
                                               const std::vector<std::string>& values) {
-    if (std::static_pointer_cast<arrow::ListType>(schema_->field(field_index(field))->type())->value_type()->id() == arrow::Type::LARGE_BINARY) {
+    if (std::static_pointer_cast<arrow::ListType>(schema_->field(field_index(field))->type())
+            ->value_type()
+            ->id() == arrow::Type::LARGE_BINARY) {
         auto values_builder = std::make_shared<arrow::LargeBinaryBuilder>();
         arrow::ListBuilder b(arrow::default_memory_pool(), values_builder);
         check_ok(b.Append(), "opening large binary list");
-        for (const auto& value : values) check_ok(values_builder->Append(value), "appending large binary list");
-        arrays_[static_cast<size_t>(field_index(field))] = unwrap(b.Finish(), "finishing large binary list");
+        for (const auto& value : values)
+            check_ok(values_builder->Append(value), "appending large binary list");
+        arrays_[static_cast<size_t>(field_index(field))] =
+            unwrap(b.Finish(), "finishing large binary list");
         return *this;
     }
     auto values_builder = std::make_shared<arrow::BinaryBuilder>();
@@ -592,7 +596,8 @@ ResultBuilder& ResultBuilder::set_string_list_list_list(
             check_ok(items->AppendValues(path), "appending required-filter components");
         }
     }
-    arrays_[static_cast<size_t>(field_index(field))] = unwrap(outer.Finish(), "finishing required-filter groups");
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(outer.Finish(), "finishing required-filter groups");
     return *this;
 }
 

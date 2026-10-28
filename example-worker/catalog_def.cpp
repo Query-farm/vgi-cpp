@@ -565,7 +565,9 @@ void declare_catalog(vgi::Worker& worker) {
     // In `main`, not `data`: a view is looked up by the schema the user names,
     // and the suite names `main` for these two.
     auto& main = worker.catalog().schema("main");
-    main.tables.push_back(backed_by("projection_rows", "projection_sequence", arrow::schema({arrow::field("n", arrow::int32(), true)}), "Finite optional scalar projection example"));
+    main.tables.push_back(backed_by("projection_rows", "projection_sequence",
+                                    arrow::schema({arrow::field("n", arrow::int32(), true)}),
+                                    "Finite optional scalar projection example"));
     main.comment = "Example functions for testing VGI";
     main.tables.push_back(backed_by("test_same_name_table", "test_same_name_table_scan",
                                     columns({{"tag", arrow::utf8()}}),
@@ -632,7 +634,8 @@ void declare_catalog(vgi::Worker& worker) {
                       "Department reference table");
         departments.cardinality = 3;
         departments.constraints = constraint_fixtures::records("departments");
-        departments.columns = constraint_fixtures::required_schema(departments.columns, "departments");
+        departments.columns =
+            constraint_fixtures::required_schema(departments.columns, "departments");
         // Bounds wider than the three rows on purpose: they describe the table
         // the fixture stands in for, and `column_statistics.test` folds
         // `id > 100` to EMPTY_RESULT against them, not against the data.
@@ -746,10 +749,16 @@ void declare_catalog(vgi::Worker& worker) {
         // computes the other two.
         auto generated = backed_by(
             "generated_sequence", "sequence",
-            arrow::schema({arrow::field("n", arrow::int64(), /*nullable=*/true),
-                           tagged("doubled", arrow::int64(), {"vgi.column.generated.v1", "vgi.column.generation.v1"}, {vgi::generated_expression_metadata("n * 2", {"data"}), "virtual"}),
-                           tagged("label", arrow::utf8(), {"vgi.column.generated.v1", "vgi.column.generation.v1"},
-                                  {vgi::generated_expression_metadata("'item_' || CAST(n AS VARCHAR)", {"data"}), "virtual"})}),
+            arrow::schema(
+                {arrow::field("n", arrow::int64(), /*nullable=*/true),
+                 tagged("doubled", arrow::int64(),
+                        {"vgi.column.generated.v1", "vgi.column.generation.v1"},
+                        {vgi::generated_expression_metadata("n * 2", {"data"}), "virtual"}),
+                 tagged(
+                     "label", arrow::utf8(),
+                     {"vgi.column.generated.v1", "vgi.column.generation.v1"},
+                     {vgi::generated_expression_metadata("'item_' || CAST(n AS VARCHAR)", {"data"}),
+                      "virtual"})}),
             "Table with generated columns backed by sequence(10)");
         generated.scan_arguments = vgi::serialize_scan_arguments({int64_arg(10)});
         generated.cardinality = 10;
@@ -904,7 +913,8 @@ void declare_catalog(vgi::Worker& worker) {
             vgi::TimeTravelVersion entry;
             entry.version = version;
             entry.columns = constraint_fixtures::required_schema(
-                columns(per_version[static_cast<size_t>(version) - 1]), "versioned_constraints", version);
+                columns(per_version[static_cast<size_t>(version) - 1]), "versioned_constraints",
+                version);
             entry.scan_function = "versioned_constraints_scan";
             entry.scan_arguments = vgi::serialize_scan_arguments({int64_arg(version)});
             entry.timestamp_year = constraint_years[version - 1];

@@ -147,7 +147,9 @@ public:
 };
 
 class ProjectionRows : public vgi::TableProducer {
-    vgi::ProcessParams params_; bool done_ = false;
+    vgi::ProcessParams params_;
+    bool done_ = false;
+
 public:
     explicit ProjectionRows(vgi::ProcessParams params) : params_(std::move(params)) {}
     std::shared_ptr<arrow::RecordBatch> next_batch() override {
@@ -156,8 +158,17 @@ public:
         arrow::ArrayVector arrays;
         for (const auto& field : params_.output_schema->fields()) {
             std::shared_ptr<arrow::Array> array;
-            if (field->name() == "n") { arrow::Int32Builder b; for (int n = 0; n < 10; ++n) (void)b.Append(n); (void)b.Finish(&array); }
-            else { if (params_.bind_opaque_data.empty()) throw std::invalid_argument("projection state missing"); arrow::Int64Builder b; for (int64_t n = 0; n < 10; ++n) (void)b.Append(n); (void)b.Finish(&array); }
+            if (field->name() == "n") {
+                arrow::Int32Builder b;
+                for (int n = 0; n < 10; ++n) (void)b.Append(n);
+                (void)b.Finish(&array);
+            } else {
+                if (params_.bind_opaque_data.empty())
+                    throw std::invalid_argument("projection state missing");
+                arrow::Int64Builder b;
+                for (int64_t n = 0; n < 10; ++n) (void)b.Append(n);
+                (void)b.Finish(&array);
+            }
             arrays.push_back(array);
         }
         return arrow::RecordBatch::Make(params_.output_schema, 10, arrays);
@@ -166,24 +177,49 @@ public:
 class ProjectionSequence : public vgi::TableFunction {
 public:
     std::string name() const override { return "projection_sequence"; }
-    vgi::FunctionMetadata metadata() const override { vgi::FunctionMetadata md; md.projection_pushdown = true; return md; }
+    vgi::FunctionMetadata metadata() const override {
+        vgi::FunctionMetadata md;
+        md.projection_pushdown = true;
+        return md;
+    }
     std::vector<vgi::ArgSpec> argument_specs() const override { return {}; }
-    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override { return arrow::schema({arrow::field("n", arrow::int32(), true)}); }
-    std::vector<std::string> projection_expression_profiles(const vgi::BindParams&) const override { return {vgi::SCALAR_PROJECTION_PROFILE}; }
-    vgi::BindRepeatability repeatability(const vgi::BindParams&) const override { return vgi::BindRepeatability::StableWithinQuery; }
-    vgi::ProjectionAcceptance projection(const vgi::BindParams&, const vgi::ProjectionProposal& p) const override {
-        vgi::ProjectionAcceptance result; auto fields = p.source_schema->fields();
+    std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
+        return arrow::schema({arrow::field("n", arrow::int32(), true)});
+    }
+    std::vector<std::string> projection_expression_profiles(const vgi::BindParams&) const override {
+        return {vgi::SCALAR_PROJECTION_PROFILE};
+    }
+    vgi::BindRepeatability repeatability(const vgi::BindParams&) const override {
+        return vgi::BindRepeatability::StableWithinQuery;
+    }
+    vgi::ProjectionAcceptance projection(const vgi::BindParams&,
+                                         const vgi::ProjectionProposal& p) const override {
+        vgi::ProjectionAcceptance result;
+        auto fields = p.source_schema->fields();
         for (size_t i = 0; i < p.expressions.size(); ++i) {
             const auto& row = p.expressions[i];
             auto sql = std::static_pointer_cast<arrow::StringArray>(row->column(0))->GetString(0);
             auto c = std::static_pointer_cast<arrow::StructArray>(row->column(3));
-            const auto str = [&](int n) { return std::static_pointer_cast<arrow::StringArray>(c->field(n))->GetString(0); };
-            if (sql == "CAST(\"n\" AS BIGINT)" && str(0) == "UTC" && str(1) == "binary" && str(2) == "asc" && str(3) == "nulls_last" && std::static_pointer_cast<arrow::BooleanArray>(c->field(4))->Value(0) && p.result_schema->field(static_cast<int>(i))->type()->id() == arrow::Type::INT64) { result.accepted_indices.push_back(static_cast<int64_t>(i)); fields.push_back(p.result_schema->field(static_cast<int>(i))); }
+            const auto str = [&](int n) {
+                return std::static_pointer_cast<arrow::StringArray>(c->field(n))->GetString(0);
+            };
+            if (sql == "CAST(\"n\" AS BIGINT)" && str(0) == "UTC" && str(1) == "binary" &&
+                str(2) == "asc" && str(3) == "nulls_last" &&
+                std::static_pointer_cast<arrow::BooleanArray>(c->field(4))->Value(0) &&
+                p.result_schema->field(static_cast<int>(i))->type()->id() == arrow::Type::INT64) {
+                result.accepted_indices.push_back(static_cast<int64_t>(i));
+                fields.push_back(p.result_schema->field(static_cast<int>(i)));
+            }
         }
-        if (!result.accepted_indices.empty()) { result.output_schema = arrow::schema(fields, p.source_schema->metadata()); result.opaque_data = std::to_string(result.accepted_indices.size()); }
+        if (!result.accepted_indices.empty()) {
+            result.output_schema = arrow::schema(fields, p.source_schema->metadata());
+            result.opaque_data = std::to_string(result.accepted_indices.size());
+        }
         return result;
     }
-    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& p) const override { return std::make_unique<ProjectionRows>(p); }
+    std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& p) const override {
+        return std::make_unique<ProjectionRows>(p);
+    }
 };
 }  // namespace
 
