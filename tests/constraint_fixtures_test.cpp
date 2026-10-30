@@ -35,9 +35,9 @@ TEST_CASE("immutable scan rows prove every published constraint", "[constraint-f
         INFO(table);
         REQUIRE_NOTHROW(fixture::validate_rows(table, fixture::rows(table)));
         for (const auto& bytes : fixture::records(table)) {
-            auto info = vgi::wire::decode_ipc(bytes);
-            REQUIRE(vgi::wire::get_enum(info, "enforcement") == "ENFORCED");
-            REQUIRE(vgi::wire::get_enum(info, "validation") == "ALL_ROWS");
+            auto record = vgi::read_constraint_record(bytes);
+            REQUIRE(record.enforcement == vgi::ConstraintEnforcement::Enforced);
+            REQUIRE(record.validation == vgi::ConstraintValidation::AllRows);
         }
     }
     for (int64_t version = 1; version <= 3; ++version) {

@@ -23,10 +23,8 @@ int main(int argc, char** argv) {
     // wrapper that names one of the other fixtures serves that one alone, and
     // its discovery answer has to list exactly it.
     const bool composite = catalog.name == "example";
-    if (composite) {
-        catalog.catalog_read_profiles = {"vgi.constraint.records.read.v1",
-                                         "vgi.expression.duckdb.scalar.v1"};
-    }
+    // No catalog_read_profiles: the constraint tables' records make ATTACH
+    // offer the constraint read profiles on their own.
     const std::string catalog_name = catalog.name;
     if (catalog.name == "versioned") {
         // The versioned fixture: three data versions, one implementation, and

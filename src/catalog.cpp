@@ -34,6 +34,7 @@
 #include "column_metadata.h"
 #include "column_expressions.h"
 #include "enums.h"
+#include "vgi/constraints.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "methods.h"
 #include <vgi_rpc/arrow_utils.h>
@@ -107,6 +108,41 @@ std::string encode_read_profiles(const std::vector<std::string>& profiles) {
                                 .set_string_list("write", {})
                                 .set_string_list("transaction", {})
                                 .finish());
+}
+
+bool carries_constraint_records(const CatalogSchema& schema) {
+    for (const auto& table : schema.tables) {
+        if (!table.constraints.empty()) return true;
+        for (const auto& version : table.time_travel)
+            if (version.constraints && !version.constraints->empty()) return true;
+    }
+    return false;
+}
+
+// The read profiles an attachment offers: the catalog's explicit ones, plus
+// constraint records (with scalar CHECK expressions) whenever a table this
+// attachment serves carries records. Without the automatic pair the engine
+// refuses every such table ("constraint read profile was not negotiated").
+// Sorted, so the answer does not depend on declaration order.
+std::vector<std::string> available_read_profiles(const CatalogModel& model,
+                                                 const std::optional<std::string>& data_version) {
+    std::set<std::string> profiles(model.catalog_read_profiles.begin(),
+                                   model.catalog_read_profiles.end());
+    bool records = false;
+    const auto versioned =
+        data_version ? model.version_schemas.find(*data_version) : model.version_schemas.end();
+    if (versioned != model.version_schemas.end()) {
+        for (const auto& schema : versioned->second)
+            records = records || carries_constraint_records(schema);
+    } else {
+        for (const auto& schema : model.schemas)
+            records = records || carries_constraint_records(*schema);
+    }
+    if (records) {
+        profiles.insert(CONSTRAINT_RECORDS_READ);
+        profiles.insert(SCALAR_EXPRESSION_READ);
+    }
+    return {profiles.begin(), profiles.end()};
 }
 
 // The options this attachment was made with: the declared defaults, with
@@ -656,9 +692,10 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request, vgi_
                      .set_binary_list("settings", encode_settings(model))
                      .set_binary_list("secret_types", encode_secret_types(model))
                      .set_bool("supports_catalog_contents", model.supports_catalog_contents);
-    if (!model.catalog_read_profiles.empty()) {
-        validate_read_profiles(model.catalog_read_profiles);
-        std::vector<std::string> selected;
+    validate_read_profiles(model.catalog_read_profiles);
+    const auto available = available_read_profiles(model, resolved_data);
+    if (!available.empty()) {
+        std::vector<std::string> offered_read;
         if (auto bytes = wire::get_optional_binary(attach, "client_capabilities")) {
             auto client = capability_record(*bytes, gen::ClientCapabilitiesSchema());
             if (auto catalog_bytes = wire::get_optional_binary(client, "catalog")) {
@@ -670,23 +707,20 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request, vgi_
                         throw std::invalid_argument("null catalog capability profile");
                     auto offered = wire::get_string_list(offer, category);
                     validate_read_profiles(offered);
-                    if (std::string(category) == "read")
-                        for (const auto& profile : model.catalog_read_profiles)
-                            if (std::find(offered.begin(), offered.end(), profile) != offered.end())
-                                selected.push_back(profile);
+                    if (std::string(category) == "read") offered_read = std::move(offered);
                 }
             }
         }
+        std::vector<std::string> selected;
+        for (const auto& profile : available)
+            if (std::find(offered_read.begin(), offered_read.end(), profile) != offered_read.end())
+                selected.push_back(profile);
         // This bounded scalar read offer describes CHECK expressions inside
         // canonical constraints, so it cannot outlive the containing profile.
-        if (std::find(model.catalog_read_profiles.begin(), model.catalog_read_profiles.end(),
-                      "vgi.constraint.records.read.v1") != model.catalog_read_profiles.end() &&
-            std::find(selected.begin(), selected.end(), "vgi.constraint.records.read.v1") ==
-                selected.end())
-            selected.erase(
-                std::remove(selected.begin(), selected.end(), "vgi.expression.duckdb.scalar.v1"),
-                selected.end());
-        batch.set_binary("catalog_capabilities", encode_read_profiles(model.catalog_read_profiles));
+        if (std::find(selected.begin(), selected.end(), CONSTRAINT_RECORDS_READ) == selected.end())
+            selected.erase(std::remove(selected.begin(), selected.end(), SCALAR_EXPRESSION_READ),
+                           selected.end());
+        batch.set_binary("catalog_capabilities", encode_read_profiles(available));
         batch.set_binary("selected_capabilities", encode_read_profiles(selected));
     }
     if (model.comment) {
@@ -938,10 +972,14 @@ const TimeTravelVersion* resolve_version(const CatalogTable& table,
 // per query.
 std::string Dispatcher::encode_table_info(const CatalogTable& table, const SchemaPath& schema_path,
                                           const TimeTravelVersion* version) {
+    const auto qualified = schema_path_string(schema_path) + "." + table.name;
     if (!table.not_null.empty() || !table.unique.empty() || !table.primary_key.empty() ||
         !table.check.empty() || !table.foreign_keys.empty()) {
         throw std::invalid_argument(
-            "legacy constraint metadata requires explicit canonical records");
+            "Table '" + qualified +
+            "': not_null/unique/primary_key/check/foreign_keys are not sent under vgi.v3; "
+            "declare canonical records with vgi::constraint_record() in "
+            "CatalogTable::constraints instead");
     }
     if (version && !version->constraints && !table.constraints.empty()) {
         throw std::invalid_argument(
@@ -961,6 +999,10 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
     const auto& constraints =
         version && version->constraints ? *version->constraints : table.constraints;
     const auto& revision = version ? version->definition_revision : table.definition_revision;
+    // The extension refuses the whole ATTACH when a record is not
+    // ENFORCED + ALL_ROWS or Arrow nullability disagrees with the
+    // NOT_NULL/PRIMARY_KEY records -- for every table, records or not.
+    if (shape) validate_constraint_records(qualified, *shape, constraints);
 
     auto builder = wire::ResultBuilder(gen::TableInfoSchema());
     builder.set_string("name", table.name)

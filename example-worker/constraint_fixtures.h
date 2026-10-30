@@ -1,93 +1,46 @@
 // © Copyright 2025, 2026 Query Farm LLC - https://query.farm
 #pragma once
 
+#include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include <arrow/array/array_nested.h>
+#include <arrow/array.h>
+#include <arrow/type.h>
 
-#include <vgi/generated/vgi_protocol_schemas.hpp>
-
-#include "../src/wire.h"
+#include <vgi/constraints.h>
 
 namespace example {
 namespace constraint_fixtures {
 
-namespace gen = ::vgi::generated;
-using vgi::wire::encode_ipc;
-using vgi::wire::ResultBuilder;
+// The one CHECK the fixtures publish, kept for validate_rows to compare.
+inline constexpr const char* kBudgetCheck = "budget >= 0";
 
-// Fixed provider keys, not engine OIDs.
-inline std::string ref(const std::string& table, const std::string& key) {
-    return encode_ipc(ResultBuilder(gen::CatalogObjectRefSchema())
-                          .set_string("kind", "constraint")
-                          .set_string_list("schema_path", {"data"})
-                          .set_string("name", key)
-                          .set_string("owner_table", table)
-                          .finish());
+// The departments primary key, which both foreign keys point at.
+inline vgi::ConstraintReference departments_key() {
+    return {{"data"}, "departments", {{"id"}}, "fixture:departments:primary"};
 }
 
-inline std::string department_foreign_key() {
-    auto table = ResultBuilder(gen::CatalogObjectRefSchema())
-                     .set_string("kind", "table")
-                     .set_string_list("schema_path", {"data"})
-                     .set_string("name", "departments")
-                     .set_null("owner_table")
-                     .finish();
-    return encode_ipc(ResultBuilder(gen::ForeignKeyDefinitionSchema())
-                          .set_binary("referenced_table", encode_ipc(table))
-                          .set_string_list_list("referenced_column_paths", {{"id"}})
-                          .set_enum("match", "SIMPLE")
-                          .set_enum("on_update", "NO_ACTION")
-                          .set_enum("on_delete", "NO_ACTION")
-                          .finish());
-}
-
-inline std::string budget_check() {
-    auto context = ResultBuilder(gen::QueryEvaluationContextSchema())
-                       .set_string("timezone", "UTC")
-                       .set_string("collation", "binary")
-                       .set_string("default_order", "asc")
-                       .set_string("default_null_order", "nulls_last")
-                       .set_bool("preserve_insertion_order", true)
-                       .finish();
-    auto context_struct = arrow::StructArray::Make(context->columns(), context->schema()->fields());
-    if (!context_struct.ok()) throw std::runtime_error(context_struct.status().ToString());
-    return encode_ipc(ResultBuilder(gen::SqlExpressionSchema())
-                          .set_string("sql", "budget >= 0")
-                          .set_string("profile", "vgi.expression.duckdb.scalar.v1")
-                          .set_string_list("schema_path", {"data"})
-                          .set_array("evaluation_context", context_struct.MoveValueUnsafe())
-                          .finish());
-}
-
+// Fixed provider keys, not engine OIDs. Every fixture fact is attested
+// ENFORCED + ALL_ROWS: validate_rows() proves it against the immutable rows.
 inline std::string constraint(const std::string& table, const std::string& key,
-                              const std::string& kind,
-                              const std::vector<std::vector<std::string>>& paths,
-                              const std::string& check = {}, const std::string& foreign = {}) {
-    auto definition = ResultBuilder(gen::ConstraintDefinitionSchema());
-    definition.set_enum("kind", kind)
-        .set_string_list_list("column_paths", paths)
-        .set_null("declared_name");
-    if (check.empty())
-        definition.set_null("check_expression");
-    else
-        definition.set_binary("check_expression", check);
-    if (foreign.empty())
-        definition.set_null("foreign_key");
-    else
-        definition.set_binary("foreign_key", foreign);
-    auto info = ResultBuilder(gen::ConstraintInfoSchema());
-    info.set_binary("ref", ref(table, key))
-        .set_binary("definition", encode_ipc(definition.finish()))
-        .set_enum("enforcement", "ENFORCED")
-        .set_enum("validation", "ALL_ROWS");
-    if (foreign.empty())
-        info.set_null("referenced_constraint");
-    else
-        info.set_binary("referenced_constraint", ref("departments", "fixture:departments:primary"));
-    return encode_ipc(info.finish());
+                              vgi::ConstraintKind kind, std::vector<vgi::ColumnPath> paths,
+                              std::optional<std::string> check = std::nullopt,
+                              std::optional<vgi::ConstraintReference> foreign = std::nullopt) {
+    vgi::ConstraintRecordSpec spec;
+    spec.schema_path = {"data"};
+    spec.table = table;
+    spec.id = key;
+    spec.kind = kind;
+    spec.columns = std::move(paths);
+    spec.enforcement = vgi::ConstraintEnforcement::Enforced;
+    spec.validation = vgi::ConstraintValidation::AllRows;
+    spec.check_sql = std::move(check);
+    spec.references = std::move(foreign);
+    return vgi::constraint_record(spec);
 }
 
 // Private fixture definitions. records() validates the immutable scan arrays
@@ -95,59 +48,72 @@ inline std::string constraint(const std::string& table, const std::string& key,
 inline std::vector<std::string> definitions(const std::string& table, int64_t version = 0) {
     if (table == "departments") {
         return {
-            constraint(table, "fixture:departments:nn:id", "NOT_NULL", {{"id"}}),
-            constraint(table, "fixture:departments:nn:name", "NOT_NULL", {{"name"}}),
-            constraint(table, "fixture:departments:primary", "PRIMARY_KEY", {{"id"}}),
-            constraint(table, "fixture:departments:unique:name", "UNIQUE", {{"name"}}),
-            constraint(table, "fixture:departments:check:budget", "CHECK", {}, budget_check()),
+            constraint(table, "fixture:departments:nn:id", vgi::ConstraintKind::NotNull, {{"id"}}),
+            constraint(table, "fixture:departments:nn:name", vgi::ConstraintKind::NotNull,
+                       {{"name"}}),
+            constraint(table, "fixture:departments:primary", vgi::ConstraintKind::PrimaryKey,
+                       {{"id"}}),
+            constraint(table, "fixture:departments:unique:name", vgi::ConstraintKind::Unique,
+                       {{"name"}}),
+            constraint(table, "fixture:departments:check:budget", vgi::ConstraintKind::Check, {},
+                       kBudgetCheck),
         };
     }
     if (table == "products") {
         return {
-            constraint(table, "fixture:products:nn:id", "NOT_NULL", {{"id"}}),
-            constraint(table, "fixture:products:primary", "PRIMARY_KEY", {{"id"}}),
+            constraint(table, "fixture:products:nn:id", vgi::ConstraintKind::NotNull, {{"id"}}),
+            constraint(table, "fixture:products:primary", vgi::ConstraintKind::PrimaryKey,
+                       {{"id"}}),
         };
     }
     if (table == "employees") {
         return {
-            constraint(table, "fixture:employees:nn:id", "NOT_NULL", {{"id"}}),
-            constraint(table, "fixture:employees:nn:name", "NOT_NULL", {{"name"}}),
-            constraint(table, "fixture:employees:nn:email", "NOT_NULL", {{"email"}}),
-            constraint(table, "fixture:employees:primary", "PRIMARY_KEY", {{"id"}}),
-            constraint(table, "fixture:employees:unique:email", "UNIQUE", {{"email"}}),
-            constraint(table, "fixture:employees:fk:department", "FOREIGN_KEY", {{"department_id"}},
-                       {}, department_foreign_key()),
+            constraint(table, "fixture:employees:nn:id", vgi::ConstraintKind::NotNull, {{"id"}}),
+            constraint(table, "fixture:employees:nn:name", vgi::ConstraintKind::NotNull,
+                       {{"name"}}),
+            constraint(table, "fixture:employees:nn:email", vgi::ConstraintKind::NotNull,
+                       {{"email"}}),
+            constraint(table, "fixture:employees:primary", vgi::ConstraintKind::PrimaryKey,
+                       {{"id"}}),
+            constraint(table, "fixture:employees:unique:email", vgi::ConstraintKind::Unique,
+                       {{"email"}}),
+            constraint(table, "fixture:employees:fk:department", vgi::ConstraintKind::ForeignKey,
+                       {{"department_id"}}, std::nullopt, departments_key()),
         };
     }
     if (table == "projects") {
         return {
-            constraint(table, "fixture:projects:nn:department", "NOT_NULL", {{"department_id"}}),
-            constraint(table, "fixture:projects:nn:code", "NOT_NULL", {{"project_code"}}),
-            constraint(table, "fixture:projects:nn:title", "NOT_NULL", {{"title"}}),
-            constraint(table, "fixture:projects:primary", "PRIMARY_KEY",
+            constraint(table, "fixture:projects:nn:department", vgi::ConstraintKind::NotNull,
+                       {{"department_id"}}),
+            constraint(table, "fixture:projects:nn:code", vgi::ConstraintKind::NotNull,
+                       {{"project_code"}}),
+            constraint(table, "fixture:projects:nn:title", vgi::ConstraintKind::NotNull,
+                       {{"title"}}),
+            constraint(table, "fixture:projects:primary", vgi::ConstraintKind::PrimaryKey,
                        {{"department_id"}, {"project_code"}}),
-            constraint(table, "fixture:projects:fk:department", "FOREIGN_KEY", {{"department_id"}},
-                       {}, department_foreign_key()),
+            constraint(table, "fixture:projects:fk:department", vgi::ConstraintKind::ForeignKey,
+                       {{"department_id"}}, std::nullopt, departments_key()),
         };
     }
     if (table == "versioned_constraints") {
         if (version < 1 || version > 3)
             throw std::invalid_argument("unknown constraint fixture version");
         std::vector<std::string> result = {
-            constraint(table, "fixture:versioned_constraints:nn:id", "NOT_NULL", {{"id"}}),
+            constraint(table, "fixture:versioned_constraints:nn:id", vgi::ConstraintKind::NotNull,
+                       {{"id"}}),
         };
         if (version >= 2) {
-            result.push_back(
-                constraint(table, "fixture:versioned_constraints:nn:name", "NOT_NULL", {{"name"}}));
+            result.push_back(constraint(table, "fixture:versioned_constraints:nn:name",
+                                        vgi::ConstraintKind::NotNull, {{"name"}}));
             result.push_back(constraint(table, "fixture:versioned_constraints:primary",
-                                        "PRIMARY_KEY", {{"id"}}));
+                                        vgi::ConstraintKind::PrimaryKey, {{"id"}}));
             result.push_back(constraint(table, "fixture:versioned_constraints:unique:email",
-                                        "UNIQUE", {{"email"}}));
+                                        vgi::ConstraintKind::Unique, {{"email"}}));
         }
         if (version >= 3)
             result.push_back(constraint(table, "fixture:versioned_constraints:fk:department",
-                                        "FOREIGN_KEY", {{"department_id"}}, {},
-                                        department_foreign_key()));
+                                        vgi::ConstraintKind::ForeignKey, {{"department_id"}},
+                                        std::nullopt, departments_key()));
         return result;
     }
     throw std::invalid_argument("unknown constraint fixture table: " + table);

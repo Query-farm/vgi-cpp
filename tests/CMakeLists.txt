@@ -106,3 +106,10 @@ add_executable(constraint_fixtures_test constraint_fixtures_test.cpp
     ../example-worker/constraint_fixtures.cpp)
 target_link_libraries(constraint_fixtures_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
 catch_discover_tests(constraint_fixtures_test)
+
+# Canonical constraint records: the public builder/decoder, the serve-time
+# ENFORCED + ALL_ROWS and nullability checks, and automatic profile offers.
+add_executable(constraint_records_test constraint_records_test.cpp)
+target_link_libraries(constraint_records_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(constraint_records_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+catch_discover_tests(constraint_records_test)

@@ -13,6 +13,7 @@
 #include <arrow/array.h>
 #include <arrow/type.h>
 
+#include "vgi/constraints.h"
 #include "vgi/statistics.h"
 #include "vgi/types.h"
 
@@ -57,8 +58,9 @@ struct TimeTravelVersion {
     std::string scan_arguments;
     // The calendar year this version became current, for `AT (TIMESTAMP => …)`.
     std::optional<int> timestamp_year;
-    // Explicit canonical records for this version. Absence cannot inherit a
-    // constrained current table's definitions: its columns may have changed.
+    // Explicit canonical records for this version (vgi::constraint_record()).
+    // Absence cannot inherit a constrained current table's definitions: its
+    // columns may have changed.
     std::optional<std::vector<std::string>> constraints;
     std::optional<std::string> definition_revision;
 };
@@ -81,7 +83,14 @@ struct ForeignKey {
 // planner types the query against before any scan runs, so they have to match
 // what the scan actually emits.
 struct CatalogTable {
-    // Canonical ConstraintInfo IPC supplied by the provider; identities are never synthesized.
+    // Canonical ConstraintInfo IPC records, each built with
+    // vgi::constraint_record() (vgi/constraints.h). The provider attests every
+    // one; identities are never synthesized and nothing is derived from the
+    // legacy fields below. Serving a table checks that every record is
+    // ENFORCED + ALL_ROWS and that `columns` is non-nullable exactly at the
+    // NOT_NULL/PRIMARY_KEY paths -- an unconstrained table must therefore
+    // declare every field nullable. Records make ATTACH offer the
+    // constraint read profiles automatically.
     std::vector<std::string> constraints;
     std::optional<std::string> definition_revision;
     std::string name;
@@ -121,13 +130,10 @@ struct CatalogTable {
     // DuckDB extensions the branches need (`iceberg`, `parquet`).
     std::vector<std::string> required_extensions;
 
-    // Constraints, as DuckDB's catalog views report them. Columns are given
-    // by index into `columns`, except the foreign keys, whose wire form is by
-    // name.
-    //
-    // Declarative only: nothing here is enforced by the worker, and the engine
-    // does not enforce it on a VGI table either. It exists so a tool reading
-    // the catalog sees the same shape it would see for a local table.
+    // Legacy (pre-vgi.v3) constraint descriptors. vgi.v3 has no wire form for
+    // them and the SDK will not translate them into canonical records: a table
+    // that sets any of these is refused when served. Declare
+    // vgi::constraint_record() records in `constraints` instead.
     std::vector<int32_t> not_null;
     std::vector<std::vector<int32_t>> unique;
     std::vector<std::vector<int32_t>> primary_key;
@@ -358,9 +364,15 @@ struct CatalogModel {
     // defaults are what an attachment that sets none is given.
     std::vector<AttachOptionSpec> attach_options;
 
-    // Explicit read-only protocol offers. Empty keeps capability negotiation
-    // absent; ATTACH selects only the client's offered subset. The provider
-    // remains responsible for the semantic guarantees of each named profile.
+    // Extra read-only protocol offers, merged with the automatic ones: when a
+    // table this attachment serves carries `constraints`, ATTACH offers
+    // CONSTRAINT_RECORDS_READ and SCALAR_EXPRESSION_READ without being asked.
+    // Name them here only for tables the model cannot see (a custom
+    // catalog_contents_handler). With nothing to offer, capability
+    // negotiation stays absent; ATTACH selects only the client's offered
+    // subset, and the scalar profile only alongside constraint records. The
+    // provider remains responsible for the semantic guarantees of each
+    // named profile.
     std::vector<std::string> catalog_read_profiles;
 
     // Function names this catalog asks the engine to publish into its global,
