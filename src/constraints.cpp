@@ -135,11 +135,15 @@ const arrow::FieldVector* ordinary_struct_children(const arrow::Field& field) {
 
 }  // namespace
 
-const char* to_string(ConstraintKind kind) { return spell(kKinds, kind); }
+const char* to_string(ConstraintKind kind) {
+    return spell(kKinds, kind);
+}
 const char* to_string(ConstraintEnforcement enforcement) {
     return spell(kEnforcements, enforcement);
 }
-const char* to_string(ConstraintValidation validation) { return spell(kValidations, validation); }
+const char* to_string(ConstraintValidation validation) {
+    return spell(kValidations, validation);
+}
 
 std::string constraint_record(const ConstraintRecordSpec& spec) {
     if (spec.schema_path.empty()) throw std::invalid_argument("constraint schema_path is empty");
@@ -176,8 +180,7 @@ std::string constraint_record(const ConstraintRecordSpec& spec) {
                            .finish();
         auto context_struct =
             arrow::StructArray::Make(context->columns(), context->schema()->fields());
-        if (!context_struct.ok())
-            throw std::runtime_error(context_struct.status().ToString());
+        if (!context_struct.ok()) throw std::runtime_error(context_struct.status().ToString());
         check_expression =
             wire::encode_ipc(wire::ResultBuilder(gen::SqlExpressionSchema())
                                  .set_string("sql", *spec.check_sql)
@@ -250,8 +253,7 @@ ConstraintRecordView read_constraint_record(const std::string& bytes) {
     view.id = wire::get_string(ref, "name");
     view.kind = parse(kKinds, wire::get_enum(definition, "kind"), "kind");
     view.columns = get_paths(definition, "column_paths");
-    view.enforcement =
-        parse(kEnforcements, wire::get_enum(info, "enforcement"), "enforcement");
+    view.enforcement = parse(kEnforcements, wire::get_enum(info, "enforcement"), "enforcement");
     view.validation = parse(kValidations, wire::get_enum(info, "validation"), "validation");
     view.declared_name = wire::get_optional_string(definition, "declared_name");
     if (auto check = wire::get_optional_binary(definition, "check_expression")) {
@@ -259,8 +261,8 @@ ConstraintRecordView read_constraint_record(const std::string& bytes) {
         view.check_sql = wire::get_string(expression, "sql");
     }
     if (auto foreign = wire::get_optional_binary(definition, "foreign_key")) {
-        auto fk = decode_record(*foreign, gen::ForeignKeyDefinitionSchema(),
-                                "ForeignKeyDefinition");
+        auto fk =
+            decode_record(*foreign, gen::ForeignKeyDefinitionSchema(), "ForeignKeyDefinition");
         auto target = decode_record(wire::get_binary(fk, "referenced_table"),
                                     gen::CatalogObjectRefSchema(), "CatalogObjectRef");
         ConstraintReference reference;
@@ -300,8 +302,8 @@ void validate_constraint_records(const std::string& table, const arrow::Schema& 
     }
 
     std::set<ColumnPath> seen;
-    auto walk = [&](auto&& self, const arrow::FieldVector& fields, const ColumnPath& parent)
-        -> void {
+    auto walk = [&](auto&& self, const arrow::FieldVector& fields,
+                    const ColumnPath& parent) -> void {
         for (const auto& field : fields) {
             // The extension excludes the synthetic row-id column from the rule.
             if (parent.empty() && field->metadata() && field->metadata()->Contains("is_row_id"))

@@ -275,8 +275,8 @@ TEST_CASE("Arrow nullability must equal the NOT_NULL/PRIMARY_KEY paths", "[const
         CHECK_NOTHROW(vgi::validate_constraint_records(
             "main.t", *arrow::schema({arrow::field("id", arrow::int64())}), {}));
         CHECK_THROWS_WITH(
-            vgi::validate_constraint_records(
-                "main.t", *arrow::schema({required("id", arrow::int64())}), {}),
+            vgi::validate_constraint_records("main.t",
+                                             *arrow::schema({required("id", arrow::int64())}), {}),
             ContainsSubstring("Table 'main.t': column id is non-nullable in Arrow but no "
                               "NOT_NULL/PRIMARY_KEY record names it"));
     }
@@ -294,11 +294,10 @@ TEST_CASE("Arrow nullability must equal the NOT_NULL/PRIMARY_KEY paths", "[const
                               "its Arrow field is nullable"));
     }
     SECTION("UNIQUE alone does not make a field non-nullable") {
-        CHECK_THROWS_WITH(
-            vgi::validate_constraint_records(
-                "main.t", *arrow::schema({required("a", arrow::int64())}),
-                {record("t.u", vgi::ConstraintKind::Unique, {{"a"}})}),
-            ContainsSubstring("column a is non-nullable"));
+        CHECK_THROWS_WITH(vgi::validate_constraint_records(
+                              "main.t", *arrow::schema({required("a", arrow::int64())}),
+                              {record("t.u", vgi::ConstraintKind::Unique, {{"a"}})}),
+                          ContainsSubstring("column a is non-nullable"));
     }
     SECTION("ordinary STRUCTs are descended into") {
         auto bbox = arrow::struct_(
@@ -319,7 +318,8 @@ TEST_CASE("Arrow nullability must equal the NOT_NULL/PRIMARY_KEY paths", "[const
         auto storage = arrow::struct_({required("x", arrow::float64())});
         for (const auto& key : {"ARROW:extension:name", "vgi.logical_type.name"}) {
             INFO(key);
-            auto field = arrow::field("point", storage, true, arrow::key_value_metadata({key}, {"p"}));
+            auto field =
+                arrow::field("point", storage, true, arrow::key_value_metadata({key}, {"p"}));
             CHECK_NOTHROW(vgi::validate_constraint_records("main.t", *arrow::schema({field}), {}));
             CHECK_THROWS_WITH(
                 vgi::validate_constraint_records(
@@ -358,15 +358,14 @@ TEST_CASE("a catalog with records offers the constraint read profiles itself",
     }
     SECTION("records alone when the client offers only records") {
         auto result =
-            worker.call("catalog_attach", attach_params(std::vector<std::string>{
-                                              vgi::CONSTRAINT_RECORDS_READ}));
+            worker.call("catalog_attach",
+                        attach_params(std::vector<std::string>{vgi::CONSTRAINT_RECORDS_READ}));
         CHECK(read_profiles(result, "selected_capabilities") ==
               std::vector<std::string>{vgi::CONSTRAINT_RECORDS_READ});
     }
     SECTION("the scalar profile never outlives records") {
-        auto result =
-            worker.call("catalog_attach", attach_params(std::vector<std::string>{
-                                              vgi::SCALAR_EXPRESSION_READ}));
+        auto result = worker.call(
+            "catalog_attach", attach_params(std::vector<std::string>{vgi::SCALAR_EXPRESSION_READ}));
         CHECK(read_profiles(result, "catalog_capabilities") == both);
         CHECK(read_profiles(result, "selected_capabilities").empty());
     }
@@ -396,10 +395,11 @@ TEST_CASE("explicit profiles merge with the automatic ones", "[constraints][atta
 
 TEST_CASE("a catalog without records keeps negotiation absent", "[constraints][attach]") {
     vgi::Dispatcher dispatcher;
-    dispatcher.set_catalog(constrained_model(arrow::schema({arrow::field("id", arrow::int64())}), {}));
+    dispatcher.set_catalog(
+        constrained_model(arrow::schema({arrow::field("id", arrow::int64())}), {}));
     Served worker(dispatcher);
-    auto result = worker.call("catalog_attach",
-                              attach_params(std::vector<std::string>{vgi::CONSTRAINT_RECORDS_READ}));
+    auto result = worker.call(
+        "catalog_attach", attach_params(std::vector<std::string>{vgi::CONSTRAINT_RECORDS_READ}));
     CHECK(read_profiles(result, "catalog_capabilities") == std::vector<std::string>{"<absent>"});
     CHECK(read_profiles(result, "selected_capabilities") == std::vector<std::string>{"<absent>"});
 }
@@ -407,12 +407,11 @@ TEST_CASE("a catalog without records keeps negotiation absent", "[constraints][a
 TEST_CASE("serving a table enforces the record contract", "[constraints][serve]") {
     auto contents = [](Served& worker) {
         auto attached = worker.call("catalog_attach", attach_params(std::nullopt));
-        auto params =
-            vgi::wire::ResultBuilder(gen::CatalogContentsParamsSchema())
-                .set_binary("attach_opaque_data",
-                            vgi::wire::get_binary(attached, "attach_opaque_data"))
-                .set_null("if_none_match")
-                .finish();
+        auto params = vgi::wire::ResultBuilder(gen::CatalogContentsParamsSchema())
+                          .set_binary("attach_opaque_data",
+                                      vgi::wire::get_binary(attached, "attach_opaque_data"))
+                          .set_null("if_none_match")
+                          .finish();
         return worker.refused("catalog_contents", params);
     };
     SECTION("a valid table is served") {
@@ -425,9 +424,9 @@ TEST_CASE("serving a table enforces the record contract", "[constraints][serve]"
     }
     SECTION("nullability disagreement names the table and column") {
         vgi::Dispatcher dispatcher;
-        dispatcher.set_catalog(constrained_model(
-            arrow::schema({arrow::field("id", arrow::int64())}),
-            {record("t.pk", vgi::ConstraintKind::PrimaryKey, {{"id"}})}));
+        dispatcher.set_catalog(
+            constrained_model(arrow::schema({arrow::field("id", arrow::int64())}),
+                              {record("t.pk", vgi::ConstraintKind::PrimaryKey, {{"id"}})}));
         Served worker(dispatcher);
         CHECK_THAT(contents(worker),
                    ContainsSubstring("Table 'main.t': column id is in a NOT_NULL/PRIMARY_KEY"));
