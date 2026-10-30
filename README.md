@@ -11,7 +11,7 @@ of the [Rust](https://github.com/Query-farm/vgi-rust) and
 [Python](https://github.com/Query-farm/vgi-python) SDKs, and is built on the
 C++ [vgi-rpc](https://github.com/Query-farm/vgi-rpc-cpp) port.
 
-Version **0.13.0** uses **`vgi.v3` / `3.0.0`** and requires a matching VGI
+Version **0.13.1** uses **`vgi.v3` / `3.0.0`** and requires a matching VGI
 extension. Keep 0.12.x for existing `vgi.v2` installations; upgrade the extension
 and worker SDKs together. The shared contract prepares for DuckDB 2.0 while
 remaining usable by the 1.5 adapter. Optional catalog and query capabilities

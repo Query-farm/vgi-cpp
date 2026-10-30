@@ -6,9 +6,12 @@
 #include <stdexcept>
 #include <string>
 
+#include <arrow/array/builder_binary.h>
+#include <arrow/record_batch.h>
 #include <vgi_rpc/crypto.h>
 
 #include "methods.h"
+#include "vgi/constraints.h"
 #include "wire.h"
 
 namespace vgi {
@@ -73,6 +76,32 @@ void sort_parents_first(std::vector<SchemaContents>& schemas) {
                      [](const SchemaContents& a, const SchemaContents& b) {
                          return a.path.size() < b.path.size();
                      });
+}
+
+// A table a custom handler encoded itself, held to the same contract as one
+// the SDK encodes: its records checked against the extension's ATTACH rules,
+// and its columns served with nullability rewritten to match them.
+std::string serve_table_item(const std::string& item) {
+    auto info = wire::decode_ipc(item);
+    if (!info || info->num_rows() != 1)
+        throw std::invalid_argument("catalog_contents returned a malformed TableInfo");
+    const auto schema_path = wire::get_schema_path(info, "schema_path");
+    const auto name = wire::get_string(info, "name");
+    const auto columns_bytes = wire::get_binary(info, "columns");
+    if (columns_bytes.empty()) return item;
+    const auto constraints = wire::get_binary_list(info, "constraints");
+    const auto columns = wire::decode_schema(columns_bytes);
+    validate_constraint_records(schema_path, name, *columns, constraints);
+    const auto served = served_columns(*columns, constraints);
+    if (served->Equals(*columns, /*check_metadata=*/true)) return item;
+    const auto index = info->schema()->GetFieldIndex("columns");
+    arrow::BinaryBuilder builder;
+    const auto encoded = wire::encode_schema(served);
+    if (!builder.Append(encoded).ok()) throw std::runtime_error("cannot rebuild TableInfo.columns");
+    auto replaced =
+        info->SetColumn(index, info->schema()->field(index), builder.Finish().ValueOrDie());
+    if (!replaced.ok()) throw std::runtime_error(replaced.status().ToString());
+    return wire::encode_ipc(*replaced);
 }
 
 CatalogContentsResult not_modified(const std::string& etag) {
@@ -154,6 +183,10 @@ CatalogContentsAnswer answer_catalog_contents(const CatalogContentsHandler& hand
     }
 
     check_paths(result.schemas, static_cast<bool>(handler));
+    if (handler) {
+        for (auto& schema : result.schemas)
+            for (auto& table : schema.tables) table = serve_table_item(table);
+    }
     sort_parents_first(result.schemas);
 
     // A catalog's own etag answers not_modified before anything is encoded.

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -22,6 +23,29 @@ namespace vgi {
 // Translate a VIRTUAL SQL convenience value with explicit owner and default context.
 // Returns canonical base64 SqlExpression IPC; does not bind or execute SQL.
 std::string generated_expression_metadata(const std::string& sql, const SchemaPath& owner);
+
+// One column path in a `required_filters` group: raw components from the
+// top-level column down through STRUCT children, e.g. {"ticker"} or
+// {"bbox", "xmin"}. Dots and quotes are literal.
+//
+// A type of its own, not a std::vector<std::string>, so that the flat spelling
+// `{{"ticker", "cik"}}` -- which against nested vectors picked vector's
+// iterator-pair constructor from the two string literals and compiled into
+// garbage paths or std::length_error -- is a compile error. Spell a group of
+// two alternative paths `{{{"ticker"}, {"cik"}}}`.
+struct RequiredFilterPath {
+    std::vector<std::string> components;
+
+    RequiredFilterPath(std::initializer_list<std::string> path) : components(path) {}
+    explicit RequiredFilterPath(std::vector<std::string> path) : components(std::move(path)) {}
+
+    bool operator==(const RequiredFilterPath& other) const {
+        return components == other.components;
+    }
+};
+
+// An OR-group of required-filter paths: satisfied when any path is filtered.
+using RequiredFilterGroup = std::vector<RequiredFilterPath>;
 
 // One source a multi-branch table reads from.
 //
@@ -58,10 +82,13 @@ struct TimeTravelVersion {
     std::string scan_arguments;
     // The calendar year this version became current, for `AT (TIMESTAMP => …)`.
     std::optional<int> timestamp_year;
-    // Explicit canonical records for this version (vgi::constraint_record()).
-    // Absence cannot inherit a constrained current table's definitions: its
-    // columns may have changed.
+    // Canonical records for this version (vgi::constraint_record()). Absent,
+    // the version serves the table-level `CatalogTable::constraints` and
+    // `definition_revision`; an empty vector states that this version has
+    // none. Either way the records are checked against *this* version's
+    // columns when the worker starts, naming the table and version.
     std::optional<std::vector<std::string>> constraints;
+    // Nonempty when present.
     std::optional<std::string> definition_revision;
 };
 
@@ -75,6 +102,12 @@ struct ForeignKey {
     std::optional<SchemaPath> referenced_schema_path;
 };
 
+// The legacy constraint members below are deprecated so that code naming them
+// is warned. The struct's own implicitly defined members (copy, move,
+// destruction) touch them too; that use is not the caller's, so it is
+// silenced here and only here.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 // A table the catalog advertises.
 //
 // A VGI table is not storage: it is a *name* bound to a table function that
@@ -86,12 +119,15 @@ struct CatalogTable {
     // Canonical ConstraintInfo IPC records, each built with
     // vgi::constraint_record() (vgi/constraints.h). The provider attests every
     // one; identities are never synthesized and nothing is derived from the
-    // legacy fields below. Serving a table checks that every record is
-    // ENFORCED + ALL_ROWS and that `columns` is non-nullable exactly at the
-    // NOT_NULL/PRIMARY_KEY paths -- an unconstrained table must therefore
-    // declare every field nullable. Records make ATTACH offer the
-    // constraint read profiles automatically.
+    // legacy fields below or from Arrow nullability. The worker checks every
+    // record against the extension's ATTACH rules when it starts (see
+    // vgi::validate_constraint_records()), and serves `columns` with
+    // nullability rewritten to match: non-nullable exactly at the
+    // NOT_NULL/PRIMARY_KEY paths, nullable everywhere else. Records make ATTACH
+    // offer the constraint read profiles automatically. A time-travel version
+    // that states no records of its own serves these.
     std::vector<std::string> constraints;
+    // An opaque token naming this definition; nonempty when present.
     std::optional<std::string> definition_revision;
     std::string name;
     std::shared_ptr<arrow::Schema> columns;
@@ -114,9 +150,11 @@ struct CatalogTable {
     //
     // A group is satisfied when *any* of its paths carries a filter, and every
     // group must be satisfied. A single-path group is a plain mandatory
-    // filter; `{{"ticker"}, {"cik"}}` means "one of these two". Empty means no
-    // requirement. The engine enforces it — the worker only declares it.
-    std::vector<std::vector<std::vector<std::string>>> required_filters;
+    // filter; `{{{"ticker"}, {"cik"}}}` means "one of these two" and
+    // `{{{"bbox", "xmin"}}}` requires a filter on a STRUCT member. Empty means
+    // no requirement. The engine enforces it — the worker only declares it,
+    // and each path must resolve against `columns` through STRUCT parents.
+    std::vector<RequiredFilterGroup> required_filters;
 
     // Sources this table is stitched from.
     //
@@ -132,13 +170,23 @@ struct CatalogTable {
 
     // Legacy (pre-vgi.v3) constraint descriptors. vgi.v3 has no wire form for
     // them and the SDK will not translate them into canonical records: a table
-    // that sets any of these is refused when served. Declare
+    // that sets any of these is refused when the worker starts. Declare
     // vgi::constraint_record() records in `constraints` instead.
-    std::vector<int32_t> not_null;
-    std::vector<std::vector<int32_t>> unique;
-    std::vector<std::vector<int32_t>> primary_key;
-    std::vector<std::string> check;
-    std::vector<ForeignKey> foreign_keys;
+    [[deprecated(
+        "not sent under vgi.v3; declare vgi::constraint_record() records in "
+        "CatalogTable::constraints")]] std::vector<int32_t> not_null;
+    [[deprecated(
+        "not sent under vgi.v3; declare vgi::constraint_record() records in "
+        "CatalogTable::constraints")]] std::vector<std::vector<int32_t>> unique;
+    [[deprecated(
+        "not sent under vgi.v3; declare vgi::constraint_record() records in "
+        "CatalogTable::constraints")]] std::vector<std::vector<int32_t>> primary_key;
+    [[deprecated(
+        "not sent under vgi.v3; declare vgi::constraint_record() records in "
+        "CatalogTable::constraints")]] std::vector<std::string> check;
+    [[deprecated(
+        "not sent under vgi.v3; declare vgi::constraint_record() records in "
+        "CatalogTable::constraints")]] std::vector<ForeignKey> foreign_keys;
 
     // Per-column bounds for the optimizer. Empty means the table declines to
     // answer, which is different from answering with no columns: the engine
@@ -161,6 +209,7 @@ struct CatalogTable {
     // resolve the clause, so either setting travels correctly.
     bool inline_scan = true;
 };
+#pragma GCC diagnostic pop
 
 // A view: a name bound to SQL the engine expands.
 struct CatalogView {
@@ -174,6 +223,8 @@ struct CatalogView {
     // SQL produces, and the engine matches these against them.
     std::vector<std::pair<std::string, std::string>> column_comments;
     std::vector<std::string> aliases;
+    // DuckDB reads only "regular" views; any other value is refused when the
+    // worker starts.
     std::string security = "regular";
 };
 
@@ -191,14 +242,44 @@ struct CatalogMacro {
     bool table_macro = false;
     std::optional<std::string> comment;
     // Defaults for the simple descriptor, by name. This convenience form accepts integers;
-    // canonical overload records can represent other typed values and declarations.
+    // build overloads with vgi::macro_overload() for other typed values and declarations.
     std::vector<std::pair<std::string, int64_t>> defaults;
-    // Per-parameter descriptions, surfaced by `vgi_function_arguments()`
-    // through the same `vgi_doc` channel a function's arguments use.
+    // Per-parameter descriptions, sent as each `MacroParameter.documentation`
+    // and surfaced by `vgi_function_arguments()`.
     std::vector<std::pair<std::string, std::string>> parameter_docs;
-    // Complete MacroOverload IPC records; simple-definition fields must be empty.
+    // Complete MacroOverload IPC records, each built with vgi::macro_overload()
+    // in this macro's schema and kind; the simple-definition fields above must
+    // then be empty.
     std::optional<std::vector<std::string>> overloads;
 };
+
+// One parameter of a macro overload.
+struct MacroParameterSpec {
+    std::string name;
+    // Null: the parameter takes any type.
+    std::shared_ptr<arrow::DataType> declared_type;
+    // A one-element array holding the literal default; null for none. A
+    // parameter without a default may not follow one with a default.
+    std::shared_ptr<arrow::Array> default_value;
+    std::optional<std::string> documentation;
+};
+
+// One overload of a macro family, as `macro_overload()` encodes it.
+struct MacroOverloadSpec {
+    // The owning schema and kind: must equal the CatalogMacro's.
+    SchemaPath schema_path = {"main"};
+    bool table_macro = false;
+    std::vector<MacroParameterSpec> parameters;
+    // The macro body: a scalar expression, or a query for a table macro.
+    std::string definition;
+};
+
+// Encode one MacroOverload IPC record for `CatalogMacro::overloads`, under the
+// duckdb.macro.v1 profile and the default evaluation context. Throws
+// std::invalid_argument on an empty or NUL-bearing definition or name, a
+// duplicate (case-insensitive) parameter name, a default that is not a
+// one-element array, or a required parameter after a defaulted one.
+std::string macro_overload(const MacroOverloadSpec& spec);
 
 // An option a caller may set in the ATTACH statement.
 //
@@ -316,10 +397,17 @@ std::string catalog_contents_digest(const std::vector<SchemaContents>& schemas);
 
 // A DDL-capable in-memory catalog (Worker::register_memory_catalog).
 //
-// Accepts CREATE / DROP SCHEMA, TABLE (definitions only: it holds no rows) and
-// VIEW. Every ATTACH is private: it starts from an empty `main` schema and
-// never sees another attachment's objects, even in one worker process. Its
-// version starts at 1, is bumped by every DDL, and is not frozen.
+// Accepts CREATE / DROP SCHEMA, TABLE (definitions only: it holds no rows and
+// accepts no writes) and VIEW. CREATE TABLE may declare column NOT NULL: ATTACH
+// negotiates CONSTRAINT_RECORDS_READ, CONSTRAINT_CREATE and CONSTRAINT_ENFORCE,
+// and each NOT NULL becomes an ENFORCED + ALL_ROWS canonical record -- true
+// because no write path exists to store a NULL. PRIMARY KEY, UNIQUE, CHECK
+// and FOREIGN KEY are refused (UNIMPLEMENTED): nothing here could enforce
+// them. A non-nullable column no NOT NULL names is served nullable. Logical
+// (extension) column types such as UUID are refused: stored here they would
+// be read back as their storage type. Every ATTACH is private: it starts from an empty `main`
+// schema and never sees another attachment's objects, even in one worker process. Its version
+// starts at 1, is bumped by every DDL, and is not frozen.
 //
 // State lives in the worker process that served the ATTACH, which on every
 // transport this SDK offers is the one serving the rest of that session.
@@ -368,7 +456,8 @@ struct CatalogModel {
     // table this attachment serves carries `constraints`, ATTACH offers
     // CONSTRAINT_RECORDS_READ and SCALAR_EXPRESSION_READ without being asked.
     // Name them here only for tables the model cannot see (a custom
-    // catalog_contents_handler). With nothing to offer, capability
+    // catalog_contents_handler; its table items are still checked and served
+    // with their nullability matched to their records). With nothing to offer, capability
     // negotiation stays absent; ATTACH selects only the client's offered
     // subset, and the scalar profile only alongside constraint records. The
     // provider remains responsible for the semantic guarantees of each

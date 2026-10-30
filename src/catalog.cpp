@@ -11,6 +11,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <map>
 #include <optional>
 #include <random>
 #include <regex>
@@ -35,6 +36,7 @@
 #include "column_expressions.h"
 #include "enums.h"
 #include "vgi/constraints.h"
+#include "sql_scalar.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "methods.h"
 #include <vgi_rpc/arrow_utils.h>
@@ -67,49 +69,6 @@ std::string generated_expression_metadata(const std::string& sql, const SchemaPa
 }
 
 namespace {
-std::shared_ptr<arrow::RecordBatch> capability_record(
-    const std::string& bytes, const std::shared_ptr<arrow::Schema>& schema) {
-    if (bytes.empty() || bytes.size() > 8 * 1024 * 1024)
-        throw std::invalid_argument("invalid catalog capability record size");
-    auto source = std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(bytes));
-    auto opened = arrow::ipc::RecordBatchStreamReader::Open(source);
-    if (!opened.ok()) throw std::invalid_argument(opened.status().ToString());
-    auto reader = opened.MoveValueUnsafe();
-    std::shared_ptr<arrow::RecordBatch> batch;
-    auto status = reader->ReadNext(&batch);
-    if (!status.ok()) throw std::invalid_argument(status.ToString());
-    if (!batch || batch->num_rows() != 1 || !batch->schema()->Equals(*schema, true) ||
-        !batch->ValidateFull().ok())
-        throw std::invalid_argument("invalid catalog capability record");
-    for (int i = 0; i < batch->num_columns(); ++i)
-        if (!schema->field(i)->nullable() && batch->column(i)->IsNull(0))
-            throw std::invalid_argument("null required catalog capability field");
-    const auto tail = bytes.substr(static_cast<size_t>(source->Tell().ValueOrDie()));
-    if (!tail.empty() && tail != std::string(4, '\0') &&
-        tail != std::string("\xff\xff\xff\xff\0\0\0\0", 8))
-        throw std::invalid_argument("trailing catalog capability data");
-    return batch;
-}
-
-void validate_read_profiles(const std::vector<std::string>& profiles) {
-    static const std::regex identifier("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*\\.v[1-9][0-9]*$");
-    std::set<std::string> seen;
-    if (profiles.size() > 256) throw std::invalid_argument("too many catalog capability profiles");
-    for (const auto& profile : profiles)
-        if (profile.size() > 256 || !std::regex_match(profile, identifier) ||
-            !seen.insert(profile).second)
-            throw std::invalid_argument("invalid or duplicate catalog capability profile");
-}
-
-std::string encode_read_profiles(const std::vector<std::string>& profiles) {
-    return wire::encode_ipc(wire::ResultBuilder(generated::CatalogCapabilitiesSchema())
-                                .set_string_list("read", profiles)
-                                .set_string_list("ddl", {})
-                                .set_string_list("write", {})
-                                .set_string_list("transaction", {})
-                                .finish());
-}
-
 bool carries_constraint_records(const CatalogSchema& schema) {
     for (const auto& table : schema.tables) {
         if (!table.constraints.empty()) return true;
@@ -692,36 +651,15 @@ vgi_rpc::Result Dispatcher::catalog_attach(const vgi_rpc::Request& request, vgi_
                      .set_binary_list("settings", encode_settings(model))
                      .set_binary_list("secret_types", encode_secret_types(model))
                      .set_bool("supports_catalog_contents", model.supports_catalog_contents);
-    validate_read_profiles(model.catalog_read_profiles);
+    (void)encode_catalog_capabilities({model.catalog_read_profiles, {}, {}, {}});
     const auto available = available_read_profiles(model, resolved_data);
     if (!available.empty()) {
-        std::vector<std::string> offered_read;
-        if (auto bytes = wire::get_optional_binary(attach, "client_capabilities")) {
-            auto client = capability_record(*bytes, gen::ClientCapabilitiesSchema());
-            if (auto catalog_bytes = wire::get_optional_binary(client, "catalog")) {
-                auto offer = capability_record(*catalog_bytes, gen::CatalogCapabilitiesSchema());
-                for (const auto& category : {"read", "ddl", "write", "transaction"}) {
-                    auto list =
-                        std::static_pointer_cast<arrow::ListArray>(wire::column(offer, category));
-                    if (list->IsNull(0) || list->value_slice(0)->null_count() != 0)
-                        throw std::invalid_argument("null catalog capability profile");
-                    auto offered = wire::get_string_list(offer, category);
-                    validate_read_profiles(offered);
-                    if (std::string(category) == "read") offered_read = std::move(offered);
-                }
-            }
-        }
-        std::vector<std::string> selected;
-        for (const auto& profile : available)
-            if (std::find(offered_read.begin(), offered_read.end(), profile) != offered_read.end())
-                selected.push_back(profile);
-        // This bounded scalar read offer describes CHECK expressions inside
-        // canonical constraints, so it cannot outlive the containing profile.
-        if (std::find(selected.begin(), selected.end(), CONSTRAINT_RECORDS_READ) == selected.end())
-            selected.erase(std::remove(selected.begin(), selected.end(), SCALAR_EXPRESSION_READ),
-                           selected.end());
-        batch.set_binary("catalog_capabilities", encode_read_profiles(available));
-        batch.set_binary("selected_capabilities", encode_read_profiles(selected));
+        const CatalogCapabilityProfiles catalog = {available, {}, {}, {}};
+        const auto selected = select_catalog_capabilities(
+            catalog,
+            client_catalog_offer(wire::get_optional_binary(attach, "client_capabilities")));
+        batch.set_binary("catalog_capabilities", encode_catalog_capabilities(catalog));
+        batch.set_binary("selected_capabilities", encode_catalog_capabilities(selected));
     }
     if (model.comment) {
         batch.set_string("comment", *model.comment);
@@ -964,27 +902,145 @@ const TimeTravelVersion* resolve_version(const CatalogTable& table,
     throw std::invalid_argument("unsupported AT unit: " + unit);
 }
 
+namespace {
+
+// A legacy `generated_expression` (plain SQL) on a top-level field, rewritten
+// as the canonical VIRTUAL pair. Unambiguous only when the field carries no
+// canonical generated or default metadata of its own.
+std::shared_ptr<arrow::Schema> translate_legacy_generated(
+    const std::shared_ptr<arrow::Schema>& schema, const SchemaPath& owner) {
+    if (!schema) return schema;
+    bool changed = false;
+    arrow::FieldVector fields;
+    for (const auto& field : schema->fields()) {
+        const auto& metadata = field->metadata();
+        if (!metadata || !metadata->Contains("generated_expression")) {
+            fields.push_back(field);
+            continue;
+        }
+        const auto where = "column '" + field->name() + "': ";
+        if (metadata->Contains(GENERATED_COLUMN_KEY) || metadata->Contains(GENERATION_COLUMN_KEY) ||
+            metadata->Contains("default") || metadata->Contains("vgi.column.default.v1"))
+            throw std::invalid_argument(
+                where +
+                "legacy generated_expression beside canonical generated or default metadata is "
+                "ambiguous; keep only vgi.column.generated.v1 "
+                "(vgi::generated_expression_metadata())");
+        std::vector<std::string> keys, values;
+        for (int64_t i = 0; i < metadata->size(); ++i) {
+            if (metadata->key(i) == "generated_expression") continue;
+            keys.push_back(metadata->key(i));
+            values.push_back(metadata->value(i));
+        }
+        try {
+            values.push_back(generated_expression_metadata(
+                metadata->Get("generated_expression").ValueOrDie(), owner));
+        } catch (const std::invalid_argument& error) {
+            throw std::invalid_argument(where + "legacy generated_expression: " + error.what());
+        }
+        keys.push_back(GENERATED_COLUMN_KEY);
+        keys.push_back(GENERATION_COLUMN_KEY);
+        values.push_back("virtual");
+        fields.push_back(field->WithMetadata(arrow::key_value_metadata(keys, values)));
+        changed = true;
+    }
+    return changed ? arrow::schema(fields, schema->metadata()) : schema;
+}
+
+// `required_filters` as the wire carries them, checked the way the extension
+// reads them: nonempty groups of nonempty, distinct paths whose components
+// resolve exactly (and unambiguously) against the served columns, with every
+// parent a STRUCT that is not an Arrow extension type.
+std::vector<std::vector<std::vector<std::string>>> required_filter_paths(
+    const std::vector<RequiredFilterGroup>& groups, const std::shared_ptr<arrow::Schema>& columns) {
+    std::vector<std::vector<std::vector<std::string>>> out;
+    for (const auto& group : groups) {
+        if (group.empty()) throw std::invalid_argument("required_filters: a group is empty");
+        std::vector<std::vector<std::string>> paths;
+        for (const auto& path : group) {
+            const auto& components = path.components;
+            if (components.empty())
+                throw std::invalid_argument("required_filters: a path is empty");
+            arrow::FieldVector level = columns ? columns->fields() : arrow::FieldVector{};
+            std::string shown;
+            for (size_t i = 0; i < components.size(); ++i) {
+                const auto& component = components[i];
+                shown += (i ? "." : "") + component;
+                if (component.empty() || component.find('\0') != std::string::npos)
+                    throw std::invalid_argument("required_filters: path " + shown +
+                                                " has an empty or NUL-bearing component");
+                std::shared_ptr<arrow::Field> resolved;
+                for (const auto& field : level) {
+                    if (field->name() != component) continue;
+                    if (resolved)
+                        throw std::invalid_argument("required_filters: path " + shown +
+                                                    " is ambiguous");
+                    resolved = field;
+                }
+                if (!resolved)
+                    throw std::invalid_argument("required_filters: path " + shown +
+                                                " is not a column");
+                if (i + 1 < components.size()) {
+                    const bool extension = resolved->type()->id() == arrow::Type::EXTENSION ||
+                                           (resolved->metadata() &&
+                                            resolved->metadata()->Contains("ARROW:extension:name"));
+                    if (resolved->type()->id() != arrow::Type::STRUCT || extension)
+                        throw std::invalid_argument("required_filters: path " + shown +
+                                                    " is not a STRUCT and has no members");
+                    level = resolved->type()->fields();
+                }
+            }
+            if (std::find(paths.begin(), paths.end(), components) != paths.end())
+                throw std::invalid_argument("required_filters: path " + shown +
+                                            " appears twice in one group");
+            paths.push_back(components);
+        }
+        out.push_back(std::move(paths));
+    }
+    return out;
+}
+
+}  // namespace
+
 // A table's wire record.
 //
 // `scan_function` and `scan_arguments` are what make a VGI table work: the
 // table is a name bound to a function, and this is the binding. Inlining the
 // scan here saves the engine a `catalog_table_scan_function_get` round trip
 // per query.
+//
+// Everything the extension checks at ATTACH is checked here first, and the
+// columns are served with nullability rewritten to match the records
+// (vgi::served_columns). Dispatcher::validate_catalogs() runs this for every
+// table and version when the worker starts, so a bad declaration never
+// reaches a client.
 std::string Dispatcher::encode_table_info(const CatalogTable& table, const SchemaPath& schema_path,
                                           const TimeTravelVersion* version) {
     const auto qualified = schema_path_string(schema_path) + "." + table.name;
+    const auto scope =
+        version ? " (time-travel version " + std::to_string(version->version) + ")" : std::string();
+    const auto prefix = "Table '" + qualified + "'" + scope + ": ";
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     if (!table.not_null.empty() || !table.unique.empty() || !table.primary_key.empty() ||
         !table.check.empty() || !table.foreign_keys.empty()) {
+#pragma GCC diagnostic pop
         throw std::invalid_argument(
-            "Table '" + qualified +
-            "': not_null/unique/primary_key/check/foreign_keys are not sent under vgi.v3; "
+            prefix +
+            "not_null/unique/primary_key/check/foreign_keys are not sent under vgi.v3; "
             "declare canonical records with vgi::constraint_record() in "
             "CatalogTable::constraints instead");
     }
-    if (version && !version->constraints && !table.constraints.empty()) {
-        throw std::invalid_argument(
-            "canonical constraints require version-specific provider snapshots");
-    }
+    // A version states its own records, or serves the table's.
+    const bool own = version && (version->constraints || version->definition_revision);
+    const auto& constraints =
+        version && version->constraints ? *version->constraints : table.constraints;
+    const auto& revision = own ? version->definition_revision : table.definition_revision;
+    if (revision && revision->empty())
+        throw std::invalid_argument(prefix + "definition_revision must be nonempty when present");
+    if (revision && revision->size() > 65536)
+        throw std::invalid_argument(prefix + "definition_revision exceeds 64 KiB");
+
     auto scan =
         wire::ResultBuilder(gen::ScanFunctionResultSchema())
             .set_string("function_name", version ? version->scan_function : table.scan_function)
@@ -993,16 +1049,30 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
             .set_string_list("schema_path", schema_path)
             .finish();
 
-    const auto& shape = version ? version->columns : table.columns;
-    validate_column_metadata(shape);
-    validate_column_expressions(shape, schema_path);
-    const auto& constraints =
-        version && version->constraints ? *version->constraints : table.constraints;
-    const auto& revision = version ? version->definition_revision : table.definition_revision;
-    // The extension refuses the whole ATTACH when a record is not
-    // ENFORCED + ALL_ROWS or Arrow nullability disagrees with the
-    // NOT_NULL/PRIMARY_KEY records -- for every table, records or not.
-    if (shape) validate_constraint_records(qualified, *shape, constraints);
+    std::shared_ptr<arrow::Schema> shape;
+    std::vector<std::vector<std::vector<std::string>>> required_filters;
+    try {
+        shape = translate_legacy_generated(version ? version->columns : table.columns, schema_path);
+        if (shape) {
+            validate_column_metadata(shape);
+            validate_column_expressions(shape, schema_path);
+            // The extension refuses the whole ATTACH over one bad record; so does this.
+            try {
+                validate_constraint_records(schema_path, table.name, *shape, constraints);
+            } catch (const std::invalid_argument& error) {
+                // Already names the table; add the version it was served for.
+                throw std::invalid_argument(std::string(error.what()) + scope);
+            }
+            shape = served_columns(*shape, constraints);
+            sql::validate_generated_columns(*shape, generated_column_sql(*shape));
+        } else if (!constraints.empty()) {
+            throw std::invalid_argument("constraint records need declared columns");
+        }
+        required_filters = required_filter_paths(table.required_filters, shape);
+    } catch (const std::invalid_argument& error) {
+        const std::string message = error.what();
+        throw std::invalid_argument(message.rfind("Table '", 0) == 0 ? message : prefix + message);
+    }
 
     auto builder = wire::ResultBuilder(gen::TableInfoSchema());
     builder.set_string("name", table.name)
@@ -1013,7 +1083,7 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
         .set_binary_list("constraints", constraints)
         .set_bool("supports_column_statistics", !table.column_statistics.empty())
         .set_string_map("tags", table.tags)
-        .set_string_list_list_list("required_filters", table.required_filters);
+        .set_string_list_list_list("required_filters", required_filters);
     if (revision) {
         builder.set_binary("definition_revision", *revision);
     } else {
@@ -1034,6 +1104,96 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
         builder.set_null("comment");
     }
     return wire::encode_ipc(builder.fill_defaults().finish());
+}
+
+void Dispatcher::validate_catalogs() const {
+    // The records a table serves when no AT clause is given, keyed by
+    // (schema path, name): what a foreign key elsewhere can point at.
+    using TableKey = std::pair<SchemaPath, std::string>;
+    auto check = [](const std::vector<const CatalogSchema*>& schemas) {
+        std::map<TableKey, std::vector<ConstraintRecordView>> keys;
+        std::vector<std::pair<std::string, ConstraintRecordView>> foreign;
+        for (const auto* schema : schemas) {
+            for (const auto& table : schema->tables) {
+                std::vector<const TimeTravelVersion*> versions;
+                for (const auto& version : table.time_travel) versions.push_back(&version);
+                if (versions.empty()) versions.push_back(nullptr);
+                for (const auto* version : versions) {
+                    (void)encode_table_info(table, schema->path, version);
+                    const auto& records =
+                        version && version->constraints ? *version->constraints : table.constraints;
+                    for (const auto& bytes : records) {
+                        auto record = read_constraint_record(bytes);
+                        if (record.kind == ConstraintKind::ForeignKey)
+                            foreign.emplace_back(
+                                schema_path_string(schema->path) + "." + table.name +
+                                    (version ? " (time-travel version " +
+                                                   std::to_string(version->version) + ")"
+                                             : ""),
+                                std::move(record));
+                    }
+                }
+                const auto* current = resolve_version(table, {}, {});
+                auto& served = keys[{schema->path, table.name}];
+                for (const auto& bytes :
+                     current && current->constraints ? *current->constraints : table.constraints)
+                    served.push_back(read_constraint_record(bytes));
+            }
+            for (const auto& view : schema->views) (void)encode_view_info(view, schema->path);
+            for (const auto& macro : schema->macros) {
+                try {
+                    (void)encode_macro_info(macro, schema->path);
+                } catch (const std::invalid_argument& error) {
+                    throw std::invalid_argument("Macro '" + schema_path_string(schema->path) + "." +
+                                                macro.name + "': " + error.what());
+                }
+            }
+        }
+        // A foreign key must name a PRIMARY KEY or UNIQUE record of a table the
+        // same catalog serves, over the same columns: DuckDB binds the
+        // reference when it loads the table.
+        for (const auto& [owner, record] : foreign) {
+            const auto& ref = *record.references;
+            const auto prefix = "Table '" + owner + "': constraint '" + record.id + "' ";
+            const auto target = keys.find({ref.schema_path, ref.table});
+            if (target == keys.end())
+                throw std::invalid_argument(prefix + "references table " +
+                                            schema_path_string(ref.schema_path) + "." + ref.table +
+                                            ", which this catalog does not declare");
+            const auto key = std::find_if(target->second.begin(), target->second.end(),
+                                          [&](const ConstraintRecordView& candidate) {
+                                              return candidate.id == ref.constraint_id;
+                                          });
+            if (key == target->second.end() ||
+                (key->kind != ConstraintKind::PrimaryKey && key->kind != ConstraintKind::Unique))
+                throw std::invalid_argument(prefix + "references key '" + ref.constraint_id +
+                                            "', which is not a PRIMARY_KEY or UNIQUE record of " +
+                                            ref.table);
+            if (key->columns != ref.columns)
+                throw std::invalid_argument(prefix + "references columns that differ from key '" +
+                                            ref.constraint_id + "'");
+        }
+    };
+    for (const auto& model : catalogs_) {
+        try {
+            (void)encode_catalog_capabilities({model->catalog_read_profiles, {}, {}, {}});
+            std::vector<const CatalogSchema*> declared;
+            for (const auto& schema : model->schemas) declared.push_back(schema.get());
+            check(declared);
+        } catch (const std::invalid_argument& error) {
+            throw std::invalid_argument("catalog '" + model->name + "': " + error.what());
+        }
+        for (const auto& [data_version, schemas] : model->version_schemas) {
+            try {
+                std::vector<const CatalogSchema*> declared;
+                for (const auto& schema : schemas) declared.push_back(&schema);
+                check(declared);
+            } catch (const std::invalid_argument& error) {
+                throw std::invalid_argument("catalog '" + model->name + "' data version " +
+                                            data_version + ": " + error.what());
+            }
+        }
+    }
 }
 
 vgi_rpc::Result Dispatcher::catalog_table_column_statistics_get(const vgi_rpc::Request& request,
@@ -1082,6 +1242,10 @@ vgi_rpc::Result Dispatcher::catalog_table_get(const vgi_rpc::Request& request,
 }
 
 std::string Dispatcher::encode_view_info(const CatalogView& view, const SchemaPath& schema_path) {
+    if (view.security != "regular")
+        throw std::invalid_argument("View '" + schema_path_string(schema_path) + "." + view.name +
+                                    "': security '" + view.security +
+                                    "' is unsupported; DuckDB reads only \"regular\" views");
     auto builder = wire::ResultBuilder(gen::ViewInfoSchema());
     builder.set_string("name", view.name)
         .set_string_list("schema_path", schema_path)
@@ -1162,6 +1326,85 @@ std::shared_ptr<arrow::Array> macro_record_list(
 }
 }  // namespace
 
+std::string macro_overload(const MacroOverloadSpec& spec) {
+    auto text = [](const std::string& value, size_t limit, const std::string& what) {
+        if (value.empty() || value.size() > limit || value.find('\0') != std::string::npos)
+            throw std::invalid_argument("macro overload: " + what +
+                                        " must be nonempty without NUL");
+    };
+    text(spec.definition, 1024 * 1024, "definition");
+    if (spec.schema_path.empty()) throw std::invalid_argument("macro overload: empty schema_path");
+    for (const auto& component : spec.schema_path) text(component, 4096, "schema path component");
+    if (spec.parameters.size() > 1024)
+        throw std::invalid_argument("macro overload: more than 1024 parameters");
+    std::vector<std::shared_ptr<arrow::RecordBatch>> parameters;
+    std::set<std::string> names;
+    bool seen_default = false;
+    for (const auto& item : spec.parameters) {
+        text(item.name, 4096, "parameter name");
+        std::string folded = item.name;
+        for (auto& c : folded) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (!names.insert(folded).second)
+            throw std::invalid_argument("macro overload: duplicate parameter " + item.name);
+        auto parameter = wire::ResultBuilder(gen::MacroParameterSchema());
+        parameter.set_string("name", item.name).set_null("default_expression");
+        if (item.declared_type) {
+            if (item.declared_type->id() == arrow::Type::NA)
+                throw std::invalid_argument("macro overload: parameter " + item.name +
+                                            " cannot be declared NULL-typed");
+            parameter.set_binary("declared_type", wire::encode_schema(arrow::schema({arrow::field(
+                                                      item.name, item.declared_type, true)})));
+        } else {
+            parameter.set_null("declared_type");
+        }
+        if (item.default_value) {
+            if (item.default_value->length() != 1)
+                throw std::invalid_argument("macro overload: the default of " + item.name +
+                                            " must be a one-element array");
+            parameter.set_binary(
+                "default_value",
+                wire::encode_ipc(arrow::RecordBatch::Make(
+                    arrow::schema({arrow::field(item.name, item.default_value->type(), true)}), 1,
+                    {item.default_value})));
+            seen_default = true;
+        } else {
+            if (seen_default)
+                throw std::invalid_argument("macro overload: required parameter " + item.name +
+                                            " follows a default");
+            parameter.set_null("default_value");
+        }
+        if (item.documentation) {
+            if (item.documentation->size() > 64 * 1024 ||
+                item.documentation->find('\0') != std::string::npos)
+                throw std::invalid_argument("macro overload: invalid documentation for " +
+                                            item.name);
+            parameter.set_string("documentation", *item.documentation);
+        } else {
+            parameter.set_null("documentation");
+        }
+        parameters.push_back(parameter.finish());
+    }
+    auto context = wire::ResultBuilder(gen::QueryEvaluationContextSchema())
+                       .set_string("timezone", "UTC")
+                       .set_string("collation", "binary")
+                       .set_string("default_order", "asc")
+                       .set_string("default_null_order", "nulls_last")
+                       .set_bool("preserve_insertion_order", true)
+                       .finish();
+    return wire::encode_ipc(
+        wire::ResultBuilder(gen::MacroOverloadSchema())
+            .set_array(
+                "parameters",
+                macro_record_list(gen::MacroOverloadSchema()->GetFieldByName("parameters")->type(),
+                                  parameters))
+            .set_string("definition", spec.definition)
+            .set_string("profile", "duckdb.macro.v1")
+            .set_string_list("schema_path", spec.schema_path)
+            .set_string("macro_type", spec.table_macro ? "table" : "scalar")
+            .set_array("evaluation_context", macro_struct(context))
+            .finish());
+}
+
 std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
                                           const SchemaPath& schema_path) {
     const auto kind = macro.table_macro ? "table" : "scalar";
@@ -1220,55 +1463,26 @@ std::string Dispatcher::encode_macro_info(const CatalogMacro& macro,
                               [&](const auto& v) { return v.first == name; }) > 1)
                 throw std::invalid_argument("duplicate macro default or documentation");
         }
-        std::vector<std::shared_ptr<arrow::RecordBatch>> parameters;
-        bool seen_default = false;
+        MacroOverloadSpec spec;
+        spec.schema_path = schema_path;
+        spec.table_macro = macro.table_macro;
+        spec.definition = macro.definition;
         for (const auto& name : macro.parameters) {
-            auto parameter = wire::ResultBuilder(gen::MacroParameterSchema());
-            parameter.set_string("name", name)
-                .set_null("declared_type")
-                .set_null("default_expression");
+            MacroParameterSpec parameter;
+            parameter.name = name;
             const auto value = std::find_if(macro.defaults.begin(), macro.defaults.end(),
                                             [&](const auto& item) { return item.first == name; });
             if (value != macro.defaults.end()) {
                 arrow::Int64Builder values;
                 (void)values.Append(value->second);
-                auto batch = arrow::RecordBatch::Make(
-                    arrow::schema({arrow::field(name, arrow::int64(), true)}), 1,
-                    {values.Finish().ValueOrDie()});
-                parameter.set_binary("default_value", wire::encode_ipc(batch));
-                seen_default = true;
-            } else {
-                if (seen_default)
-                    throw std::invalid_argument("required parameter cannot follow a default");
-                parameter.set_null("default_value");
+                parameter.default_value = values.Finish().ValueOrDie();
             }
             const auto doc = std::find_if(macro.parameter_docs.begin(), macro.parameter_docs.end(),
                                           [&](const auto& item) { return item.first == name; });
-            if (doc == macro.parameter_docs.end())
-                parameter.set_null("documentation");
-            else
-                parameter.set_string("documentation", doc->second);
-            parameters.push_back(parameter.finish());
+            if (doc != macro.parameter_docs.end()) parameter.documentation = doc->second;
+            spec.parameters.push_back(std::move(parameter));
         }
-        auto context = wire::ResultBuilder(gen::QueryEvaluationContextSchema())
-                           .set_string("timezone", "UTC")
-                           .set_string("collation", "binary")
-                           .set_string("default_order", "asc")
-                           .set_string("default_null_order", "nulls_last")
-                           .set_bool("preserve_insertion_order", true)
-                           .finish();
-        auto overload = wire::ResultBuilder(gen::MacroOverloadSchema());
-        overload
-            .set_array(
-                "parameters",
-                macro_record_list(gen::MacroOverloadSchema()->GetFieldByName("parameters")->type(),
-                                  parameters))
-            .set_string("definition", macro.definition)
-            .set_string("profile", "duckdb.macro.v1")
-            .set_string_list("schema_path", schema_path)
-            .set_string("macro_type", kind)
-            .set_array("evaluation_context", macro_struct(context));
-        overloads.push_back(overload.finish());
+        overloads.push_back(wire::decode_ipc(macro_overload(spec)));
     }
     auto builder = wire::ResultBuilder(gen::MacroInfoSchema());
     builder.set_string("name", macro.name)

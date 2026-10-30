@@ -8,6 +8,9 @@
 #include <arrow/util/utf8.h>
 
 #include <algorithm>
+#include <functional>
+#include <string>
+#include <vector>
 #include <stdexcept>
 
 #include "vgi/generated/vgi_protocol_schemas.hpp"
@@ -69,6 +72,24 @@ inline void validate_generated_expression(const std::string& encoded, const Sche
         source->Tell().ValueOrDie() != static_cast<int64_t>(bytes.size()))
         throw std::invalid_argument("expression requires exactly one complete IPC batch");
 }
+// The SQL of an already-validated canonical generated-expression value.
+inline std::string generated_expression_sql(const std::string& encoded) {
+    return wire::get_string(wire::decode_ipc(wire::base64_decode(encoded)), "sql");
+}
+
+// The decoded generated SQL of each top-level field, empty for a physical one.
+inline std::vector<std::string> generated_column_sql(const arrow::Schema& schema) {
+    std::vector<std::string> out;
+    for (const auto& field : schema.fields()) {
+        const auto& metadata = field->metadata();
+        out.push_back(
+            metadata && metadata->Contains(GENERATED_COLUMN_KEY)
+                ? generated_expression_sql(metadata->Get(GENERATED_COLUMN_KEY).ValueOrDie())
+                : std::string());
+    }
+    return out;
+}
+
 inline void validate_column_expressions(const std::shared_ptr<arrow::Schema>& schema,
                                         const SchemaPath& owner, bool allow_generated = true) {
     std::function<void(const std::shared_ptr<arrow::DataType>&)> type;
@@ -81,7 +102,8 @@ inline void validate_column_expressions(const std::shared_ptr<arrow::Schema>& sc
             }
             if (metadata->Contains("generated_expression"))
                 throw std::invalid_argument(
-                    "legacy generated expression requires explicit canonical translation");
+                    "legacy generated_expression metadata cannot be read here; declare "
+                    "vgi.column.generated.v1 with vgi::generated_expression_metadata()");
             const auto generated = metadata->Contains(GENERATED_COLUMN_KEY),
                        generation = metadata->Contains(GENERATION_COLUMN_KEY);
             if (generated != generation)

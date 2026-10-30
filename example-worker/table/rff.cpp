@@ -234,7 +234,7 @@ std::shared_ptr<arrow::Schema> hive_schema() {
 }
 
 // The four bbox corners, each its own group: every one must carry a filter.
-std::vector<std::vector<std::vector<std::string>>> bbox_corners() {
+std::vector<vgi::RequiredFilterGroup> bbox_corners() {
     return {{{"bbox", "xmin"}}, {{"bbox", "xmax"}}, {{"bbox", "ymin"}}, {{"bbox", "ymax"}}};
 }
 
@@ -266,8 +266,7 @@ void register_rff(vgi::Worker& worker) {
 // The `rff_*` tables, declared by the catalog.
 std::vector<vgi::CatalogTable> rff_tables() {
     const auto table = [](std::string name, std::shared_ptr<arrow::Schema> columns,
-                          std::string scan,
-                          std::vector<std::vector<std::vector<std::string>>> required) {
+                          std::string scan, std::vector<vgi::RequiredFilterGroup> required) {
         vgi::CatalogTable entry;
         entry.name = std::move(name);
         entry.columns = std::move(columns);
@@ -284,7 +283,7 @@ std::vector<vgi::CatalogTable> rff_tables() {
     // own column projection.
     const auto native = [](std::string name, std::shared_ptr<arrow::Schema> columns,
                            std::string path, bool hive,
-                           std::vector<std::vector<std::vector<std::string>>> required) {
+                           std::vector<vgi::RequiredFilterGroup> required) {
         vgi::CatalogTable entry;
         entry.name = std::move(name);
         entry.columns = std::move(columns);
@@ -330,7 +329,7 @@ std::vector<vgi::CatalogTable> rff_tables() {
     // The mixed requirement: a top-level path alongside the corners, which
     // lands at a permuted slot once the native scan projects.
     auto mixed = bbox_corners();
-    mixed.insert(mixed.begin(), {{"id"}});
+    mixed.insert(mixed.begin(), vgi::RequiredFilterGroup{{"id"}});
     tables.push_back(native("rff_hive_mixed", hive_schema(), "rff_hive/*/*/*.parquet",
                             /*hive=*/true, std::move(mixed)));
     return tables;

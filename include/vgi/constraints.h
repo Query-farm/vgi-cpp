@@ -10,19 +10,27 @@
 // `constraint_record()` and puts it in `CatalogTable::constraints` (or a
 // `TimeTravelVersion::constraints` snapshot).
 //
-// The DuckDB extension holds the record set to three rules at ATTACH, and this
-// SDK checks the latter two whenever it serves a table:
+// The DuckDB extension holds every served table to its ATTACH contract, and
+// this SDK applies the same rules before it serves one (and, for a declarative
+// catalog, when the worker starts):
 //
 //  (a) records are read only when ATTACH negotiated `CONSTRAINT_RECORDS_READ`
-//      (and CHECK records also `SCALAR_EXPRESSION_READ`). A declarative
-//      catalog whose tables carry records offers both automatically; see
-//      `CatalogModel::catalog_read_profiles`.
-//  (b) only ENFORCED + ALL_ROWS records are accepted.
-//  (c) for every table, with records or without, an Arrow field (descending
-//      through ordinary STRUCTs) is non-nullable exactly when a NOT_NULL or
-//      PRIMARY_KEY record names its column path.
+//      (and CHECK records also `SCALAR_EXPRESSION_READ`). A catalog whose
+//      tables carry records offers both automatically; see
+//      `CatalogModel::catalog_read_profiles` and select_catalog_capabilities().
+//  (b) only ENFORCED + ALL_ROWS records are accepted, and each must belong to
+//      the table serving it, resolve against its columns, and stay inside the
+//      extension's native subset (one PRIMARY KEY, top-level UNIQUE / KEY / FK
+//      columns, same-schema NO ACTION / RESTRICT foreign keys, numeric
+//      comparison CHECKs). validate_constraint_records() names what fails.
+//  (c) an Arrow field (descending through ordinary STRUCTs) is non-nullable
+//      exactly when a NOT_NULL or PRIMARY_KEY record names its column path.
+//      The SDK makes this hold rather than asking the author to: served_columns()
+//      serves every field no record names as nullable, and every field a record
+//      names as non-nullable. Nullability is never read as a constraint.
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -38,6 +46,11 @@ inline constexpr const char* CONSTRAINT_RECORDS_READ = "vgi.constraint.records.r
 // Read profile: CHECK records carry DuckDB scalar SQL expressions. Selected
 // only alongside CONSTRAINT_RECORDS_READ.
 inline constexpr const char* SCALAR_EXPRESSION_READ = "vgi.expression.duckdb.scalar.v1";
+// DDL profile: CREATE TABLE may carry constraint definitions. Requires
+// CONSTRAINT_RECORDS_READ and CONSTRAINT_ENFORCE alongside it.
+inline constexpr const char* CONSTRAINT_CREATE = "vgi.constraint.create.v1";
+// Write profile: the catalog enforces its constraints on every write path.
+inline constexpr const char* CONSTRAINT_ENFORCE = "vgi.constraint.enforce.v1";
 
 // A column path: raw components from the top-level column down through
 // STRUCT children, e.g. {"id"} or {"bbox", "xmin"}. Dots are literal.
@@ -113,13 +126,64 @@ struct ConstraintRecordView {
 // Throws std::invalid_argument on bytes that are not one ConstraintInfo.
 ConstraintRecordView read_constraint_record(const std::string& bytes);
 
-// Check a table's records the way the DuckDB extension does at ATTACH: every
-// record is ENFORCED + ALL_ROWS, every NOT_NULL / PRIMARY_KEY path names a
-// column, and a field -- descending through ordinary STRUCTs, skipping a
-// top-level `is_row_id` column -- is non-nullable exactly when such a record
-// names its path. Throws std::invalid_argument naming `table` and the column
-// path. The SDK runs this on every table it serves; call it to fail earlier.
+// The schema a table is served with: `columns` with every field a NOT_NULL or
+// PRIMARY_KEY record names made non-nullable and every other field made
+// nullable, descending through ordinary STRUCTs (not ones carrying
+// `ARROW:extension:name` or `vgi.logical_type.*` metadata). A top-level
+// `is_row_id` column is left as it is. Metadata is preserved. Throws
+// std::invalid_argument on a record that does not decode.
+std::shared_ptr<arrow::Schema> served_columns(const arrow::Schema& columns,
+                                              const std::vector<std::string>& constraints);
+
+// Check a table's records the way the DuckDB extension does at ATTACH, against
+// the table as served (served_columns() is applied first): every record is
+// ENFORCED + ALL_ROWS and owned by `schema_path`.`table` (a one-component
+// schema path); ids are unique and declared names unique case-insensitively;
+// at most one PRIMARY_KEY; NOT_NULL paths resolve through ordinary STRUCTs and
+// PRIMARY_KEY / UNIQUE / FOREIGN_KEY name top-level columns, never the row-id
+// column; a FOREIGN_KEY points at a named key of a table in the same schema
+// with MATCH SIMPLE and NO ACTION / RESTRICT; a CHECK is a comparison of
+// numeric literals and primitive signed numeric columns under the default
+// evaluation context. Throws std::invalid_argument naming the table, the
+// constraint id and the column path. The SDK runs this on every table it
+// serves; call it to fail earlier.
+void validate_constraint_records(const SchemaPath& schema_path, const std::string& table,
+                                 const arrow::Schema& columns,
+                                 const std::vector<std::string>& constraints);
+
+// The same checks without the ownership one: `table` is only the name used in
+// messages (e.g. "main.t").
 void validate_constraint_records(const std::string& table, const arrow::Schema& columns,
                                  const std::vector<std::string>& constraints);
+
+// Catalog capability negotiation (`CatalogAttachResult.catalog_capabilities` /
+// `selected_capabilities`, `ClientCapabilities.catalog`): profile names by
+// category.
+struct CatalogCapabilityProfiles {
+    std::vector<std::string> read, ddl, write, transaction;
+    bool empty() const {
+        return read.empty() && ddl.empty() && write.empty() && transaction.empty();
+    }
+};
+
+// Encode a CatalogCapabilities record. Throws std::invalid_argument on a
+// malformed or duplicate profile name.
+std::string encode_catalog_capabilities(const CatalogCapabilityProfiles& profiles);
+
+// Decode a CatalogCapabilities record (the inverse of the above).
+CatalogCapabilityProfiles decode_catalog_capabilities(const std::string& bytes);
+
+// The catalog offer inside a `CatalogAttachRequest.client_capabilities`
+// ClientCapabilities record; empty when the client sent none.
+CatalogCapabilityProfiles client_catalog_offer(
+    const std::optional<std::string>& client_capabilities);
+
+// What an attachment selects: `available` intersected with `offered`, per
+// category, in `available`'s order, then pruned to what the extension accepts
+// together -- SCALAR_EXPRESSION_READ, CONSTRAINT_CREATE and CONSTRAINT_ENFORCE
+// only alongside CONSTRAINT_RECORDS_READ, and CONSTRAINT_CREATE only alongside
+// CONSTRAINT_ENFORCE.
+CatalogCapabilityProfiles select_catalog_capabilities(const CatalogCapabilityProfiles& available,
+                                                      const CatalogCapabilityProfiles& offered);
 
 }  // namespace vgi

@@ -53,6 +53,9 @@ private:
     };
     struct State {
         int64_t version = 1;
+        // Whether this ATTACH negotiated canonical constraint records together
+        // with CREATE and enforcement: what CREATE TABLE ... NOT NULL needs.
+        bool constraints = false;
         std::map<std::string, Schema> schemas;  // keyed by path, NUL-joined
     };
 

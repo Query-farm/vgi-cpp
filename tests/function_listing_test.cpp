@@ -701,8 +701,12 @@ TEST_CASE("catalog capability negotiation rejects invalid and trailing offers",
         vgi::Dispatcher dispatcher;
         dispatcher.catalog().name = "alpha";
         dispatcher.catalog().catalog_read_profiles = {"vgi.constraint.records.read.v1"};
-        if (mode == "provider_duplicate")
+        if (mode == "provider_duplicate") {
             dispatcher.catalog().catalog_read_profiles.push_back("vgi.constraint.records.read.v1");
+            // A provider's own malformed list fails the worker's startup.
+            REQUIRE_THROWS(dispatcher.validate_catalogs());
+            continue;
+        }
         Served worker(dispatcher);
         std::vector<std::string> profiles = {"vgi.constraint.records.read.v1"};
         if (mode == "duplicate") profiles.push_back(profiles.front());
@@ -901,25 +905,8 @@ TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its versi
                                         .finish()));
         REQUIRE(version_of(worker, one) == 4);
     }
-    for (const auto& field :
-         {arrow::field("required", arrow::int32(), false),
-          arrow::field("nested",
-                       arrow::struct_({arrow::field("required", arrow::int32(), false)}))}) {
-        const auto rejected =
-            vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
-                .set_binary("attach_opaque_data", one)
-                .set_string_list("schema_path", {"main"})
-                .set_string("name", "t1")
-                .set_binary("columns", vgi::wire::encode_schema(arrow::schema({field})))
-                .set_enum("on_conflict", "REPLACE")
-                .fill_defaults()
-                .finish();
-        REQUIRE_THROWS(worker.call_void(
-            "catalog_table_create", vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
-                                        .set_binary("request", vgi::wire::encode_ipc(rejected))
-                                        .finish()));
-        REQUIRE(version_of(worker, one) == 4);
-    }
+    // A non-nullable column is served nullable rather than refused; see
+    // constraint_records_test.cpp for the memory catalog's NOT NULL support.
     const auto contents = contents_by_path(contents_call(worker, one, std::nullopt));
     REQUIRE(contents.size() == 2);
     CHECK(contents.at({"main"}).tables.size() == 1);
@@ -1298,19 +1285,21 @@ TEST_CASE("canonical generated discovery and unsupported CREATE preserve authori
             table.name = item.key();
             table.columns = vgi::wire::decode_schema(raw);
             readonly.catalog().schema("main").tables.push_back(table);
-            Served reader(readonly);
-            const auto token = attach(reader, "meta");
-            if (std::string(group) == "invalid") {
-                REQUIRE_THROWS(per_schema(reader, "catalog_schema_contents_tables",
-                                          gen::CatalogSchemaContentsTablesParamsSchema(), token,
-                                          {"main"}));
+            if (item.key() == "legacy_generated_only") {
+                // A declarative catalog translates the legacy key itself.
+                REQUIRE_NOTHROW(readonly.validate_catalogs());
+            } else if (std::string(group) == "invalid") {
+                // Refused when the worker starts, before any client can attach.
+                REQUIRE_THROWS(readonly.validate_catalogs());
             } else {
+                Served reader(readonly);
+                const auto token = attach(reader, "meta");
                 const auto items =
                     per_schema(reader, "catalog_schema_contents_tables",
                                gen::CatalogSchemaContentsTablesParamsSchema(), token, {"main"});
                 REQUIRE(items.size() == 1);
                 CHECK(vgi::wire::get_binary(vgi::wire::decode_ipc(items[0]), "columns") ==
-                      vgi::wire::encode_schema(table.columns));
+                      vgi::wire::encode_schema(vgi::served_columns(*table.columns, {})));
             }
             const auto request = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
                                      .set_binary("attach_opaque_data", handle)

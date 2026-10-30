@@ -130,8 +130,22 @@ public:
         SchemaPath schema_path;
     };
 
-    // Register every VGI method on `builder`.
+    // Register every VGI method on `builder`. Validates every declared catalog
+    // first (validate_catalogs), so a bad declaration fails the worker's
+    // startup rather than a client's ATTACH.
     void install(vgi_rpc::ServerBuilder& builder);
+
+    // Encode every declared table (each time-travel version too), view and
+    // macro of every catalog and data version, the way serving it would, and
+    // check every foreign key against the key it names. Throws
+    // std::invalid_argument naming the catalog, table and constraint.
+    void validate_catalogs() const;
+
+    // One table's TableInfo record, for `version` (null: a table that does not
+    // time-travel), with every ATTACH check applied and nullability served to
+    // match its records. Throws std::invalid_argument naming the table.
+    static std::string encode_table_info(const CatalogTable& table, const SchemaPath& schema_path,
+                                         const TimeTravelVersion* version = nullptr);
 
     // HTTP tokens are authenticated with the transport's process key. Raw
     // transports deliberately remain keyless inside their existing trust
@@ -300,8 +314,6 @@ private:
     std::vector<std::string> encode_settings(const CatalogModel& model) const;
     std::vector<std::string> encode_secret_types(const CatalogModel& model) const;
     bool supports_time_travel(const CatalogModel& model) const;
-    static std::string encode_table_info(const CatalogTable& table, const SchemaPath& schema_path,
-                                         const TimeTravelVersion* version = nullptr);
     // The `FunctionInfo` for each name this catalog publishes globally.
     std::vector<std::string> encode_global_functions(const CatalogModel& model) const;
     std::vector<std::string> encode_attach_options(const CatalogModel& model) const;

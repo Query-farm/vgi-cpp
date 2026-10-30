@@ -14,6 +14,7 @@
 #include "column_metadata.h"
 #include "column_expressions.h"
 #include "methods.h"
+#include "vgi/constraints.h"
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "wire.h"
 #include <vgi_rpc/errors.h>
@@ -24,26 +25,69 @@ namespace {
 
 namespace gen = ::vgi::generated;
 
-void require_unconstrained_field(const std::shared_ptr<arrow::Field>& field, bool top_level) {
-    const auto& metadata = field->metadata();
-    if (top_level && metadata && metadata->Contains("is_row_id")) return;
+[[noreturn]] void unsupported(const std::string& message) {
+    throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED,
+                               "MethodNotImplementedError", message, vgi_rpc::Code::UNIMPLEMENTED);
+}
+
+// What an in-memory catalog negotiates: canonical records it can serve, the
+// CREATE profile, and enforcement -- which it can attest because its tables
+// hold no rows and accept no writes, so no write path can ever store a NULL.
+CatalogCapabilityProfiles memory_catalog_capabilities() {
+    return {{CONSTRAINT_RECORDS_READ}, {CONSTRAINT_CREATE}, {CONSTRAINT_ENFORCE}, {}};
+}
+
+// A logical (extension) type: what this catalog cannot echo back faithfully --
+// the extension re-reads a stored UUID column as VARCHAR -- so it refuses it
+// rather than change a column's type silently.
+void require_plain_type(const std::shared_ptr<arrow::Field>& field) {
     bool logical = field->type()->id() == arrow::Type::EXTENSION;
-    if (metadata) {
-        for (const auto& key : metadata->keys()) {
+    if (const auto& metadata = field->metadata())
+        for (const auto& key : metadata->keys())
             logical = logical || key.rfind("ARROW:extension:", 0) == 0 ||
                       key.rfind("vgi.logical_type.", 0) == 0;
-        }
+    if (logical)
+        unsupported(
+            "catalog_table_create: the in-memory catalog cannot store logical-type column " +
+            field->name() + " (UUID, JSON and other extension types)");
+    for (const auto& child : field->type()->fields()) require_plain_type(child);
+}
+
+// The NOT NULL columns of a CREATE TABLE's canonical ConstraintDefinitions.
+// Only top-level NOT_NULL is supported: this catalog cannot enforce or prove a
+// PRIMARY KEY, UNIQUE, CHECK or FOREIGN KEY, so it never claims one.
+std::vector<std::string> not_null_columns(const std::vector<std::string>& definitions,
+                                          const arrow::Schema& columns) {
+    std::vector<std::string> out;
+    for (const auto& bytes : definitions) {
+        auto definition = wire::decode_ipc(bytes);
+        if (!definition || definition->num_rows() != 1 ||
+            !definition->schema()->Equals(*gen::ConstraintDefinitionSchema(), false))
+            throw std::invalid_argument("catalog_table_create: malformed constraint definition");
+        const auto kind = wire::get_enum(definition, "kind");
+        if (kind != "NOT_NULL")
+            unsupported(
+                "catalog_table_create: the in-memory catalog supports only NOT NULL "
+                "constraints; " +
+                kind + " (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY) cannot be enforced by it");
+        if (!wire::column(definition, "check_expression")->IsNull(0) ||
+            !wire::column(definition, "foreign_key")->IsNull(0) ||
+            !wire::column(definition, "declared_name")->IsNull(0))
+            unsupported("catalog_table_create: named or expression NOT NULL is unsupported");
+        auto outer =
+            std::static_pointer_cast<arrow::ListArray>(wire::column(definition, "column_paths"));
+        auto paths = std::static_pointer_cast<arrow::ListArray>(outer->value_slice(0));
+        if (paths->length() != 1 || paths->IsNull(0) || paths->value_length(0) != 1)
+            unsupported("catalog_table_create: NOT NULL must name one top-level column");
+        auto component = std::static_pointer_cast<arrow::StringArray>(paths->value_slice(0));
+        const auto name = component->GetString(0);
+        const auto indices = columns.GetAllFieldIndices(name);
+        if (indices.size() != 1)
+            throw std::invalid_argument("catalog_table_create: NOT NULL column " + name +
+                                        " is not a column of the table");
+        if (std::find(out.begin(), out.end(), name) == out.end()) out.push_back(name);
     }
-    if (logical || !field->nullable()) {
-        throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED,
-                                   "MethodNotImplementedError",
-                                   "catalog_table_create: nonnullable or logical columns require "
-                                   "supported canonical semantics",
-                                   vgi_rpc::Code::UNIMPLEMENTED);
-    }
-    if (field->type()->id() == arrow::Type::STRUCT) {
-        for (const auto& child : field->type()->fields()) require_unconstrained_field(child, false);
-    }
+    return out;
 }
 
 std::map<std::string, std::string> view_map(const std::shared_ptr<arrow::RecordBatch>& batch,
@@ -215,10 +259,14 @@ std::shared_ptr<arrow::RecordBatch> MemoryCatalog::attach(
     // The dispatcher's five-field seal shape, catalog first, so a request is
     // routed by its first field; the token makes every ATTACH private.
     const std::string attach = options_.name + std::string(3, '\0') + random_token() + '\0';
+    const auto available = memory_catalog_capabilities();
+    const auto selected = select_catalog_capabilities(
+        available, client_catalog_offer(wire::get_optional_binary(request, "client_capabilities")));
     int64_t version = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         State st;
+        st.constraints = !selected.ddl.empty();
         st.schemas[path_key({"main"})] = Schema{{"main"}, std::nullopt, {}, {}, {}};
         version = reported_version(st);
         attaches_[attach] = std::move(st);
@@ -229,7 +277,9 @@ std::shared_ptr<arrow::RecordBatch> MemoryCatalog::attach(
         .set_bool("catalog_version_frozen", false)
         .set_bool("attach_opaque_data_required", true)
         .set_string("default_schema", "main")
-        .set_bool("supports_catalog_contents", options_.supports_catalog_contents);
+        .set_bool("supports_catalog_contents", options_.supports_catalog_contents)
+        .set_binary("catalog_capabilities", encode_catalog_capabilities(available))
+        .set_binary("selected_capabilities", encode_catalog_capabilities(selected));
     builder.set_optional_string("comment", options_.comment);
     return builder.fill_defaults().finish();
 }
@@ -429,20 +479,12 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         return std::nullopt;
     }
     if (method == "catalog_table_create") {
-        if (!wire::get_binary_list(params, "constraint_definitions").empty()) {
-            throw vgi_rpc::KindedError(
-                vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED, "MethodNotImplementedError",
-                "catalog_table_create: canonical constraint enforcement is not supported",
-                vgi_rpc::Code::UNIMPLEMENTED);
-        }
         for (const char* field : {"comment", "tags", "options", "layout"}) {
             if (params->schema()->GetFieldIndex(field) >= 0 &&
                 !wire::column(params, field)->IsNull(0)) {
-                throw vgi_rpc::KindedError(vgi_rpc::ERROR_KIND_METHOD_NOT_IMPLEMENTED,
-                                           "MethodNotImplementedError",
-                                           "catalog_table_create: table metadata/options/layout "
-                                           "profiles are not supported",
-                                           vgi_rpc::Code::UNIMPLEMENTED);
+                unsupported(
+                    "catalog_table_create: table metadata/options/layout profiles are not "
+                    "supported");
             }
         }
         const auto name = wire::get_string(params, "name");
@@ -453,14 +495,46 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
         const auto columns_schema = wire::decode_schema(wire::get_binary(params, "columns"));
         validate_column_metadata(columns_schema);
         validate_column_expressions(columns_schema, path, false);
-        for (const auto& field : columns_schema->fields()) {
-            require_unconstrained_field(field, true);
+        for (const auto& field : columns_schema->fields())
+            if (!(field->metadata() && field->metadata()->Contains("is_row_id")))
+                require_plain_type(field);
+        const auto definitions = wire::get_binary_list(params, "constraint_definitions");
+        if (!definitions.empty()) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!state(attach).constraints)
+                unsupported(
+                    "catalog_table_create: constraint definitions need the negotiated "
+                    "vgi.constraint.create.v1 profile");
         }
+        // NOT NULL becomes a canonical record this catalog attests: it holds
+        // no rows and accepts no writes, so the fact holds for every row.
+        std::vector<std::string> records;
+        for (const auto& column : not_null_columns(definitions, *columns_schema)) {
+            ConstraintRecordSpec spec;
+            spec.schema_path = path;
+            spec.table = name;
+            spec.id = "not_null:" + column;
+            spec.kind = ConstraintKind::NotNull;
+            spec.columns = {{column}};
+            spec.enforcement = ConstraintEnforcement::Enforced;
+            spec.validation = ConstraintValidation::AllRows;
+            records.push_back(constraint_record(spec));
+        }
+        validate_constraint_records(path, name, *columns_schema, records);
+        // Served as sent unless nullability had to change, so the caller's
+        // exact schema bytes survive discovery.
+        const auto served = served_columns(*columns_schema, records);
         auto info = wire::ResultBuilder(gen::TableInfoSchema())
                         .set_string("name", name)
                         .set_string_list("schema_path", path)
-                        .set_binary("columns", wire::get_binary(params, "columns"));
-        info.set_binary_list("constraints", {}).set_null("definition_revision");
+                        .set_binary("columns", served->Equals(*columns_schema, true)
+                                                   ? wire::get_binary(params, "columns")
+                                                   : wire::encode_schema(served));
+        info.set_binary_list("constraints", records);
+        if (records.empty())
+            info.set_null("definition_revision");
+        else
+            info.set_binary("definition_revision", random_token());
         put_object(attach, path, name, "Table",
                    wire::get_optional_enum(params, "on_conflict").value_or(""), false,
                    wire::encode_ipc(info.fill_defaults().finish()));

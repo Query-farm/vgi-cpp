@@ -76,6 +76,7 @@ add_library(vgi
     src/attach_ticket_service.cpp
     src/catalog.cpp
     src/constraints.cpp
+    src/sql_scalar.cpp
     src/catalog_contents.cpp
     src/memory_catalog.cpp
     src/arg_schema.cpp

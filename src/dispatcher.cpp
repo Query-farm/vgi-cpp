@@ -282,6 +282,7 @@ void Dispatcher::install(vgi_rpc::ServerBuilder& builder) {
             }
         }
     }
+    validate_catalogs();
 
     // Every method of the protocol is registered, including the ones with no
     // implementation: the generated `VgiService` answers those UNIMPLEMENTED.
