@@ -46,7 +46,7 @@ jobs:
             compiler: gcc
           - os: ubuntu-24.04-arm
             compiler: gcc
-          - os: macos-14
+          - os: macos-latest
             compiler: apple-clang
 
     runs-on: ${{ matrix.os }}
