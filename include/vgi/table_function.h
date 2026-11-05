@@ -101,6 +101,16 @@ struct ScanSplit {
     // lets the engine answer COUNT(*) from the plan.
     bool rows_exact = false;
     std::optional<int64_t> estimated_bytes;
+    // Protocol 3.1 exact distribution metadata. `key_value` and bounds are
+    // one-row/two-row Arrow IPC streams respectively.
+    std::optional<std::string> key_value;
+    std::optional<int64_t> range_index;
+    std::optional<std::string> column_bounds;
+    std::optional<std::string> partition_bounds;
+    std::optional<std::string> column_statistics;
+    std::optional<std::vector<int64_t>> location_ids;
+    std::optional<std::string> start_position;
+    std::optional<std::string> end_position;
 };
 
 // What the engine asks for when it plans a scan.
@@ -142,6 +152,10 @@ struct PlanResult {
     // Where enumeration should resume, when this response is a page rather than
     // the whole plan.
     std::optional<std::string> next_cursor;
+    // Protocol 3.1 plan-wide exact distribution claims and split locality.
+    std::vector<std::string> locations;
+    std::optional<std::string> key_grouping;
+    std::optional<std::string> range_partitioning;
 };
 
 // bind — from its arguments, or from a resource it inspects — so `bind` is

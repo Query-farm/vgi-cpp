@@ -78,6 +78,14 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         {"query_prepare", gen::CatalogQueryPrepareRequestSchema()},
         {"query_accepted", gen::CatalogQueryPrepareResultSchema()},
         {"query_declined", gen::CatalogQueryPrepareResultSchema()},
+        {"partition_field_path", gen::FieldPathSchema()},
+        {"partition_identity_transform", gen::TransformSpecSchema()},
+        {"partition_parameterized_transform", gen::TransformSpecSchema()},
+        {"partition_key_grouping", gen::KeyGroupingSchema()},
+        {"partition_range_key", gen::RangeKeySchema()},
+        {"partition_range_partitioning", gen::RangePartitioningSchema()},
+        {"partition_scan_split", gen::ScanSplitSchema()},
+        {"partition_plan_response", gen::TableFunctionPlanResultSchema()},
 
         {"capabilities", gen::CatalogCapabilitiesSchema()},
         {"empty_capabilities", gen::CatalogCapabilitiesSchema()},
@@ -163,6 +171,21 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
             }
         }
     }
+    const auto partition_path = vgi::wire::decode_ipc(fixture("partition_field_path"));
+    REQUIRE(vgi::wire::get_string_list(partition_path, "components") ==
+            std::vector<std::string>{"customer", "region"});
+    const auto partition_split = vgi::wire::decode_ipc(fixture("partition_scan_split"));
+    REQUIRE(vgi::wire::get_optional_int64(partition_split, "range_index") == 2);
+    REQUIRE(vgi::wire::get_int64_list(partition_split, "location_ids") ==
+            std::vector<int64_t>{0, 1});
+    const auto partition_plan = vgi::wire::decode_ipc(fixture("partition_plan_response"));
+    REQUIRE(vgi::wire::get_optional_int64(partition_plan, "max_workers") == 3);
+    REQUIRE(vgi::wire::get_string_list(partition_plan, "locations") ==
+            std::vector<std::string>{"worker-a", "worker-b"});
+    REQUIRE(vgi::wire::get_binary(partition_plan, "key_grouping") ==
+            fixture("partition_key_grouping"));
+    REQUIRE(vgi::wire::get_binary(partition_plan, "range_partitioning") ==
+            fixture("partition_range_partitioning"));
     REQUIRE(vgi::wire::get_string_list(vgi::wire::decode_ipc(fixture("view_info")), "aliases") ==
             std::vector<std::string>{"a.b", "with\"quote"});
     REQUIRE_FALSE(

@@ -564,6 +564,19 @@ ResultBuilder& ResultBuilder::set_int32_list(const std::string& field,
     return *this;
 }
 
+ResultBuilder& ResultBuilder::set_int64_list(const std::string& field,
+                                             const std::vector<int64_t>& values) {
+    auto items = std::make_shared<arrow::Int64Builder>();
+    arrow::ListBuilder list(arrow::default_memory_pool(), items);
+    check_ok(list.Append(), "opening list field '" + field + "'");
+    for (const auto value : values) {
+        check_ok(items->Append(value), "appending to '" + field + "'");
+    }
+    arrays_[static_cast<size_t>(field_index(field))] =
+        unwrap(list.Finish(), "finishing list field '" + field + "'");
+    return *this;
+}
+
 ResultBuilder& ResultBuilder::set_int32_list_list(const std::string& field,
                                                   const std::vector<std::vector<int32_t>>& groups) {
     auto items = std::make_shared<arrow::Int32Builder>();

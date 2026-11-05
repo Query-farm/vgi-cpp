@@ -1172,6 +1172,9 @@ std::string encode_scan_split(const ScanSplit& split, const std::string& token) 
     builder.set_binary("payload", split.payload)
         .set_binary("token", token)
         .set_bool("rows_exact", split.rows_exact)
+        .set_null("key_value")
+        .set_null("range_index")
+        .set_null("column_bounds")
         .set_null("partition_bounds")
         .set_null("column_statistics")
         .set_null("location_ids")
@@ -1187,6 +1190,15 @@ std::string encode_scan_split(const ScanSplit& split, const std::string& token) 
     } else {
         builder.set_null("estimated_bytes");
     }
+    if (split.key_value) builder.set_binary("key_value", *split.key_value);
+    if (split.range_index) builder.set_int64("range_index", *split.range_index);
+    if (split.column_bounds) builder.set_binary("column_bounds", *split.column_bounds);
+    if (split.partition_bounds) builder.set_binary("partition_bounds", *split.partition_bounds);
+    if (split.column_statistics)
+        builder.set_binary("column_statistics", *split.column_statistics);
+    if (split.location_ids) builder.set_int64_list("location_ids", *split.location_ids);
+    if (split.start_position) builder.set_binary("start_position", *split.start_position);
+    if (split.end_position) builder.set_binary("end_position", *split.end_position);
     return wire::encode_ipc(builder.finish());
 }
 
@@ -1383,6 +1395,21 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request,
                                              ? std::vector<std::string>{*result.next_cursor}
                                              : std::vector<std::string>{})
         .set_string("scope", "");
+    if (result.locations.empty()) {
+        payload.set_null("locations");
+    } else {
+        payload.set_string_list("locations", result.locations);
+    }
+    if (result.key_grouping) {
+        payload.set_binary("key_grouping", *result.key_grouping);
+    } else {
+        payload.set_null("key_grouping");
+    }
+    if (result.range_partitioning) {
+        payload.set_binary("range_partitioning", *result.range_partitioning);
+    } else {
+        payload.set_null("range_partitioning");
+    }
     const auto optional_int = [&](const char* field, std::optional<int64_t> value) {
         if (value) {
             payload.set_int64(field, *value);

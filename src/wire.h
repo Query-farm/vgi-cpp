@@ -199,6 +199,8 @@ public:
                                    const std::vector<std::string>& values);
     // A `list<int32>` column.
     ResultBuilder& set_int32_list(const std::string& field, const std::vector<int32_t>& values);
+    // A `list<int64>` column.
+    ResultBuilder& set_int64_list(const std::string& field, const std::vector<int64_t>& values);
     ResultBuilder& set_int32_list_list(const std::string& field,
                                        const std::vector<std::vector<int32_t>>& groups);
     ResultBuilder& set_string_list_list_list(
