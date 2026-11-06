@@ -1194,8 +1194,7 @@ std::string encode_scan_split(const ScanSplit& split, const std::string& token) 
     if (split.range_index) builder.set_int64("range_index", *split.range_index);
     if (split.column_bounds) builder.set_binary("column_bounds", *split.column_bounds);
     if (split.partition_bounds) builder.set_binary("partition_bounds", *split.partition_bounds);
-    if (split.column_statistics)
-        builder.set_binary("column_statistics", *split.column_statistics);
+    if (split.column_statistics) builder.set_binary("column_statistics", *split.column_statistics);
     if (split.location_ids) builder.set_int64_list("location_ids", *split.location_ids);
     if (split.start_position) builder.set_binary("start_position", *split.start_position);
     if (split.end_position) builder.set_binary("end_position", *split.end_position);
