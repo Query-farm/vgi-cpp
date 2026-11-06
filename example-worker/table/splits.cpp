@@ -23,7 +23,10 @@
 
 #include <arrow/array.h>
 #include <arrow/array/builder_binary.h>
+#include <arrow/array/builder_nested.h>
 #include <arrow/array/builder_primitive.h>
+#include <arrow/io/memory.h>
+#include <arrow/ipc/writer.h>
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
 
@@ -74,6 +77,75 @@ std::optional<std::tuple<int64_t, int64_t, int64_t>> decode_indexed_range(
     auto end_unused = decode_range(payload.substr(8, 16));
     if (!ordinal_begin || !end_unused) return std::nullopt;
     return std::tuple{ordinal_begin->first, ordinal_begin->second, end_unused->second};
+}
+
+std::string encode_batch(const std::shared_ptr<arrow::RecordBatch>& batch) {
+    auto sink = arrow::io::BufferOutputStream::Create().ValueOrDie();
+    auto writer = arrow::ipc::MakeStreamWriter(sink, batch->schema()).ValueOrDie();
+    (void)writer->WriteRecordBatch(*batch);
+    (void)writer->Close();
+    return sink->Finish().ValueOrDie()->ToString();
+}
+
+std::shared_ptr<arrow::Array> one_string_list(const std::vector<std::string>& values) {
+    arrow::ListBuilder builder(arrow::default_memory_pool(),
+                               std::make_unique<arrow::StringBuilder>());
+    (void)builder.Append();
+    auto& items = static_cast<arrow::StringBuilder&>(*builder.value_builder());
+    for (const auto& value : values) (void)items.Append(value);
+    return builder.Finish().ValueOrDie();
+}
+
+std::shared_ptr<arrow::Array> one_binary_list(const std::vector<std::string>& values) {
+    arrow::ListBuilder builder(arrow::default_memory_pool(),
+                               std::make_unique<arrow::BinaryBuilder>());
+    (void)builder.Append();
+    auto& items = static_cast<arrow::BinaryBuilder&>(*builder.value_builder());
+    for (const auto& value : values) (void)items.Append(value);
+    return builder.Finish().ValueOrDie();
+}
+
+std::string identity_key_grouping(const std::string& column) {
+    const auto path = encode_batch(arrow::RecordBatch::Make(
+        arrow::schema({arrow::field("components", arrow::list(arrow::utf8()), false)}), 1,
+        {one_string_list({column})}));
+
+    arrow::StringBuilder id_builder;
+    (void)id_builder.Append("vgi.identity/1");
+    arrow::BinaryBuilder parameters_builder;
+    (void)parameters_builder.AppendNull();
+    const auto transform = encode_batch(arrow::RecordBatch::Make(
+        arrow::schema({arrow::field("id", arrow::utf8(), false),
+                       arrow::field("inputs", arrow::list(arrow::binary()), false),
+                       arrow::field("parameters", arrow::binary(), true)}),
+        1,
+        {id_builder.Finish().ValueOrDie(), one_binary_list({path}),
+         parameters_builder.Finish().ValueOrDie()}));
+
+    return encode_batch(arrow::RecordBatch::Make(
+        arrow::schema({arrow::field("keys", arrow::list(arrow::binary()), false)}), 1,
+        {one_binary_list({transform})}));
+}
+
+std::optional<std::string> partition_key_value(const std::string& country,
+                                               const std::string& mode) {
+    if (mode == "missing") return std::nullopt;
+    if (mode == "wrong_type") {
+        arrow::Int64Builder values;
+        (void)values.Append(1);
+        return encode_batch(
+            arrow::RecordBatch::Make(arrow::schema({arrow::field("country", arrow::int64(), true)}),
+                                     1, {values.Finish().ValueOrDie()}));
+    }
+    if (mode != "valid" && mode != "two_rows") {
+        throw std::invalid_argument("unknown split_partitioned key_mode: " + mode);
+    }
+    arrow::StringBuilder values;
+    (void)values.Append(country);
+    if (mode == "two_rows") (void)values.Append(country);
+    auto array = values.Finish().ValueOrDie();
+    return encode_batch(arrow::RecordBatch::Make(
+        arrow::schema({arrow::field("country", arrow::utf8(), true)}), array->length(), {array}));
 }
 
 std::shared_ptr<arrow::Schema> n_schema() {
@@ -481,7 +553,10 @@ public:
     }
 
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        return {vgi::ArgSpec::named("rows_per_country", "int64", "Rows per country")};
+        return {vgi::ArgSpec::named("rows_per_country", "int64", "Rows per country"),
+                vgi::ArgSpec::named(
+                    "key_mode", "varchar",
+                    "Test-only Protocol 3.1 key shape: valid, missing, two_rows, or wrong_type")};
     }
 
     std::shared_ptr<arrow::Schema> bind(const vgi::BindParams&) const override {
@@ -494,14 +569,17 @@ public:
     vgi::PlanResult plan(const vgi::BindParams& params, const vgi::PlanParams&) const override {
         const int64_t rows =
             std::max<int64_t>(0, params.arguments.named_int64("rows_per_country").value_or(0));
+        const auto key_mode = params.arguments.named_string("key_mode").value_or("valid");
         vgi::PlanResult result;
         result.estimated_total_splits = static_cast<int64_t>(kCountries.size());
         result.estimated_total_rows = rows * static_cast<int64_t>(kCountries.size());
+        result.key_grouping = identity_key_grouping("country");
         for (int64_t i = 0; i < static_cast<int64_t>(kCountries.size()); ++i) {
             vgi::ScanSplit split;
             split.payload = encode_range(i, rows);
             split.estimated_rows = rows;
             split.rows_exact = true;
+            split.key_value = partition_key_value(kCountries[static_cast<size_t>(i)], key_mode);
             result.splits.push_back(std::move(split));
         }
         return result;
