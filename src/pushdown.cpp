@@ -1243,6 +1243,151 @@ std::optional<Bounds> bounds_for(const std::shared_ptr<Spec>& spec, const std::s
     return std::nullopt;
 }
 
+// --- Protocol 3.2: pruning a candidate by its column statistics -------------
+
+using StatsIndex = std::map<std::string, const ColumnStatistics*>;
+
+std::shared_ptr<arrow::Scalar> stat_scalar(const StatValue& value) {
+    switch (value.kind()) {
+        case StatValue::Kind::Int64:
+            return std::make_shared<arrow::Int64Scalar>(value.integer_value());
+        case StatValue::Kind::Float64:
+            return std::make_shared<arrow::DoubleScalar>(value.floating_value());
+        case StatValue::Kind::Utf8:
+            return std::make_shared<arrow::StringScalar>(value.string_value());
+        case StatValue::Kind::Binary:
+            return std::make_shared<arrow::BinaryScalar>(
+                arrow::Buffer::FromString(value.string_value()));
+    }
+    return nullptr;
+}
+
+// A statistic's bound as a value of the column's type, the way the engine
+// casts it; null when there is no bound or it does not convert exactly (a safe
+// cast refuses truncation and overflow), which leaves that side unbounded.
+std::shared_ptr<arrow::Scalar> bound_as(const std::optional<StatValue>& bound,
+                                        const std::shared_ptr<arrow::DataType>& type) {
+    if (!bound || !type) return nullptr;
+    auto scalar = stat_scalar(*bound);
+    if (!scalar) return nullptr;
+    if (!scalar->type->Equals(*type)) {
+        static const auto initialized = arrow::compute::Initialize();
+        if (!initialized.ok()) return nullptr;
+        auto cast = arrow::compute::Cast(arrow::Datum(scalar), type);
+        if (!cast.ok() || !cast->is_scalar()) return nullptr;
+        scalar = cast->scalar();
+    }
+    return scalar && scalar->is_valid ? scalar : nullptr;
+}
+
+// -1, 0 or 1; nullopt when the two cannot be ordered (NaN, an unsupported
+// type, or either side absent).
+std::optional<int> order(const std::shared_ptr<arrow::Scalar>& left,
+                         const std::shared_ptr<arrow::Scalar>& right) {
+    if (!left || !right || !left->is_valid || !right->is_valid) return std::nullopt;
+    try {
+        const auto truth = [&](const char* function) {
+            auto result = call(function, {left, right});
+            if (!result.is_scalar()) return false;
+            const auto& value = result.scalar_as<arrow::BooleanScalar>();
+            return value.is_valid && value.value;
+        };
+        if (truth("less")) return -1;
+        if (truth("greater")) return 1;
+        if (truth("equal")) return 0;
+    } catch (const std::exception&) {
+    }
+    return std::nullopt;
+}
+
+const ColumnStatistics* stat_for(const std::shared_ptr<Spec>& node, const StatsIndex& stats) {
+    if (!node || node->kind != "column") return nullptr;
+    const auto found = stats.find(node->column_name);
+    return found == stats.end() ? nullptr : found->second;
+}
+
+// Whether a non-null `value` can lie within the statistic's [min, max].
+bool within(const std::shared_ptr<arrow::Scalar>& value, const ColumnStatistics& stat,
+            const std::shared_ptr<arrow::DataType>& type) {
+    if (const auto low = order(value, bound_as(stat.min, type)); low && *low < 0) return false;
+    if (const auto high = order(value, bound_as(stat.max, type)); high && *high > 0) return false;
+    return true;
+}
+
+// False only when `spec` is provably not TRUE for any row the statistics
+// describe. Everything unrecognised answers true.
+bool possibly_true(const std::shared_ptr<Spec>& spec, const StatsIndex& stats) {
+    if (spec->kind == "and") {
+        return std::all_of(spec->children.begin(), spec->children.end(),
+                           [&](const auto& child) { return possibly_true(child, stats); });
+    }
+    if (spec->kind == "or") {
+        return std::any_of(spec->children.begin(), spec->children.end(),
+                           [&](const auto& child) { return possibly_true(child, stats); });
+    }
+    if (spec->kind == "is_null" || spec->kind == "is_not_null") {
+        const auto* stat = spec->children.empty() ? nullptr : stat_for(spec->children[0], stats);
+        if (!stat) return true;
+        return spec->kind == "is_null" ? stat->has_null : stat->has_not_null;
+    }
+    if (spec->kind == "in") {
+        const auto* stat =
+            spec->negated || spec->children.empty() ? nullptr : stat_for(spec->children[0], stats);
+        if (!stat) return true;
+        // An all-NULL column satisfies no IN list.
+        if (!stat->has_not_null) return false;
+        const auto& values = spec->value;
+        if (!values || values->type_id() == arrow::Type::DICTIONARY || values->length() > 10000)
+            return true;
+        const auto type = values->type();
+        bool any = false;
+        for (int64_t i = 0; i < values->length(); ++i) {
+            if (values->IsNull(i)) continue;
+            any = true;
+            auto value = values->GetScalar(i);
+            if (!value.ok() || within(*value, *stat, type)) return true;
+        }
+        // No non-null value at all is left to the engine rather than guessed.
+        return !any;
+    }
+    if (spec->kind == "constant" && spec->children.size() == 2) {
+        auto op = spec->op;
+        std::shared_ptr<Spec> column = spec->children[0];
+        std::shared_ptr<Spec> literal = spec->children[1];
+        if (literal->kind != "literal") {
+            std::swap(column, literal);
+            if (op == "lt")
+                op = "gt";
+            else if (op == "le")
+                op = "ge";
+            else if (op == "gt")
+                op = "lt";
+            else if (op == "ge")
+                op = "le";
+        }
+        const auto* stat = literal->kind == "literal" ? stat_for(column, stats) : nullptr;
+        if (!stat || !literal->value || literal->value->length() != 1 || literal->value->IsNull(0))
+            return true;
+        // NULL IS DISTINCT FROM a non-null value is TRUE.
+        if (op == "distinct_from" && stat->has_null) return true;
+        // Every other comparison with a NULL row is NULL or FALSE.
+        if (!stat->has_not_null) return false;
+        const auto type = logical_type(column->data_type);
+        auto value = literal->value->GetScalar(0);
+        if (!type || !value.ok() || !(*value)->type->Equals(*type)) return true;
+        const auto low = order(bound_as(stat->min, type), *value);
+        const auto high = order(bound_as(stat->max, type), *value);
+        if (op == "eq" || op == "not_distinct_from") return within(*value, *stat, type);
+        if (op == "lt") return !(low && *low >= 0);
+        if (op == "le") return !(low && *low > 0);
+        if (op == "gt") return !(high && *high <= 0);
+        if (op == "ge") return !(high && *high < 0);
+        if (op == "ne" || op == "distinct_from") return !(low && high && *low == 0 && *high == 0);
+        return true;
+    }
+    return true;
+}
+
 }  // namespace
 
 PushdownFilters PushdownFilters::parse(const std::string& ipc_bytes,
@@ -1416,6 +1561,15 @@ std::shared_ptr<arrow::RecordBatch> PushdownFilters::apply(
         }
     }
     return surviving;
+}
+
+bool PushdownFilters::may_match(const std::vector<ColumnStatistics>& statistics) const {
+    StatsIndex index;
+    for (const auto& stat : statistics) index.emplace(stat.column_name, &stat);
+    if (index.empty()) return true;
+    return std::all_of(specs_.begin(), specs_.end(), [&](const auto& spec) {
+        return spec->kind == "runtime_filter" || possibly_true(spec, index);
+    });
 }
 
 }  // namespace vgi

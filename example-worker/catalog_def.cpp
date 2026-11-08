@@ -6,10 +6,13 @@
 // `cacheable_numbers` function — the table has no storage of its own.
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
 #include <arrow/array/builder_binary.h>
+#include <arrow/array/builder_nested.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/type.h>
 #include <arrow/util/key_value_metadata.h>
@@ -130,6 +133,84 @@ vgi::CatalogBranch format_branch(const std::string& format, const std::string& f
                                             }()},
                                            {"nullstr", string_arg("row_2")}});
     return branch;
+}
+
+// Protocol 3.2 filtered scan planning fixtures
+// (test/sql/integration/catalog/scan_planning_*.test). Five days of data, one
+// parquet file per day under ${VGI_TEST_BRANCH_DIR}/planned_days/. The tests
+// write the files for the first four days only: the 2026-10-05 file never
+// exists, so a scan that fails to prune that day errors with "No files found"
+// — a passing query proves the pruning happened.
+const std::vector<std::string> kPlannedDays = {"2026-10-01", "2026-10-02", "2026-10-03",
+                                               "2026-10-04", "2026-10-05"};
+
+std::string planned_day_file(const std::string& day) {
+    return branch_path("planned_days/" + day + ".parquet");
+}
+
+// What each day's file holds of `event_date`: exactly that day, never NULL.
+// The bound is the ISO text, which the engine casts to the column's DATE.
+std::vector<vgi::ColumnStatistics> planned_day_stats(const std::string& day) {
+    vgi::ColumnStatistics stat;
+    stat.column_name = "event_date";
+    stat.min = vgi::StatValue::text(day);
+    stat.max = vgi::StatValue::text(day);
+    stat.has_null = false;
+    return {stat};
+}
+
+// A one-element LIST<VARCHAR> holding `files`, for read_parquet's file list.
+std::shared_ptr<arrow::Array> file_list_arg(const std::vector<std::string>& files) {
+    arrow::ListBuilder list(arrow::default_memory_pool(), std::make_shared<arrow::StringBuilder>());
+    auto& values = static_cast<arrow::StringBuilder&>(*list.value_builder());
+    (void)list.Append();
+    for (const auto& file : files) (void)values.Append(file);
+    std::shared_ptr<arrow::Array> array;
+    (void)list.Finish(&array);
+    return array;
+}
+
+vgi::CatalogBranch read_parquet_branch(const std::shared_ptr<arrow::Array>& files) {
+    vgi::CatalogBranch branch;
+    branch.function_name = "read_parquet";
+    branch.scan_arguments = vgi::serialize_scan_arguments({files});
+    return branch;
+}
+
+vgi::CatalogTable planned_days_table(std::string name, std::string comment) {
+    vgi::CatalogTable table;
+    table.name = std::move(name);
+    table.columns = columns({{"event_date", arrow::date32()}, {"n", arrow::int64()}});
+    table.comment = std::move(comment);
+    table.inline_scan = false;
+    table.required_extensions = {"parquet"};
+    return table;
+}
+
+// planned_days: the worker prunes the day files with the query's predicates.
+// It records what it saw in last_plan.json so a test can assert that the
+// predicates arrived.
+std::vector<vgi::CatalogBranch> plan_planned_days(const vgi::ScanPlanningRequest& request) {
+    std::vector<std::string> days;
+    for (const auto& day : kPlannedDays) {
+        if (!request.pushdown_filters ||
+            request.pushdown_filters->may_match(planned_day_stats(day)))
+            days.push_back(day);
+    }
+    const auto dir = branch_path("planned_days");
+    std::error_code ignored;
+    std::filesystem::create_directories(dir, ignored);
+    std::ofstream out(dir + "/last_plan.json", std::ios::trunc);
+    out << "{\"received_filters\": " << (request.pushdown_filters ? "true" : "false")
+        << ", \"days\": [";
+    for (size_t i = 0; i < days.size(); ++i) out << (i ? ", " : "") << '"' << days[i] << '"';
+    out << "]}";
+    if (days.empty()) return {};
+    std::vector<std::string> files;
+    for (const auto& day : days) files.push_back(planned_day_file(day));
+    auto branch = read_parquet_branch(file_list_arg(files));
+    branch.row_count = static_cast<int64_t>(10 * days.size());
+    return {branch};
 }
 
 vgi::CatalogTable versioned_table(std::string name, std::string scan_function,
@@ -485,6 +566,46 @@ void declare_catalog(vgi::Worker& worker) {
         data.tables.push_back(multi_branch("multi_branch_two_writable", {writable_a, writable_b},
                                            "Multi-branch with two writable=True arms — used by "
                                            "multi_branch_two_writable.test"));
+    }
+
+    // Protocol 3.2 filtered scan planning.
+    {
+        // Worker-side pruning of the per-day files (ScanPlanningFilters::may_match).
+        auto planned = planned_days_table(
+            "planned_days",
+            "Protocol 3.2: worker-side pruning of per-day files — scan_planning_filtered.test");
+        planned.scan_planning = vgi::kScanPlanningFiltered;
+        planned.plan_scan_branches = plan_planned_days;
+        data.tables.push_back(std::move(planned));
+
+        // One branch per day carrying event_date statistics: the worker ignores
+        // the predicates and the client prunes.
+        auto stats =
+            planned_days_table("planned_days_stats",
+                               "Protocol 3.2: client-side pruning by ScanBranch statistics — "
+                               "scan_planning_stats.test");
+        stats.scan_planning = vgi::kScanPlanningFiltered;
+        stats.branches.emplace();
+        for (const auto& day : kPlannedDays) {
+            auto branch = read_parquet_branch(string_arg(planned_day_file(day)));
+            branch.row_count = 10;
+            branch.column_statistics = planned_day_stats(day);
+            stats.branches->push_back(std::move(branch));
+        }
+        data.tables.push_back(std::move(stats));
+
+        // A bind-time table whose branches the client prunes by branch_filter
+        // contradiction.
+        auto filtered = planned_days_table("planned_days_bf",
+                                           "Protocol 3.2: pruning by branch_filter contradiction — "
+                                           "scan_planning_branch_filter.test");
+        filtered.branches.emplace();
+        for (const auto& day : kPlannedDays) {
+            auto branch = read_parquet_branch(string_arg(planned_day_file(day)));
+            branch.branch_filter = "event_date = DATE '" + day + "'";
+            filtered.branches->push_back(std::move(branch));
+        }
+        data.tables.push_back(std::move(filtered));
     }
 
     data.tables.push_back(

@@ -12,6 +12,8 @@
 #include <arrow/array.h>
 #include <arrow/record_batch.h>
 
+#include "vgi/statistics.h"
+
 namespace vgi {
 
 // One pushed-down predicate, as the worker sees it.
@@ -89,6 +91,22 @@ public:
     // predicates may be ignored, as prescribed by Filter Encoding v2.
     std::shared_ptr<arrow::RecordBatch> apply(
         const std::shared_ptr<arrow::RecordBatch>& batch) const;
+
+    // Whether any row of a candidate (a file, a partition, a scan branch)
+    // described by `statistics` can satisfy the predicates.
+    //
+    // False only when some predicate is provably false for every row: every
+    // non-null value of a column lies within its [min, max], `has_null =
+    // false` means no NULLs and `has_not_null = false` means all NULL — the
+    // conservative claims `ScanBranch.column_statistics` makes. A bound is
+    // compared after casting it to the column's type, as the engine casts it
+    // (so a DATE column's bound may be the text `2026-10-03`). Anything this
+    // cannot reason about — a column with no statistics, a predicate over an
+    // expression rather than a bare column, a bound that does not cast
+    // exactly, NOT, functions — counts as "may match", so the answer errs
+    // towards keeping data. For pruning a manifest before returning branches
+    // from a protocol 3.2 planning hook (vgi/scan_planning.h).
+    bool may_match(const std::vector<ColumnStatistics>& statistics) const;
 
     // The filters as the reference implementations' `repr`, `(none)` when
     // there are none: `PushdownFilters([ConstantFilter(n < 5000)])`.

@@ -91,6 +91,7 @@ add_library(vgi
     src/catalog_model.cpp
     src/settings.cpp
     src/pushdown.cpp
+    src/scan_planning.cpp
     src/statistics.cpp
     src/copy_to.cpp
     src/copy_from.cpp

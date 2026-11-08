@@ -531,6 +531,8 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
                                                    ? wire::get_binary(params, "columns")
                                                    : wire::encode_schema(served));
         info.set_binary_list("constraints", records);
+        // Non-nullable on the wire, and its empty default is not a valid mode.
+        info.set_string("scan_planning", kScanPlanningBind);
         if (records.empty())
             info.set_null("definition_revision");
         else

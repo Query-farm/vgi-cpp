@@ -11,7 +11,8 @@ of the [Rust](https://github.com/Query-farm/vgi-rust) and
 [Python](https://github.com/Query-farm/vgi-python) SDKs, and is built on the
 C++ [vgi-rpc](https://github.com/Query-farm/vgi-rpc-cpp) port.
 
-Version **0.14.0** uses **`vgi.v3` / `3.1.0`** and requires a matching VGI
+Version **0.14.0** uses **`vgi.v3` / `3.1.0`**; the current source speaks
+**`3.2.0`** (filtered scan planning). Either requires a matching VGI
 extension. Keep 0.12.x for existing `vgi.v2` installations; upgrade the extension
 and worker SDKs together. The shared contract prepares for DuckDB 2.0 while
 remaining usable by the 1.5 adapter. Optional catalog and query capabilities
@@ -93,6 +94,10 @@ other vgi-rpc protocols beside `vgi.v3` and for hosting `vgi_rpc.Identity.v2`.
 See [Attach tickets](docs/attach-tickets.md) for letting a runner reattach a
 user's catalog later, as that user, with a grant and a sealed `vgia1.` ticket
 (`vgi.attach_tickets.v1`, enabled by `VGI_SIGNING_KEY` plus grant keys).
+
+See [Filtered scan planning](docs/scan-planning.md) for letting a multi-branch
+table choose its branches with the query's predicates and attach branch
+statistics (protocol 3.2).
 
 See [Iroh operations](docs/iroh.md) for the in-process C ABI client and
 identity-preserving raw or HTTP worker bridge setup.

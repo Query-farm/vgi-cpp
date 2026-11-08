@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <set>
 #include <map>
@@ -38,6 +39,7 @@
 #include <vgi_rpc/client.h>
 #include <vgi_rpc/http_client.h>
 #include <vgi_rpc/metadata.h>
+#include <nlohmann/json.hpp>
 
 #include "methods.h"
 #include "vgi/generated/vgi_protocol_names.hpp"
@@ -67,7 +69,7 @@ const std::string kOtherMajor = "vgi.v2";
 // this same value. This is the changing development contract; the public
 // version transition remains gated on the complete combined protocol freeze.
 const std::string kReferenceProtocolHash =
-    "50e9404173bee3262e96b8939eb5c425463336abca2a17916812d68b6e0f6cad";
+    "171ac8263bf22ffdd5dd4ac2c3d3c4e1dc186a7ceba45d386f324af8c9c6fced";
 
 // A worker serving a listening transport, owned for the length of one test.
 //
@@ -193,7 +195,7 @@ void require_hosts_vgi(const std::vector<vgi_rpc::HostedProtocol>& listing) {
     CHECK(application.version == kVersion);
     // Byte-identical to the reference surface, on every transport.
     CHECK(kProtocol == "vgi.v3");
-    CHECK(kVersion == "3.1.0");
+    CHECK(kVersion == "3.2.0");
     CHECK(application.hash == kReferenceProtocolHash);
 }
 
@@ -380,4 +382,113 @@ TEST_CASE("example constraint discovery preserves validated immutable snapshots"
         for (size_t i = 0; i < previous.size(); ++i) CHECK(previous[i] == constraints[i]);
         previous = constraints;
     }
+}
+
+// Protocol 3.2 filtered scan planning, end to end against the example worker's
+// planned_days* fixtures: the planning hook receives `pushdown_filters` decoded
+// against the table's columns and prunes with may_match; branch statistics and
+// row counts travel; zero branches is a legal answer for a filtered table.
+TEST_CASE("protocol 3.2 filtered scan planning", "[catalog][scan-planning][stdio]") {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("vgi-scan-planning-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    ::setenv("VGI_TEST_BRANCH_DIR", dir.c_str(), 1);
+    auto client = vgi_rpc::RpcClient::spawn({kWorker}, raw_options(kProtocol));
+    const auto request = vgi::wire::ResultBuilder(gen::CatalogAttachRequestSchema())
+                             .set_string("name", "example")
+                             .fill_defaults()
+                             .finish();
+    const auto attached = client.call_unary(
+        "catalog_attach", vgi::wire::ResultBuilder(gen::CatalogAttachParamsSchema())
+                              .set_binary("request", vgi::wire::encode_ipc(request))
+                              .finish());
+    const auto attach = vgi::wire::get_binary(
+        vgi::wire::decode_ipc(vgi::wire::get_binary(attached.batch, "result")),
+        "attach_opaque_data");
+
+    const auto table_info = [&](const std::string& name) {
+        const auto response = client.call_unary(
+            "catalog_table_get", vgi::wire::ResultBuilder(gen::CatalogTableGetParamsSchema())
+                                     .set_binary("attach_opaque_data", attach)
+                                     .set_string_list("schema_path", {"data"})
+                                     .set_string("name", name)
+                                     .fill_defaults()
+                                     .finish());
+        const auto items = vgi::wire::get_binary_list(
+            vgi::wire::decode_ipc(vgi::wire::get_binary(response.batch, "result")), "items");
+        REQUIRE(items.size() == 1);
+        return vgi::wire::decode_ipc(items.front());
+    };
+    const auto branches = [&](const std::string& name, const std::optional<std::string>& filters) {
+        auto params = vgi::wire::ResultBuilder(gen::CatalogTableScanBranchesGetParamsSchema());
+        params.set_binary("attach_opaque_data", attach)
+            .set_string_list("schema_path", {"data"})
+            .set_string("name", name);
+        if (filters) params.set_binary("pushdown_filters", *filters);
+        const auto response =
+            client.call_unary("catalog_table_scan_branches_get", params.fill_defaults().finish());
+        const auto result = vgi::wire::decode_ipc(vgi::wire::get_binary(response.batch, "result"));
+        REQUIRE(result->schema()->Equals(*gen::ScanBranchesResultSchema(), true));
+        CHECK(vgi::wire::get_string_list(result, "required_extensions") ==
+              std::vector<std::string>{"parquet"});
+        std::vector<std::shared_ptr<arrow::RecordBatch>> decoded;
+        for (const auto& bytes : vgi::wire::get_binary_list(result, "branches")) {
+            decoded.push_back(vgi::wire::decode_ipc(bytes));
+            REQUIRE(decoded.back()->schema()->Equals(*gen::ScanBranchSchema(), true));
+        }
+        return decoded;
+    };
+    const auto last_plan = [&] {
+        std::ifstream input(dir / "planned_days" / "last_plan.json");
+        REQUIRE(input.good());
+        return nlohmann::json::parse(input);
+    };
+    // `WHERE event_date >= DATE '2026-10-03' AND n < 100`, from the conformance vectors.
+    std::ifstream vectors(VGI_CATALOG_CONTRACT_VECTORS);
+    REQUIRE(vectors.good());
+    const auto filters = vgi::wire::base64_decode(nlohmann::json::parse(vectors)
+                                                      .at("records")
+                                                      .at("scan_planning_pushdown_filters")
+                                                      .get<std::string>());
+
+    const auto planned = table_info("planned_days");
+    CHECK(vgi::wire::get_string(planned, "scan_planning") == "filtered");
+    CHECK(vgi::wire::column(planned, "scan_function")->IsNull(0));
+    CHECK(vgi::wire::get_string(table_info("planned_days_bf"), "scan_planning") == "bind");
+
+    // Without predicates every day is planned, in one read_parquet branch.
+    auto all = branches("planned_days", std::nullopt);
+    REQUIRE(all.size() == 1);
+    CHECK(vgi::wire::get_string(all[0], "function_name") == "read_parquet");
+    CHECK(vgi::wire::get_optional_int64(all[0], "row_count") == 50);
+    CHECK(vgi::wire::column(all[0], "column_statistics")->IsNull(0));
+    CHECK(last_plan() == nlohmann::json::parse(R"({"received_filters": false, "days": )"
+                                               R"(["2026-10-01", "2026-10-02", "2026-10-03", )"
+                                               R"("2026-10-04", "2026-10-05"]})"));
+
+    // With them, the hook prunes the days before 2026-10-03.
+    auto pruned = branches("planned_days", filters);
+    REQUIRE(pruned.size() == 1);
+    CHECK(vgi::wire::get_optional_int64(pruned[0], "row_count") == 30);
+    CHECK(last_plan() == nlohmann::json::parse(R"({"received_filters": true, "days": )"
+                                               R"(["2026-10-03", "2026-10-04", "2026-10-05"]})"));
+
+    // A table without a hook ignores the predicates: one branch per day, each
+    // with its statistics for the client to prune by.
+    auto stats = branches("planned_days_stats", filters);
+    REQUIRE(stats.size() == 5);
+    for (const auto& branch : stats) {
+        CHECK(vgi::wire::get_optional_int64(branch, "row_count") == 10);
+        const auto column_statistics =
+            vgi::wire::decode_ipc(vgi::wire::get_binary(branch, "column_statistics"));
+        REQUIRE(column_statistics->num_rows() == 1);
+        CHECK(vgi::wire::get_string(column_statistics, "column_name") == "event_date");
+    }
+    auto day_filtered = branches("planned_days_bf", filters);
+    REQUIRE(day_filtered.size() == 5);
+    CHECK(vgi::wire::get_optional_string(day_filtered[0], "branch_filter") ==
+          "event_date = DATE '2026-10-01'");
+    CHECK(vgi::wire::column(day_filtered[0], "row_count")->IsNull(0));
+
+    std::filesystem::remove_all(dir);
 }

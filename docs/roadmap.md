@@ -26,7 +26,8 @@ Every function shape the protocol has, and the catalog surface around them.
 5. **Table buffering** — sink, combine, and a finalize producer, with input
    batch indexes and the order guarantees around them.
 6. **Catalogs** — schemas, tables bound to scan functions, multi-branch tables
-   stitched from several scans, views, macros, constraints, comments, tags,
+   stitched from several scans (with protocol 3.2 filtered scan planning and
+   branch statistics, [scan-planning.md](scan-planning.md)), views, macros, constraints, comments, tags,
    object counts, time travel, transactions, and several catalogs from one
    process.
 7. **ATTACH** — npm-style data-version resolution, per-version schemas, typed

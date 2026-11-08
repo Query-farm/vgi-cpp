@@ -3,6 +3,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include "vgi/generated/vgi_protocol_schemas.hpp"
+#include "vgi/scan_planning.h"
 #include "wire.h"
 
 TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contracts]") {
@@ -86,6 +87,10 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
         {"partition_range_partitioning", gen::RangePartitioningSchema()},
         {"partition_scan_split", gen::ScanSplitSchema()},
         {"partition_plan_response", gen::TableFunctionPlanResultSchema()},
+        {"scan_planning_branch", gen::ScanBranchSchema()},
+        {"scan_planning_branches_result", gen::ScanBranchesResultSchema()},
+        {"scan_planning_empty_branches_result", gen::ScanBranchesResultSchema()},
+        {"scan_planning_table_info", gen::TableInfoSchema()},
 
         {"capabilities", gen::CatalogCapabilitiesSchema()},
         {"empty_capabilities", gen::CatalogCapabilitiesSchema()},
@@ -373,4 +378,86 @@ TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contr
             REQUIRE(type->field(0)->metadata()->Get("nested").ValueOrDie() == "retained");
         }
     }
+}
+
+// Protocol 3.2 filtered scan planning records (vgi-python
+// docs/protocol/scan-planning.md): a branch carrying row_count and
+// column_statistics, a legal empty branch list, a "filtered" TableInfo, and the
+// pushdown_filters snapshot for `WHERE event_date >= DATE '2026-10-03' AND n < 100`.
+TEST_CASE("protocol 3.2 scan planning records decode", "[catalog-contracts][scan-planning]") {
+    std::ifstream input(VGI_CATALOG_CONTRACT_VECTORS);
+    REQUIRE(input.good());
+    const auto records = nlohmann::json::parse(input).at("records");
+    const auto fixture = [&](const char* name) {
+        return vgi::wire::base64_decode(records.at(name).get<std::string>());
+    };
+
+    const auto branch = vgi::wire::decode_ipc(fixture("scan_planning_branch"));
+    REQUIRE(vgi::wire::get_string(branch, "function_name") == "read_parquet");
+    REQUIRE(vgi::wire::get_optional_int64(branch, "row_count") == 1000);
+    const auto statistics =
+        vgi::wire::decode_ipc(vgi::wire::get_binary(branch, "column_statistics"));
+    REQUIRE(statistics->num_rows() == 2);
+    const auto names =
+        std::static_pointer_cast<arrow::StringArray>(vgi::wire::column(statistics, "column_name"));
+    REQUIRE(names->GetString(0) == "event_date");
+    REQUIRE(names->GetString(1) == "n");
+
+    const auto result = vgi::wire::decode_ipc(fixture("scan_planning_branches_result"));
+    REQUIRE(vgi::wire::get_binary_list(result, "branches") ==
+            std::vector<std::string>{fixture("scan_planning_branch")});
+    REQUIRE(vgi::wire::get_string_list(result, "required_extensions") ==
+            std::vector<std::string>{"parquet"});
+    const auto empty = vgi::wire::decode_ipc(fixture("scan_planning_empty_branches_result"));
+    REQUIRE(vgi::wire::get_binary_list(empty, "branches").empty());
+
+    const auto table = vgi::wire::decode_ipc(fixture("scan_planning_table_info"));
+    REQUIRE(vgi::wire::get_string(table, "scan_planning") == vgi::kScanPlanningFiltered);
+    REQUIRE(vgi::wire::column(table, "scan_function")->IsNull(0));
+    REQUIRE(vgi::wire::get_string(vgi::wire::decode_ipc(fixture("table_info")), "scan_planning") ==
+            vgi::kScanPlanningBind);
+
+    const auto columns = arrow::schema(
+        {arrow::field("event_date", arrow::date32()), arrow::field("n", arrow::int64())});
+    const vgi::ScanPlanningFilters filters(fixture("scan_planning_pushdown_filters"), columns);
+    REQUIRE(filters.decode().filtered_columns() == std::vector<std::string>{"event_date", "n"});
+    REQUIRE(filters.decode().column_bounds("n").max == 99);
+
+    const auto day = [](const std::string& value) {
+        vgi::ColumnStatistics stat;
+        stat.column_name = "event_date";
+        stat.min = vgi::StatValue::text(value);
+        stat.max = vgi::StatValue::text(value);
+        stat.has_null = false;
+        return stat;
+    };
+    const auto n = [](std::optional<int64_t> low, std::optional<int64_t> high) {
+        vgi::ColumnStatistics stat;
+        stat.column_name = "n";
+        if (low) stat.min = vgi::StatValue::integer(*low);
+        if (high) stat.max = vgi::StatValue::integer(*high);
+        return stat;
+    };
+    // event_date >= 2026-10-03: a day before it is excluded, the day itself kept.
+    CHECK_FALSE(filters.may_match({day("2026-10-02")}));
+    CHECK(filters.may_match({day("2026-10-03")}));
+    CHECK(filters.may_match({day("2026-10-05")}));
+    // n < 100.
+    CHECK_FALSE(filters.may_match({n(100, 500)}));
+    CHECK(filters.may_match({n(99, 500)}));
+    CHECK(filters.may_match({n(std::nullopt, 500)}));
+    CHECK_FALSE(filters.may_match({day("2026-10-04"), n(100, std::nullopt)}));
+    // An all-NULL column satisfies no comparison; nothing known keeps it.
+    auto all_null = n(std::nullopt, std::nullopt);
+    all_null.has_not_null = false;
+    CHECK_FALSE(filters.may_match({all_null}));
+    CHECK(filters.may_match({}));
+    CHECK(filters.may_match({n(std::nullopt, std::nullopt)}));
+    // A bound that does not convert to the column's type proves nothing.
+    CHECK(filters.may_match({day("not a date")}));
+    vgi::ColumnStatistics other;
+    other.column_name = "unrelated";
+    other.min = vgi::StatValue::integer(0);
+    other.max = vgi::StatValue::integer(0);
+    CHECK(filters.may_match({other}));
 }

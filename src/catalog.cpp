@@ -1002,6 +1002,69 @@ std::vector<std::vector<std::vector<std::string>>> required_filter_paths(
 
 }  // namespace
 
+namespace {
+
+// One ScanBranch record. Every optional field the branch leaves unset travels
+// as null, which for the 3.2 statistics means "no claim".
+std::string encode_scan_branch(const CatalogBranch& source, const CatalogTable& table) {
+    auto builder = wire::ResultBuilder(gen::ScanBranchSchema());
+    builder.set_string("function_name", source.function_name)
+        .set_binary("arguments", source.scan_arguments)
+        .set_bool("writable", source.writable);
+    const auto optional = [&](const char* field, const std::optional<std::string>& value) {
+        if (value) {
+            builder.set_string(field, *value);
+        } else {
+            builder.set_null(field);
+        }
+    };
+    const auto optional_list = [&](const char* field,
+                                   const std::optional<std::vector<std::string>>& value) {
+        if (value) {
+            builder.set_string_list(field, *value);
+        } else {
+            builder.set_null(field);
+        }
+    };
+    optional("branch_filter", source.branch_filter);
+    optional("source_catalog", source.source_catalog);
+    optional_list("source_schema_path", source.source_schema_path);
+    optional_list("schema_path", source.schema_path);
+    optional("source_table", source.source_table);
+    optional("format_name", source.format_name);
+    optional_list("format_locations", source.format_locations);
+    if (source.format_options) {
+        builder.set_binary("format_options", *source.format_options);
+    } else {
+        builder.set_null("format_options");
+    }
+    if (source.row_count) {
+        if (*source.row_count < 0)
+            throw std::invalid_argument("table '" + table.name +
+                                        "': ScanBranch.row_count must be >= 0, got " +
+                                        std::to_string(*source.row_count));
+        builder.set_int64("row_count", *source.row_count);
+    } else {
+        builder.set_null("row_count");
+    }
+    if (source.column_statistics) {
+        std::set<std::string> seen;
+        for (const auto& stat : *source.column_statistics) {
+            if (!seen.insert(stat.column_name).second)
+                throw std::invalid_argument("table '" + table.name +
+                                            "': ScanBranch.column_statistics names column '" +
+                                            stat.column_name + "' more than once");
+        }
+        builder.set_binary("column_statistics",
+                           serialize_column_statistics(*source.column_statistics));
+    } else {
+        builder.set_null("column_statistics");
+    }
+    return wire::encode_ipc(builder.fill_defaults().finish());
+}
+
+}  // namespace
+
 // A table's wire record.
 //
 // `scan_function` and `scan_arguments` are what make a VGI table work: the
@@ -1040,6 +1103,17 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
         throw std::invalid_argument(prefix + "definition_revision must be nonempty when present");
     if (revision && revision->size() > 65536)
         throw std::invalid_argument(prefix + "definition_revision exceeds 64 KiB");
+    if (table.scan_planning != kScanPlanningBind && table.scan_planning != kScanPlanningFiltered)
+        throw std::invalid_argument(prefix +
+                                    "scan_planning must be \"bind\" or \"filtered\", got \"" +
+                                    table.scan_planning + "\"");
+    // A filtered table's scan redirect is resolved per query, with the query's
+    // predicates; an inlined scan_function is a fixed bind-time answer that a
+    // client is required to refuse alongside it.
+    if (table.scan_planning == kScanPlanningFiltered && table.inline_scan)
+        throw std::invalid_argument(prefix +
+                                    "scan_planning \"filtered\" cannot inline its scan function; "
+                                    "set inline_scan = false");
 
     auto scan =
         wire::ResultBuilder(gen::ScanFunctionResultSchema())
@@ -1078,12 +1152,19 @@ std::string Dispatcher::encode_table_info(const CatalogTable& table, const Schem
     builder.set_string("name", table.name)
         .set_string_list("schema_path", schema_path)
         .set_binary("columns", wire::encode_schema(shape))
-        .set_binary("scan_function", table.inline_scan ? wire::encode_ipc(scan) : std::string{})
         .set_string_map("write_result_modes", {})
         .set_binary_list("constraints", constraints)
         .set_bool("supports_column_statistics", !table.column_statistics.empty())
         .set_string_map("tags", table.tags)
-        .set_string_list_list_list("required_filters", required_filters);
+        .set_string_list_list_list("required_filters", required_filters)
+        .set_string("scan_planning", table.scan_planning);
+    // Null, not empty, when the scan is not inlined: protocol 3.2 requires a
+    // filtered table's scan_function to be null.
+    if (table.inline_scan) {
+        builder.set_binary("scan_function", wire::encode_ipc(scan));
+    } else {
+        builder.set_null("scan_function");
+    }
     if (revision) {
         builder.set_binary("definition_revision", *revision);
     } else {
@@ -1118,6 +1199,12 @@ void Dispatcher::validate_catalogs() const {
                 std::vector<const TimeTravelVersion*> versions;
                 for (const auto& version : table.time_travel) versions.push_back(&version);
                 if (versions.empty()) versions.push_back(nullptr);
+                // Declared branches carry statistics a bad declaration could
+                // get wrong; refuse them now rather than on the first scan.
+                if (table.branches) {
+                    for (const auto& branch : *table.branches)
+                        (void)encode_scan_branch(branch, table);
+                }
                 for (const auto* version : versions) {
                     (void)encode_table_info(table, schema->path, version);
                     const auto& records =
@@ -2130,62 +2217,49 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
         resolve_version(*found, wire::get_optional_string(request.batch(), "at_unit"),
                         wire::get_optional_string(request.batch(), "at_value"));
 
-    std::vector<std::string> branches;
-    if (!found->branches) {
+    // The declared answer: what 3.1 served, and what a table without a
+    // planning hook still serves.
+    const auto declared = [&]() -> std::vector<CatalogBranch> {
+        if (found->branches) return *found->branches;
         // The single-branch default: a table that never mentioned branches is
         // one branch, its own scan function. Answering with an empty list
         // instead would read as "this table has no sources" — which is what a
         // table that *did* declare an empty list is saying.
-        auto branch =
-            wire::ResultBuilder(gen::ScanBranchSchema())
-                .set_string("function_name",
-                            version ? version->scan_function : found->scan_function)
-                .set_binary("arguments", version ? version->scan_arguments : found->scan_arguments)
-                .set_bool("writable", false)
-                .set_string_list("schema_path", schema_path)
-                .fill_defaults()
-                .finish();
-        branches.push_back(wire::encode_ipc(branch));
-    } else {
-        for (const auto& source : *found->branches) {
-            auto builder = wire::ResultBuilder(gen::ScanBranchSchema());
-            builder.set_string("function_name", source.function_name)
-                .set_binary("arguments", source.scan_arguments)
-                .set_bool("writable", source.writable);
-            const auto optional = [&](const char* field, const std::optional<std::string>& value) {
-                if (value) {
-                    builder.set_string(field, *value);
-                } else {
-                    builder.set_null(field);
-                }
-            };
-            optional("branch_filter", source.branch_filter);
-            optional("source_catalog", source.source_catalog);
-            if (source.source_schema_path) {
-                builder.set_string_list("source_schema_path", *source.source_schema_path);
-            } else {
-                builder.set_null("source_schema_path");
-            }
-            if (source.schema_path) {
-                builder.set_string_list("schema_path", *source.schema_path);
-            } else {
-                builder.set_null("schema_path");
-            }
-            optional("source_table", source.source_table);
-            optional("format_name", source.format_name);
-            if (source.format_locations) {
-                builder.set_string_list("format_locations", *source.format_locations);
-            } else {
-                builder.set_null("format_locations");
-            }
-            if (source.format_options) {
-                builder.set_binary("format_options", *source.format_options);
-            } else {
-                builder.set_null("format_options");
-            }
-            branches.push_back(wire::encode_ipc(builder.fill_defaults().finish()));
+        CatalogBranch branch;
+        branch.function_name = version ? version->scan_function : found->scan_function;
+        branch.scan_arguments = version ? version->scan_arguments : found->scan_arguments;
+        branch.schema_path = schema_path;
+        return {branch};
+    };
+
+    std::vector<CatalogBranch> planned;
+    if (found->plan_scan_branches) {
+        // Protocol 3.2: the hook sees the query's predicates, decoded on
+        // demand against the columns this (AT-resolved) table declares —
+        // the schema their column indexes refer to.
+        const auto attachment = attachment_of(request);
+        ScanPlanningRequest call;
+        call.catalog_name = attachment.catalog;
+        call.data_version = attachment.data_version;
+        call.schema_path = schema_path;
+        call.table_name = found->name;
+        call.at_unit = wire::get_optional_string(request.batch(), "at_unit");
+        call.at_value = wire::get_optional_string(request.batch(), "at_value");
+        if (auto filters = wire::get_optional_binary(request.batch(), "pushdown_filters")) {
+            call.pushdown_filters.emplace(std::move(*filters),
+                                          version ? version->columns : found->columns);
         }
+        call.declared_branches = declared;
+        planned = found->plan_scan_branches(call);
+    } else {
+        // Advisory predicates may be ignored, so the declared answer is a
+        // correct one for any `pushdown_filters`.
+        planned = declared();
     }
+
+    std::vector<std::string> branches;
+    branches.reserve(planned.size());
+    for (const auto& source : planned) branches.push_back(encode_scan_branch(source, *found));
 
     auto result = wire::ResultBuilder(gen::ScanBranchesResultSchema())
                       .set_binary_list("branches", branches)

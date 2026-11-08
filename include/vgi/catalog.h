@@ -15,6 +15,7 @@
 #include <arrow/type.h>
 
 #include "vgi/constraints.h"
+#include "vgi/scan_planning.h"
 #include "vgi/statistics.h"
 #include "vgi/types.h"
 
@@ -69,7 +70,46 @@ struct CatalogBranch {
     std::optional<std::string> format_options;
     // Schema containing a VGI function branch; absent for native functions.
     std::optional<SchemaPath> schema_path;
+
+    // Protocol 3.2: an estimate of the rows this branch produces before any
+    // predicate. Cardinality estimation only; never trusted as exact. Must not
+    // be negative.
+    std::optional<int64_t> row_count;
+    // Protocol 3.2: conservative statistics for every row this branch
+    // produces, keyed by the table's declared column names (columns may be
+    // omitted; none may repeat). The engine drops the branch when a query
+    // predicate is provably false against them, so a wrong bound silently
+    // loses rows: leave a column out rather than guess. Same payload as
+    // `CatalogTable::column_statistics`; a DATE or TIMESTAMP bound travels as
+    // its ISO text (StatValue::text), which the engine casts.
+    std::optional<std::vector<ColumnStatistics>> column_statistics;
 };
+
+// One `catalog_table_scan_branches_get` call, as a planning hook sees it
+// (protocol 3.2, `CatalogTable::plan_scan_branches`).
+struct ScanPlanningRequest {
+    // The attachment's catalog and resolved data version (empty when the
+    // catalog is unversioned).
+    std::string catalog_name;
+    std::string data_version;
+    SchemaPath schema_path;
+    std::string table_name;
+    std::optional<std::string> at_unit;
+    std::optional<std::string> at_value;
+    // The query's predicates on this table, decoded lazily against its declared
+    // columns; absent when none were collected (bind-time planning, or a query
+    // with no usable predicate). Advisory: return any superset of the branches
+    // and files that could hold a matching row, never fewer.
+    std::optional<ScanPlanningFilters> pushdown_filters;
+    // The table's declared answer, exactly what 3.1 served: its `branches`, or
+    // the single branch its (AT-resolved) scan function makes.
+    std::function<std::vector<CatalogBranch>()> declared_branches;
+};
+
+// Plans a table's scan branches with the query's predicates. Returning zero
+// branches means the scan produces no rows, which is legal only for a table
+// with `scan_planning = kScanPlanningFiltered`.
+using ScanPlanningHandler = std::function<std::vector<CatalogBranch>(const ScanPlanningRequest&)>;
 
 // One version of a time-travelling table.
 //
@@ -208,6 +248,22 @@ struct CatalogTable {
     // through that method or through `catalog_table_scan_branches_get`; both
     // resolve the clause, so either setting travels correctly.
     bool inline_scan = true;
+
+    // Protocol 3.2: when the engine resolves this table's scan redirect —
+    // kScanPlanningBind (the default, 3.1 behaviour) or kScanPlanningFiltered,
+    // per scan with the query's predicates as `pushdown_filters` (see
+    // vgi/scan_planning.h). A filtered table must set `inline_scan = false`;
+    // any other value, or a filtered table that inlines, is refused when the
+    // worker starts.
+    std::string scan_planning = kScanPlanningBind;
+
+    // Protocol 3.2: answers every `catalog_table_scan_branches_get` for this
+    // table. Unset, the declared answer (`branches`, or the single scan
+    // function) is served and any predicates are ignored, exactly as in 3.1.
+    // Set it on a filtered table to prune what it returns with
+    // `request.pushdown_filters` (ScanPlanningFilters::may_match tests a
+    // candidate's statistics against them).
+    ScanPlanningHandler plan_scan_branches;
 };
 #pragma GCC diagnostic pop
 
