@@ -439,7 +439,7 @@ TEST_CASE("protocol 3.2 filtered scan planning", "[catalog][scan-planning][stdio
         return decoded;
     };
     const auto last_plan = [&] {
-        std::ifstream input(dir / "planned_days" / "last_plan.json");
+        std::ifstream input(dir / "planned_days_last_plan.json");
         REQUIRE(input.good());
         return nlohmann::json::parse(input);
     };

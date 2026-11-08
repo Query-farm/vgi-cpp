@@ -6,7 +6,6 @@
 // `cacheable_numbers` function — the table has no storage of its own.
 
 #include <cstdlib>
-#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -137,7 +136,8 @@ vgi::CatalogBranch format_branch(const std::string& format, const std::string& f
 
 // Protocol 3.2 filtered scan planning fixtures
 // (test/sql/integration/catalog/scan_planning_*.test). Five days of data, one
-// parquet file per day under ${VGI_TEST_BRANCH_DIR}/planned_days/. The tests
+// parquet file per day, ${VGI_TEST_BRANCH_DIR}/planned_days_<day>.parquet (flat:
+// DuckDB's COPY in the tests cannot create directories). The tests
 // write the files for the first four days only: the 2026-10-05 file never
 // exists, so a scan that fails to prune that day errors with "No files found"
 // — a passing query proves the pruning happened.
@@ -145,7 +145,7 @@ const std::vector<std::string> kPlannedDays = {"2026-10-01", "2026-10-02", "2026
                                                "2026-10-04", "2026-10-05"};
 
 std::string planned_day_file(const std::string& day) {
-    return branch_path("planned_days/" + day + ".parquet");
+    return branch_path("planned_days_" + day + ".parquet");
 }
 
 // What each day's file holds of `event_date`: exactly that day, never NULL.
@@ -188,8 +188,8 @@ vgi::CatalogTable planned_days_table(std::string name, std::string comment) {
 }
 
 // planned_days: the worker prunes the day files with the query's predicates.
-// It records what it saw in last_plan.json so a test can assert that the
-// predicates arrived.
+// It records what it saw in planned_days_last_plan.json so a test can assert
+// that the predicates arrived.
 std::vector<vgi::CatalogBranch> plan_planned_days(const vgi::ScanPlanningRequest& request) {
     std::vector<std::string> days;
     for (const auto& day : kPlannedDays) {
@@ -197,10 +197,7 @@ std::vector<vgi::CatalogBranch> plan_planned_days(const vgi::ScanPlanningRequest
             request.pushdown_filters->may_match(planned_day_stats(day)))
             days.push_back(day);
     }
-    const auto dir = branch_path("planned_days");
-    std::error_code ignored;
-    std::filesystem::create_directories(dir, ignored);
-    std::ofstream out(dir + "/last_plan.json", std::ios::trunc);
+    std::ofstream out(branch_path("planned_days_last_plan.json"), std::ios::trunc);
     out << "{\"received_filters\": " << (request.pushdown_filters ? "true" : "false")
         << ", \"days\": [";
     for (size_t i = 0; i < days.size(); ++i) out << (i ? ", " : "") << '"' << days[i] << '"';
@@ -606,6 +603,14 @@ void declare_catalog(vgi::Worker& worker) {
             filtered.branches->push_back(std::move(branch));
         }
         data.tables.push_back(std::move(filtered));
+
+        // branch_filter must be ONE expression: "n < 5, n > 2" parses as two,
+        // which 3.1 clients silently cut to the first and 3.2 rejects.
+        auto comma = sequence_branch(10, "n < 5, n > 2");
+        comma.schema_path = vgi::SchemaPath{"main"};
+        data.tables.push_back(multi_branch("multi_branch_comma_filter", {comma},
+                                           "Protocol 3.2: multi-expression branch_filter is "
+                                           "rejected"));
     }
 
     data.tables.push_back(
