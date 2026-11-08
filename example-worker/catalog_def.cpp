@@ -188,8 +188,8 @@ vgi::CatalogTable planned_days_table(std::string name, std::string comment) {
 }
 
 // planned_days: the worker prunes the day files with the query's predicates.
-// It records what it saw in planned_days_last_plan.json so a test can assert
-// that the predicates arrived.
+// A filtered call records what it saw in planned_days_last_plan.json so a test
+// can assert that the predicates arrived.
 std::vector<vgi::CatalogBranch> plan_planned_days(const vgi::ScanPlanningRequest& request) {
     std::vector<std::string> days;
     for (const auto& day : kPlannedDays) {
@@ -197,11 +197,15 @@ std::vector<vgi::CatalogBranch> plan_planned_days(const vgi::ScanPlanningRequest
             request.pushdown_filters->may_match(planned_day_stats(day)))
             days.push_back(day);
     }
-    std::ofstream out(branch_path("planned_days_last_plan.json"), std::ios::trunc);
-    out << "{\"received_filters\": " << (request.pushdown_filters ? "true" : "false")
-        << ", \"days\": [";
-    for (size_t i = 0; i < days.size(); ++i) out << (i ? ", " : "") << '"' << days[i] << '"';
-    out << "]}";
+    // Only a call that carried predicates writes the record: unfiltered calls
+    // (vgi_table_branches() in concurrently running tests) would otherwise
+    // overwrite it while scan_planning_filtered.test is about to read it.
+    if (request.pushdown_filters) {
+        std::ofstream out(branch_path("planned_days_last_plan.json"), std::ios::trunc);
+        out << "{\"received_filters\": true, \"days\": [";
+        for (size_t i = 0; i < days.size(); ++i) out << (i ? ", " : "") << '"' << days[i] << '"';
+        out << "]}";
+    }
     if (days.empty()) return {};
     std::vector<std::string> files;
     for (const auto& day : days) files.push_back(planned_day_file(day));

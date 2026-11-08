@@ -462,9 +462,8 @@ TEST_CASE("protocol 3.2 filtered scan planning", "[catalog][scan-planning][stdio
     CHECK(vgi::wire::get_string(all[0], "function_name") == "read_parquet");
     CHECK(vgi::wire::get_optional_int64(all[0], "row_count") == 50);
     CHECK(vgi::wire::column(all[0], "column_statistics")->IsNull(0));
-    CHECK(last_plan() == nlohmann::json::parse(R"({"received_filters": false, "days": )"
-                                               R"(["2026-10-01", "2026-10-02", "2026-10-03", )"
-                                               R"("2026-10-04", "2026-10-05"]})"));
+    // An unfiltered call writes no plan record.
+    CHECK_FALSE(std::filesystem::exists(dir / "planned_days_last_plan.json"));
 
     // With them, the hook prunes the days before 2026-10-03.
     auto pruned = branches("planned_days", filters);
