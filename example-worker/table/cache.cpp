@@ -14,6 +14,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <arrow/array.h>
 #include <arrow/array/builder_primitive.h>
 
@@ -34,8 +40,27 @@ constexpr int64_t kDefaultTtlSeconds = 300;
 // assert on — the counter is the observable, not an implementation detail.
 std::atomic<int64_t> nonce_counter{0};
 
+// Makes nonces unique ACROSS worker processes, not just within one. The
+// engine's subprocess pool holds several worker processes and hands a scan
+// whichever it pops (most recently released first), so two cache MISSes can
+// land in two different processes. With a bare per-process counter both could
+// mint the same value and a MISS would read as a HIT — how
+// cache/transaction_scope.test's "t2 nonce <> t1a nonce" fails on the stdio
+// lane once earlier tests have left more than one process in the pool.
+// Folding the pid into the high 32 bits keeps the nonces of every live process
+// disjoint; the low 32 bits stay a plain per-process count (pid = nonce >> 32).
+// Mirrors vgi-go fc71b1c / vgi-rust a97d267.
+int64_t nonce_base() {
+#ifdef _WIN32
+    static const int64_t base = static_cast<int64_t>(::_getpid()) << 32;
+#else
+    static const int64_t base = static_cast<int64_t>(::getpid()) << 32;
+#endif
+    return base;
+}
+
 int64_t next_nonce() {
-    return nonce_counter.fetch_add(1, std::memory_order_relaxed);
+    return nonce_base() + nonce_counter.fetch_add(1, std::memory_order_relaxed);
 }
 
 vgi::FunctionMetadata cache_metadata(std::string description) {
