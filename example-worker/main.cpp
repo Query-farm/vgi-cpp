@@ -127,6 +127,8 @@ int main(int argc, char** argv) {
         example::register_accumulate(worker);
         example::register_projection_repro(worker);
         example::register_extra_catalogs(worker);
+        // The cross-SDK example.contract schema (visibility/example_table_only.test).
+        example::register_contract(worker);
     }
 
     // The cross-SDK vgi-rpc fixtures, hosted beside vgi.v3 on every transport.

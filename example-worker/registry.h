@@ -92,6 +92,9 @@ void register_accumulate(vgi::Worker& worker);
 void register_cached_scalars(vgi::Worker& worker);
 void register_projection_repro(vgi::Worker& worker);
 void register_transaction_storage(vgi::Worker& worker);
+// The read-only half of the cross-SDK example.contract fixture: contract.good
+// and contract.ranged, each scanned by a hidden (table_only) function.
+void register_contract(vgi::Worker& worker);
 std::vector<vgi::CatalogTable> rff_tables();
 std::vector<vgi::TimeTravelVersion> versioned_data_versions();
 // Declares the catalog's tables and views. Runs after the function

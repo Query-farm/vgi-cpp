@@ -40,6 +40,7 @@ add_executable(vgi-example-worker
     table/partition_broken.cpp
     table/proj_repro.cpp
     table/transaction.cpp
+    table/contract.cpp
     copy_to/lines.cpp
     copy_from/lines.cpp
     catalog_def.cpp
