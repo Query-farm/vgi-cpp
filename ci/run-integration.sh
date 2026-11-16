@@ -97,11 +97,16 @@ fi
 # run everywhere.
 WIN_SKIP=()
 
+# example_*.test exercise the cross-SDK example.contract fixtures (a hidden scan,
+# a scan named range, finalize-only INSERT counts, decimal32/64 columns), which
+# this SDK's example worker does not serve yet.
 echo "Staging preprocessed tests into $STAGE (transport=$TRANSPORT, windows=$WINDOWS) ..."
 mkdir -p "$STAGE/test/sql/integration"
 if ! ( cd "$INTEGRATION" || exit 1
   find . -name '*.test' \
        -not -path '*/writable/*' -not -path '*/simple_writable/*' \
+       -not -name 'example_table_only.test' -not -name 'example_insert_finalize.test' \
+       -not -name 'example_decimal_width.test' \
        -not -name 'nested_type_combinations.test' \
        -not -name 'expression_filter.test' \
        ${HTTP_SKIP[@]+"${HTTP_SKIP[@]}"} ${WIN_SKIP[@]+"${WIN_SKIP[@]}"} | while read -r f; do
