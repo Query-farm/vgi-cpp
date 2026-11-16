@@ -23,7 +23,7 @@ concurrency:
 
 env:
   # Match the v3 suite and statically linked native runner exactly.
-  VGI_REF: 2df81a5e75fd2d1f436526906cf5f868522c6655
+  VGI_REF: b5599750f98f466602c257be72d6523898fc4c6a
   VGI_NATIVE_RUNNER_BRANCH: v2.0
   VCPKG_BINARY_SOURCES: "${{ secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_KEY_ID != '' && secrets.R2_ENDPOINT != '' && 'clear;x-aws,s3://query-farm-duckdb-vcpkg/,readwrite' || 'clear' }}"
   AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
