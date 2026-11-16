@@ -391,7 +391,6 @@ VGI_READ_ONLY(catalog_create)
 VGI_READ_ONLY(catalog_drop)
 VGI_READ_ONLY(catalog_schema_create)
 VGI_READ_ONLY(catalog_schema_drop)
-VGI_READ_ONLY(catalog_table_create)
 VGI_READ_ONLY(catalog_table_drop)
 VGI_READ_ONLY(catalog_table_rename)
 VGI_READ_ONLY(catalog_table_comment_set)
@@ -415,5 +414,11 @@ VGI_READ_ONLY(catalog_index_create)
 VGI_READ_ONLY(catalog_index_drop)
 
 #undef VGI_READ_ONLY
+
+// The one DDL method with an answer (protocol 3.3: `TableCreateResponse`).
+// Refused all the same; the answer is never reached.
+vgi_rpc::Result Dispatcher::catalog_table_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) {
+    refuse_read_only("catalog_table_create");
+}
 
 }  // namespace vgi

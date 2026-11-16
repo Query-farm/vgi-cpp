@@ -29,7 +29,8 @@ Every function shape the protocol has, and the catalog surface around them.
    stitched from several scans (with protocol 3.2 filtered scan planning and
    branch statistics, [scan-planning.md](scan-planning.md)), views, macros, constraints, comments, tags,
    object counts, time travel, transactions, and several catalogs from one
-   process.
+   process. Hidden functions are listed `table_only` (protocol 3.3
+   `FunctionInfo.visibility`).
 7. **ATTACH** — npm-style data-version resolution, per-version schemas, typed
    ATTACH options with defaults, per-attachment identity.
 8. **Result cache** — TTLs, nonces, scopes, revalidation, partition scopes,

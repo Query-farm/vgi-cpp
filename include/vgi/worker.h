@@ -50,12 +50,23 @@ public:
     CatalogModel& catalog(const std::string& name);
     void set_server_id(std::string id);
 
-    // Keep `name` out of the function surface the catalog advertises.
+    // List `name` as `table_only` (protocol 3.3 `FunctionInfo.visibility`).
     //
     // A function that exists only to back a catalog table is still registered
     // — the engine calls it by name to scan the table — but it is not
     // something a user should find in `duckdb_functions()`, and a worker whose
     // surface is a cross-language contract has to be able to say so.
+    //
+    // It is still *listed*: the engine takes a table's scan capabilities
+    // (projection and filter pushdown, required secrets, ...) only from the
+    // function listing, so omitting it would scan the table with all of them
+    // off. A `table_only` entry is kept for resolving the tables that name it
+    // and is neither in `duckdb_functions()` nor callable from SQL, not even
+    // fully qualified. A hidden name is never published as a global function.
+    //
+    // Every function in this SDK is registered explicitly, and an explicitly
+    // registered function is public — the rule every SDK shares — so a
+    // table's scan function stays callable unless it is hidden here.
     void hide_function(std::string name);
 
     // Register in the catalog's default schema (`main`).

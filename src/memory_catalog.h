@@ -71,7 +71,9 @@ private:
     void schema_create(const std::string& attach,
                        const std::shared_ptr<arrow::RecordBatch>& params);
     void schema_drop(const std::string& attach, const std::shared_ptr<arrow::RecordBatch>& params);
-    void put_object(const std::string& attach, const SchemaPath& path, const std::string& name,
+    // Whether the object was stored: false when `on_conflict` is IGNORE and
+    // one of that name already exists (it is left unchanged).
+    bool put_object(const std::string& attach, const SchemaPath& path, const std::string& name,
                     const char* kind, const std::string& on_conflict, bool view, std::string item);
     void drop_object(const std::string& attach, const SchemaPath& path, const std::string& name,
                      const char* kind, bool ignore_not_found, bool view);

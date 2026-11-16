@@ -508,6 +508,10 @@ std::vector<std::string> Dispatcher::encode_global_functions(const CatalogModel&
     std::vector<std::string> items;
     items.reserve(model.global_functions.size());
     for (const auto& name : model.global_functions) {
+        // A global name is a callable alias, and a hidden function is
+        // `table_only` — not callable (protocol 3.3). The engine would refuse
+        // to register it; it is not sent at all.
+        if (hidden(name)) continue;
         if (auto fn = find_buffering(name, {model.name, SchemaPath{"main"}})) {
             items.push_back(encode_buffering_info(*fn, SchemaPath{"main"}));
             continue;
@@ -1069,7 +1073,7 @@ std::string encode_scan_branch(const CatalogBranch& source, const CatalogTable& 
 //
 // `scan_function` and `scan_arguments` are what make a VGI table work: the
 // table is a name bound to a function, and this is the binding. Inlining the
-// scan here saves the engine a `catalog_table_scan_function_get` round trip
+// scan here saves the engine a `catalog_table_scan_branches_get` round trip
 // per query.
 //
 // Everything the extension checks at ATTACH is checked here first, and the
@@ -1758,7 +1762,7 @@ vgi_rpc::Result Dispatcher::catalog_schema_get(const vgi_rpc::Request& request,
 wire::ResultBuilder Dispatcher::common_function_info(
     const std::string& name, const SchemaPath& schema_path, const char* function_type,
     const std::vector<ArgSpec>& specs, const std::shared_ptr<arrow::Schema>& output_schema,
-    const FunctionMetadata& metadata) {
+    const FunctionMetadata& metadata, bool table_only) {
     validate_filter_capabilities(metadata);
     const auto filter_semantic_profiles = metadata.resolved_filter_semantic_profiles();
     auto builder =
@@ -1797,6 +1801,13 @@ wire::ResultBuilder Dispatcher::common_function_info(
                       metadata.distinct_dependent
                           ? enums::distinct_dependence::kDistinctDependent
                           : enums::distinct_dependence::kNotDistinctDependent);
+    // Protocol 3.3. Null, not "public", for an ordinary function: the two mean
+    // the same, and null is what every SDK sends for one.
+    if (table_only) {
+        builder.set_string("visibility", enums::function_visibility::kTableOnly);
+    } else {
+        builder.set_null("visibility");
+    }
     if (metadata.parameter_default_values) {
         if (metadata.parameter_default_values->num_rows() != 1) {
             throw std::invalid_argument("parameter_default_values must contain exactly one row");
@@ -1821,12 +1832,13 @@ wire::ResultBuilder Dispatcher::common_function_info(
 }
 
 std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
-                                                   const SchemaPath& schema_path) {
+                                                   const SchemaPath& schema_path, bool table_only) {
     const auto metadata = fn.metadata();
     // A table function's output schema is settled at bind, so nothing useful
     // can be advertised here; an empty schema is how that is spelled.
-    auto builder = common_function_info(fn.name(), schema_path, enums::function_type::kTable,
-                                        fn.argument_specs(), arrow::schema({}), metadata);
+    auto builder =
+        common_function_info(fn.name(), schema_path, enums::function_type::kTable,
+                             fn.argument_specs(), arrow::schema({}), metadata, table_only);
     builder.set_bool("late_materialization", metadata.late_materialization)
         .set_bool("supports_batch_index", metadata.supports_batch_index)
         // Taken from the function rather than from its metadata: a function
@@ -1846,12 +1858,13 @@ std::string Dispatcher::encode_table_function_info(const TableFunction& fn,
 }
 
 std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
-                                                 const SchemaPath& schema_path) {
+                                                 const SchemaPath& schema_path, bool table_only) {
     const auto metadata = fn.metadata();
     // The engine sees a table-in-out as a table function that happens to take
     // a table argument, so it is advertised as one.
-    auto builder = common_function_info(fn.name(), schema_path, enums::function_type::kTable,
-                                        fn.argument_specs(), arrow::schema({}), metadata);
+    auto builder =
+        common_function_info(fn.name(), schema_path, enums::function_type::kTable,
+                             fn.argument_specs(), arrow::schema({}), metadata, table_only);
     builder.set_bool("has_finalize", fn.has_finish());
     // Validated at registration: a positive count, on a blended function.
     if (metadata.input_rows_per_call) {
@@ -1861,11 +1874,11 @@ std::string Dispatcher::encode_table_in_out_info(const TableInOutFunction& fn,
 }
 
 std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
-                                              const SchemaPath& schema_path) {
+                                              const SchemaPath& schema_path, bool table_only) {
     const auto metadata = fn.metadata();
     return wire::encode_ipc(
         common_function_info(fn.name(), schema_path, enums::function_type::kTableBuffering,
-                             fn.argument_specs(), arrow::schema({}), metadata)
+                             fn.argument_specs(), arrow::schema({}), metadata, table_only)
             .set_bool("requires_input_batch_index", metadata.requires_input_batch_index)
             .set_bool("sink_order_dependent", metadata.sink_order_dependent)
             .set_bool("source_order_dependent", metadata.source_order_dependent)
@@ -1879,7 +1892,7 @@ std::string Dispatcher::encode_buffering_info(const TableBufferingFunction& fn,
 }
 
 std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
-                                              const SchemaPath& schema_path) {
+                                              const SchemaPath& schema_path, bool table_only) {
     const auto metadata = fn.metadata();
     // An aggregate must advertise exactly one output field — the engine
     // rejects a zero-field schema outright. A declared return type wins;
@@ -1888,7 +1901,8 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
     // `vgi:any` marker defers the type.
     return wire::encode_ipc(
         common_function_info(fn.name(), schema_path, enums::function_type::kAggregate,
-                             fn.argument_specs(), advertised_aggregate_schema(fn), metadata)
+                             fn.argument_specs(), advertised_aggregate_schema(fn), metadata,
+                             table_only)
             // Declared, or the engine never sends a window request at all and
             // an aggregate that implements `window` is simply never asked.
             .set_bool("supports_window", fn.supports_window())
@@ -1898,7 +1912,7 @@ std::string Dispatcher::encode_aggregate_info(const AggregateFunction& fn,
 }
 
 std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
-                                             const SchemaPath& schema_path) {
+                                             const SchemaPath& schema_path, bool table_only) {
     const auto metadata = fn.metadata();
     // Both are IPC-serialized *schemas*, not batches: a parameter list is
     // carried as fields plus metadata, and the output schema is what lets the
@@ -1906,7 +1920,7 @@ std::string Dispatcher::encode_function_info(const ScalarFunction& fn,
     return wire::encode_ipc(common_function_info(fn.name(), schema_path,
                                                  enums::function_type::kScalar, fn.argument_specs(),
                                                  build_scalar_output_schema(metadata.return_type),
-                                                 metadata)
+                                                 metadata, table_only)
                                 .fill_defaults()
                                 .finish());
 }
@@ -2085,27 +2099,34 @@ Dispatcher::FunctionListing Dispatcher::build_function_listing(
     // Only what is declared in this schema *and* in this attachment's catalog.
     // Advertising everything under every schema would make a two-schema
     // collision look like one flat entry with two overloads, which is what the
-    // engine then reports. Hidden names are still registered — the engine
-    // calls them to scan the tables they back — but they are not part of the
-    // surface a user browses.
-    const auto listed = [&](const Scope& scope, const auto& fn) {
-        return scope.schema_path == schema_path && scope.catalog == catalog && !hidden(fn->name());
+    // engine then reports.
+    //
+    // Hidden names are listed too, as `table_only` (protocol 3.3). The engine
+    // takes a table's scan capabilities — projection and filter pushdown,
+    // required secrets, late materialization, ... — only from this listing, so
+    // a function left out of it would scan its table with every capability
+    // off. `table_only` keeps it out of `duckdb_functions()` and SQL instead.
+    const auto listed = [&](const Scope& scope) {
+        return scope.schema_path == schema_path && scope.catalog == catalog;
     };
     if (function_type == enums::function_type::kScalar) {
         for (size_t i = 0; i < scalars_.size(); ++i) {
-            if (listed(scalar_scopes_[i], scalars_[i])) {
-                items->push_back(encode_function_info(*scalars_[i], schema_path));
+            if (listed(scalar_scopes_[i])) {
+                items->push_back(
+                    encode_function_info(*scalars_[i], schema_path, hidden(scalars_[i]->name())));
             }
         }
     } else if (function_type == enums::function_type::kTable) {
         for (size_t i = 0; i < tables_.size(); ++i) {
-            if (listed(table_scopes_[i], tables_[i])) {
-                items->push_back(encode_table_function_info(*tables_[i], schema_path));
+            if (listed(table_scopes_[i])) {
+                items->push_back(encode_table_function_info(*tables_[i], schema_path,
+                                                            hidden(tables_[i]->name())));
             }
         }
         for (size_t i = 0; i < table_in_outs_.size(); ++i) {
-            if (listed(table_in_out_scopes_[i], table_in_outs_[i])) {
-                items->push_back(encode_table_in_out_info(*table_in_outs_[i], schema_path));
+            if (listed(table_in_out_scopes_[i])) {
+                items->push_back(encode_table_in_out_info(*table_in_outs_[i], schema_path,
+                                                          hidden(table_in_outs_[i]->name())));
             }
         }
         // Buffering functions are advertised under the *table* filter, not a
@@ -2114,14 +2135,16 @@ Dispatcher::FunctionListing Dispatcher::build_function_listing(
         // something the engine knows to ask for — so listing them under their
         // own name means they are never returned and never resolve.
         for (size_t i = 0; i < bufferings_.size(); ++i) {
-            if (listed(buffering_scopes_[i], bufferings_[i])) {
-                items->push_back(encode_buffering_info(*bufferings_[i], schema_path));
+            if (listed(buffering_scopes_[i])) {
+                items->push_back(encode_buffering_info(*bufferings_[i], schema_path,
+                                                       hidden(bufferings_[i]->name())));
             }
         }
     } else if (function_type == enums::function_type::kAggregate) {
         for (size_t i = 0; i < aggregates_.size(); ++i) {
-            if (listed(aggregate_scopes_[i], aggregates_[i])) {
-                items->push_back(encode_aggregate_info(*aggregates_[i], schema_path));
+            if (listed(aggregate_scopes_[i])) {
+                items->push_back(encode_aggregate_info(*aggregates_[i], schema_path,
+                                                       hidden(aggregates_[i]->name())));
             }
         }
     }
@@ -2161,39 +2184,6 @@ vgi_rpc::Result Dispatcher::catalog_schema_contents_views(const vgi_rpc::Request
                         .finish());
 }
 
-vgi_rpc::Result Dispatcher::catalog_table_scan_function_get(const vgi_rpc::Request& request,
-                                                            vgi_rpc::CallContext&) {
-    const auto schema_path = wire::get_schema_path(request.batch());
-    const auto name = wire::get_string(request.batch(), "name");
-
-    const CatalogTable* found = nullptr;
-    if (const auto* schema = schema_for(request, schema_path)) {
-        for (const auto& table : schema->tables) {
-            if (table.name == name) found = &table;
-        }
-    }
-    if (!found)
-        throw std::invalid_argument("no table '" + schema_path_string(schema_path) + "." + name +
-                                    "'");
-
-    const auto* version =
-        resolve_version(*found, wire::get_optional_string(request.batch(), "at_unit"),
-                        wire::get_optional_string(request.batch(), "at_value"));
-
-    // Returned as raw IPC bytes, not wrapped in an items list: this method's
-    // return type is `bytes`, so the payload *is* the ScanFunctionResult.
-    auto scan =
-        wire::ResultBuilder(gen::ScanFunctionResultSchema())
-            .set_string("function_name", version ? version->scan_function : found->scan_function)
-            .set_binary("arguments", version ? version->scan_arguments : found->scan_arguments)
-            .set_string_list("required_extensions", {})
-            .set_string_list("schema_path", schema_path)
-            .finish();
-    return vgi_rpc::Result::value(wire::ResultBuilder(envelope_schema())
-                                      .set_binary("result", wire::encode_ipc(scan))
-                                      .finish());
-}
-
 vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Request& request,
                                                             vgi_rpc::CallContext&) {
     const auto schema_path = wire::get_schema_path(request.batch());
@@ -2209,10 +2199,10 @@ vgi_rpc::Result Dispatcher::catalog_table_scan_branches_get(const vgi_rpc::Reque
         throw std::invalid_argument("no table '" + schema_path_string(schema_path) + "." + name +
                                     "'");
 
-    // A single-branch table still honours the AT clause through this call —
-    // the engine does not fall back to `catalog_table_scan_function_get` for
-    // it. Resolving unconditionally also means an AT clause naming a version
-    // that does not exist raises here rather than being ignored.
+    // The only scan-discovery RPC since protocol 3.3 (which removed
+    // `catalog_table_scan_function_get`), so a single-branch table honours the
+    // AT clause here. Resolving unconditionally also means an AT clause naming
+    // a version that does not exist raises here rather than being ignored.
     const auto* version =
         resolve_version(*found, wire::get_optional_string(request.batch(), "at_unit"),
                         wire::get_optional_string(request.batch(), "at_value"));

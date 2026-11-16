@@ -242,11 +242,12 @@ struct CatalogTable {
 
     // Whether the scan function travels inside the table record.
     //
-    // Inlined, the engine skips `catalog_table_scan_function_get` entirely —
+    // Inlined, the engine skips `catalog_table_scan_branches_get` entirely —
     // one fewer round trip per query, and the inlined binding is the one the
-    // AT-resolved version supplies. Not inlined, the engine asks, either
-    // through that method or through `catalog_table_scan_branches_get`; both
-    // resolve the clause, so either setting travels correctly.
+    // AT-resolved version supplies. Not inlined, the engine asks through
+    // `catalog_table_scan_branches_get` (the only scan-discovery RPC since
+    // protocol 3.3), which resolves the clause, so either setting travels
+    // correctly.
     bool inline_scan = true;
 
     // Protocol 3.2: when the engine resolves this table's scan redirect —

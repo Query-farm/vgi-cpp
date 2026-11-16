@@ -226,13 +226,17 @@ std::vector<std::string> list(Served& worker, const std::string& handle,
                                       "items");
 }
 
-// `name: description` for each item, which says whose declaration was listed.
+// `name: description` for each item, which says whose declaration was listed,
+// with ` [<visibility>]` appended when `FunctionInfo.visibility` is not null.
+// An ordinary function sends null (public), so a stray "public" shows up here.
 std::vector<std::string> described(const std::vector<std::string>& items) {
     std::vector<std::string> out;
     for (const auto& item : items) {
         const auto info = vgi::wire::decode_ipc(item);
+        const auto visibility = vgi::wire::get_optional_string(info, "visibility");
         out.push_back(vgi::wire::get_string(info, "name") + ": " +
-                      vgi::wire::get_string(info, "description"));
+                      vgi::wire::get_string(info, "description") +
+                      (visibility ? " [" + *visibility + "]" : ""));
     }
     return out;
 }
@@ -280,9 +284,12 @@ TEST_CASE("a function listing is built once per catalog, schema and type", "[cat
     const auto alpha_again = attach(worker, "alpha");
     REQUIRE(alpha_again != alpha);
 
+    // The hidden function is listed too, as `table_only` (protocol 3.3): the
+    // engine reads a table's scan capabilities only from the listing.
     const auto scalars = list(worker, alpha, {"main"}, "SCALAR_FUNCTION");
-    CHECK(described(scalars) == Names{"twice: alpha main"});
+    CHECK(described(scalars) == Names{"twice: alpha main", "backing: alpha main [table_only]"});
     CHECK(alpha_scalar->declarations() > 0);
+    CHECK(alpha_hidden->declarations() > 0);
     const auto built_once = counts();
 
     SECTION("asked again, it is the same bytes and nothing is built") {
@@ -323,17 +330,14 @@ TEST_CASE("a function listing is built once per catalog, schema and type", "[cat
 
     SECTION("an unfiltered listing shares the typed listings' encodings") {
         const auto unfiltered = list(worker, alpha, {"main"}, "");
-        REQUIRE(described(unfiltered) ==
-                Names{"twice: alpha main", "rows: alpha main", "total: alpha main"});
+        REQUIRE(described(unfiltered) == Names{"twice: alpha main",
+                                               "backing: alpha main [table_only]",
+                                               "rows: alpha main", "total: alpha main"});
         const auto all_built = counts();
-        CHECK(list(worker, alpha, {"main"}, "TABLE_FUNCTION") == Names{unfiltered[1]});
-        CHECK(list(worker, alpha, {"main"}, "AGGREGATE_FUNCTION") == Names{unfiltered[2]});
+        CHECK(list(worker, alpha, {"main"}, "TABLE_FUNCTION") == Names{unfiltered[2]});
+        CHECK(list(worker, alpha, {"main"}, "AGGREGATE_FUNCTION") == Names{unfiltered[3]});
         CHECK(counts() == all_built);
     }
-
-    // A hidden function backs a table; it is registered, never listed, and
-    // never needs building.
-    CHECK(alpha_hidden->declarations() == 0);
 }
 
 TEST_CASE("a function registered after a listing is served is in the next one",
@@ -351,10 +355,11 @@ TEST_CASE("a function registered after a listing is served is in the next one",
     dispatcher.register_scalar(std::make_shared<Scalar>("second", "alpha main"));
     dispatcher.hide_function("first");
 
+    // Hiding rebuilds the listing: the hidden function is now `table_only`.
     Served worker(dispatcher);
     const auto handle = attach(worker, "alpha");
     CHECK(described(list(worker, handle, {"main"}, "SCALAR_FUNCTION")) ==
-          Names{"second: alpha main"});
+          Names{"first: alpha main [table_only]", "second: alpha main"});
 }
 
 namespace {
@@ -835,10 +840,37 @@ TEST_CASE("a memory catalog takes DDL, privately per ATTACH, and bumps its versi
                                    .set_enum("on_conflict", "ERROR")
                                    .fill_defaults()
                                    .finish();
-    worker.call_void("catalog_table_create",
-                     vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
-                         .set_binary("request", vgi::wire::encode_ipc(table_request))
-                         .finish());
+    // Protocol 3.3: `catalog_table_create` answers whether this call created
+    // the table.
+    const auto create_table = [&](const char* on_conflict) {
+        const auto request = vgi::wire::ResultBuilder(gen::TableCreateRequestSchema())
+                                 .set_binary("attach_opaque_data", one)
+                                 .set_string_list("schema_path", {"main"})
+                                 .set_string("name", "t1")
+                                 .set_binary("columns", vgi::wire::encode_schema(arrow::schema(
+                                                            {arrow::field("a", arrow::int32())})))
+                                 .set_enum("on_conflict", on_conflict)
+                                 .fill_defaults()
+                                 .finish();
+        return vgi::wire::get_bool(
+            worker.call("catalog_table_create",
+                        vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                            .set_binary("request", vgi::wire::encode_ipc(request))
+                            .finish()),
+            "created");
+    };
+    const auto created = worker.call(
+        "catalog_table_create", vgi::wire::ResultBuilder(gen::CatalogTableCreateParamsSchema())
+                                    .set_binary("request", vgi::wire::encode_ipc(table_request))
+                                    .finish());
+    CHECK(created->schema()->Equals(*gen::CatalogTableCreateResultSchema()));
+    CHECK(vgi::wire::get_bool(created, "created"));
+    CHECK(version_of(worker, one) == 4);
+    // IF NOT EXISTS over an existing table leaves it alone and says so.
+    CHECK_FALSE(create_table("IGNORE"));
+    CHECK(version_of(worker, one) == 4);
+    REQUIRE_THROWS_WITH(create_table("ERROR"),
+                        Catch::Matchers::ContainsSubstring("already exists"));
     CHECK(version_of(worker, one) == 4);
     // An unported provider must not manufacture an empty semantic dependency graph.
     REQUIRE_THROWS(worker.call_void("catalog_dependencies",

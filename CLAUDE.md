@@ -236,10 +236,15 @@ Each of these cost real debugging time, and none is guessable from the code:
   pointing into something freed at the end of that statement. This has
   segfaulted twice; `-Wreturn-stack-address` is on for exactly that reason.
 - **A single-branch table honours the AT clause through
-  `catalog_table_scan_branches_get`.** The engine does not fall back to
-  `catalog_table_scan_function_get` once the branches method answers, so
-  resolving the version in only one of the two silently serves the newest
-  version for every AT.
+  `catalog_table_scan_branches_get`.** Since protocol 3.3 it is the only
+  scan-discovery RPC (`catalog_table_scan_function_get` is gone), so a table
+  that does not inline its scan must resolve the version there or every AT
+  silently serves the newest version.
+- **A hidden function is listed, not omitted** (protocol 3.3). The engine
+  takes a table's scan capabilities only from the function listing;
+  `hide_function` marks the entry `FunctionInfo.visibility = "table_only"`,
+  which keeps it out of `duckdb_functions()` and SQL without switching off
+  its pushdown.
 - **The engine keys its COPY registry on the alias-scoped format name and
   skips a name it has already registered.** A format declared once as a writer
   and once as a reader must go out as a single entry with

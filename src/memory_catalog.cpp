@@ -351,7 +351,7 @@ void MemoryCatalog::schema_drop(const std::string& attach,
     ++st.version;
 }
 
-void MemoryCatalog::put_object(const std::string& attach, const SchemaPath& path,
+bool MemoryCatalog::put_object(const std::string& attach, const SchemaPath& path,
                                const std::string& name, const char* kind,
                                const std::string& on_conflict, bool view, std::string item) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -362,9 +362,10 @@ void MemoryCatalog::put_object(const std::string& attach, const SchemaPath& path
     }
     auto& objects = view ? schema->second.views : schema->second.tables;
     const auto key = lower(name);
-    if (objects.count(key) && !on_conflict_replaces(kind, name, on_conflict)) return;
+    if (objects.count(key) && !on_conflict_replaces(kind, name, on_conflict)) return false;
     objects[key] = Object{name, std::move(item)};
     ++st.version;
+    return true;
 }
 
 void MemoryCatalog::drop_object(const std::string& attach, const SchemaPath& path,
@@ -537,10 +538,14 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
             info.set_null("definition_revision");
         else
             info.set_binary("definition_revision", random_token());
-        put_object(attach, path, name, "Table",
-                   wire::get_optional_enum(params, "on_conflict").value_or(""), false,
-                   wire::encode_ipc(info.fill_defaults().finish()));
-        return std::nullopt;
+        // Protocol 3.3: whether this call created the table. False only for
+        // IF NOT EXISTS against an existing table, which is left unchanged;
+        // the engine then reports "not created", so CREATE TABLE IF NOT
+        // EXISTS ... AS SELECT inserts nothing into it.
+        const bool created = put_object(attach, path, name, "Table",
+                                        wire::get_optional_enum(params, "on_conflict").value_or(""),
+                                        false, wire::encode_ipc(info.fill_defaults().finish()));
+        return wire::ResultBuilder(payload_schema_of(method)).set_bool("created", created).finish();
     }
     if (method == "catalog_table_drop" || method == "catalog_view_drop") {
         const bool view = method == "catalog_view_drop";
@@ -617,9 +622,9 @@ std::optional<std::shared_ptr<arrow::RecordBatch>> MemoryCatalog::serve(
                 .set_optional_string("comment", wire::get_optional_string(params, "comment"))
                 .set_string_map("tags", view_pairs(params, "tags"))
                 .set_string_map("column_comments", column_comments);
-        put_object(attach, path, name, "View",
-                   wire::get_optional_enum(params, "on_conflict").value_or(""), true,
-                   wire::encode_ipc(info.fill_defaults().finish()));
+        (void)put_object(attach, path, name, "View",
+                         wire::get_optional_enum(params, "on_conflict").value_or(""), true,
+                         wire::encode_ipc(info.fill_defaults().finish()));
         return std::nullopt;
     }
     throw std::invalid_argument(options_.name + ": " + method +

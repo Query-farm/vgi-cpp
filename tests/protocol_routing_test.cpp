@@ -62,14 +62,14 @@ const std::string kVersion(gen::VGI_PROTOCOL_VERSION);
 // than a handler failing somewhere inside a payload it cannot read.
 const std::string kOtherMajor = "vgi.v2";
 
-// The reference vgi.v3 protocol hash: the unpublished combined contract, 85 methods. The
+// The reference vgi.v3 protocol hash: the 3.3.0 contract, 84 methods. The
 // hash covers each method's type and its params, result and header schemas
 // (field names, order, nullability, types), not docs or defaults, so a
 // registration that drifts from the reference changes it. Every SDK reports
 // this same value. This is the changing development contract; the public
 // version transition remains gated on the complete combined protocol freeze.
 const std::string kReferenceProtocolHash =
-    "171ac8263bf22ffdd5dd4ac2c3d3c4e1dc186a7ceba45d386f324af8c9c6fced";
+    "ad10c6b137db8cd0054c8c3d80b0f50946382d52bbd549beaad209e00c180f08";
 
 // A worker serving a listening transport, owned for the length of one test.
 //
@@ -195,7 +195,7 @@ void require_hosts_vgi(const std::vector<vgi_rpc::HostedProtocol>& listing) {
     CHECK(application.version == kVersion);
     // Byte-identical to the reference surface, on every transport.
     CHECK(kProtocol == "vgi.v3");
-    CHECK(kVersion == "3.2.0");
+    CHECK(kVersion == "3.3.0");
     CHECK(application.hash == kReferenceProtocolHash);
 }
 

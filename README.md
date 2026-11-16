@@ -11,9 +11,10 @@ of the [Rust](https://github.com/Query-farm/vgi-rust) and
 [Python](https://github.com/Query-farm/vgi-python) SDKs, and is built on the
 C++ [vgi-rpc](https://github.com/Query-farm/vgi-rpc-cpp) port.
 
-Version **0.15.0** uses **`vgi.v3` / `3.2.0`** and requires a matching VGI
-extension. Keep 0.12.x for existing `vgi.v2` installations; upgrade the extension
-and worker SDKs together. The shared contract prepares for DuckDB 2.0 while
+Version **0.15.0** uses **`vgi.v3` / `3.2.0`**; the current source speaks
+**`3.3.0`** (function visibility and the 3.3 write-path wire shape). Either
+requires a matching VGI extension. Keep 0.12.x for existing `vgi.v2`
+installations; upgrade the extension and worker SDKs together. The shared contract prepares for DuckDB 2.0 while
 remaining usable by the 1.5 adapter. Optional catalog and query capabilities
 still depend on the provider. This release uses vgi-rpc-cpp **0.11.0**.
 
@@ -97,6 +98,26 @@ user's catalog later, as that user, with a grant and a sealed `vgia1.` ticket
 See [Filtered scan planning](docs/scan-planning.md) for letting a multi-branch
 table choose its branches with the query's predicates and attach branch
 statistics (protocol 3.2).
+
+### Function visibility (protocol 3.3)
+
+The engine takes a table's scan capabilities (projection and filter pushdown,
+required secrets, late materialization, ...) only from the function listing,
+so every registered function is listed. `Worker::hide_function(name)` marks
+one `FunctionInfo.visibility = "table_only"`: the tables that name it still
+resolve it with all its capabilities, but it is absent from
+`duckdb_functions()` and cannot be called from SQL, not even fully qualified,
+nor published as a global function. Every other function is public (the field
+is sent null). Functions in this SDK are always registered explicitly, and an
+explicitly registered function is public under the rule every SDK shares, so
+a table's scan function stays callable unless it is hidden.
+
+This SDK serves read-only catalogs, so 3.3's write-path changes reach it only
+as wire shape: `catalog_table_scan_function_get` is gone
+(`catalog_table_scan_branches_get` is the only scan-discovery RPC, served for
+every table), and `catalog_table_create` answers `{created: bool}` — the
+in-memory DDL catalog reports `false` for `IF NOT EXISTS` over an existing
+table.
 
 See [Iroh operations](docs/iroh.md) for the in-process C ABI client and
 identity-preserving raw or HTTP worker bridge setup.

@@ -83,8 +83,9 @@ public:
     CatalogModel& catalog(const std::string& name);
     const CatalogModel* find_catalog(const std::string& name) const;
 
-    // Names kept out of the advertised function surface. See
-    // `Worker::hide_function`.
+    // Names listed `table_only` (protocol 3.3): advertised so the engine has
+    // their capabilities for the tables that name them, but never a SQL
+    // callable. See `Worker::hide_function`.
     void hide_function(std::string name) {
         hidden_.insert(std::move(name));
         forget_function_listings();
@@ -243,8 +244,6 @@ public:
     vgi_rpc::Result catalog_table_get(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     vgi_rpc::Result catalog_table_column_statistics_get(const vgi_rpc::Request&,
                                                         vgi_rpc::CallContext&) override;
-    vgi_rpc::Result catalog_table_scan_function_get(const vgi_rpc::Request&,
-                                                    vgi_rpc::CallContext&) override;
     vgi_rpc::Result catalog_table_scan_branches_get(const vgi_rpc::Request&,
                                                     vgi_rpc::CallContext&) override;
     vgi_rpc::Result catalog_view_get(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
@@ -264,7 +263,7 @@ public:
     void catalog_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_schema_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_schema_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
-    void catalog_table_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
+    vgi_rpc::Result catalog_table_create(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_table_drop(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_table_rename(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
     void catalog_table_comment_set(const vgi_rpc::Request&, vgi_rpc::CallContext&) override;
@@ -297,20 +296,27 @@ private:
     static wire::ResultBuilder common_function_info(
         const std::string& name, const SchemaPath& schema_path, const char* function_type,
         const std::vector<ArgSpec>& specs, const std::shared_ptr<arrow::Schema>& output_schema,
-        const FunctionMetadata& metadata);
+        const FunctionMetadata& metadata, bool table_only);
 
     // Serialize one Info dataclass as the IPC bytes a list<binary> column
-    // carries.
-    static std::string encode_function_info(const ScalarFunction& fn,
-                                            const SchemaPath& schema_path);
+    // carries. `table_only` sets `FunctionInfo.visibility` (protocol 3.3):
+    // the engine keeps the description to resolve the tables that name the
+    // function but creates no SQL callable for it. Otherwise it is null,
+    // which the engine reads as public.
+    static std::string encode_function_info(const ScalarFunction& fn, const SchemaPath& schema_path,
+                                            bool table_only = false);
     static std::string encode_table_function_info(const TableFunction& fn,
-                                                  const SchemaPath& schema_path);
+                                                  const SchemaPath& schema_path,
+                                                  bool table_only = false);
     static std::string encode_table_in_out_info(const TableInOutFunction& fn,
-                                                const SchemaPath& schema_path);
+                                                const SchemaPath& schema_path,
+                                                bool table_only = false);
     static std::string encode_aggregate_info(const AggregateFunction& fn,
-                                             const SchemaPath& schema_path);
+                                             const SchemaPath& schema_path,
+                                             bool table_only = false);
     static std::string encode_buffering_info(const TableBufferingFunction& fn,
-                                             const SchemaPath& schema_path);
+                                             const SchemaPath& schema_path,
+                                             bool table_only = false);
     std::vector<std::string> encode_settings(const CatalogModel& model) const;
     std::vector<std::string> encode_secret_types(const CatalogModel& model) const;
     bool supports_time_travel(const CatalogModel& model) const;

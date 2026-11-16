@@ -60,6 +60,17 @@ inline constexpr const char* kDistinctDependent = "DISTINCT_DEPENDENT";
 inline constexpr const char* kNotDistinctDependent = "NOT_DISTINCT_DEPENDENT";
 }  // namespace distinct_dependence
 
+// `FunctionInfo.visibility` (protocol 3.3): a plain nullable `utf8`, not a
+// dictionary, and lowercase. Null means public, which is what this SDK sends
+// for every function it does not mark `table_only`.
+namespace function_visibility {
+inline constexpr const char* kPublic = "public";
+// Listed so the engine has the function's capabilities when it resolves a
+// table that names it, but absent from `duckdb_functions()` and not callable
+// from SQL.
+inline constexpr const char* kTableOnly = "table_only";
+}  // namespace function_visibility
+
 namespace phase {
 inline constexpr const char* kProcess = "PROCESS";
 inline constexpr const char* kInput = "INPUT";
