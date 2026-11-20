@@ -64,7 +64,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: v0.11.1
+          # TODO(release-wave): unreleased upload URLs v2 (protocol-3.4 branch);
+          # back to a release tag once vgi-rpc-cpp is released.
+          ref: 178d6089f301e6cccc1bba181c21cc6137588382
           path: vgi-rpc-c++
 
       - name: Clone and bootstrap vcpkg

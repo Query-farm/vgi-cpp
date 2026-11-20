@@ -62,7 +62,8 @@ const std::string kVersion(gen::VGI_PROTOCOL_VERSION);
 // than a handler failing somewhere inside a payload it cannot read.
 const std::string kOtherMajor = "vgi.v2";
 
-// The reference vgi.v3 protocol hash: the 3.3.0 contract, 84 methods. The
+// The reference vgi.v3 protocol hash: the 3.4.0 contract, 84 methods (3.4
+// changed no vgi.v3 schema, only vgi-rpc upload URLs, so 3.3 hashed the same). The
 // hash covers each method's type and its params, result and header schemas
 // (field names, order, nullability, types), not docs or defaults, so a
 // registration that drifts from the reference changes it. Every SDK reports
@@ -195,7 +196,7 @@ void require_hosts_vgi(const std::vector<vgi_rpc::HostedProtocol>& listing) {
     CHECK(application.version == kVersion);
     // Byte-identical to the reference surface, on every transport.
     CHECK(kProtocol == "vgi.v3");
-    CHECK(kVersion == "3.3.0");
+    CHECK(kVersion == "3.4.0");
     CHECK(application.hash == kReferenceProtocolHash);
 }
 
