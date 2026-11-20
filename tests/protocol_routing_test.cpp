@@ -34,6 +34,8 @@
 #include <utility>
 #include <vector>
 
+#include <arrow/array/array_binary.h>
+#include <arrow/array/array_nested.h>
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/record_batch.h>
@@ -551,9 +553,16 @@ TEST_CASE("protocol 3.2 filtered scan planning", "[catalog][scan-planning][stdio
                        arrow::field("series", arrow::utf8()), arrow::field("ticker", arrow::utf8()),
                        arrow::field("n", arrow::int64()), arrow::field("price", arrow::float64()),
                        arrow::field("flag", arrow::boolean())});
+    // Each path whole, one per line. Not Array::ToString: Arrow's pretty
+    // printer elides a string past 100 characters, and a long temp dir (the
+    // macOS runner's /var/folders/...) pushes the file name beyond that.
     const auto files_of = [](const std::shared_ptr<arrow::RecordBatch>& branch) {
         const auto arguments = vgi::wire::decode_ipc(vgi::wire::get_binary(branch, "arguments"));
-        return arguments->column(0)->ToString();
+        const auto list = std::static_pointer_cast<arrow::ListArray>(arguments->column(0));
+        const auto values = std::static_pointer_cast<arrow::StringArray>(list->values());
+        std::string files;
+        for (int64_t i = 0; i < values->length(); ++i) files += values->GetString(i) + "\n";
+        return files;
     };
     const auto every_day = nlohmann::json::array(
         {"2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"});
