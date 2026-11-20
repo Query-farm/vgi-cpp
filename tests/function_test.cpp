@@ -777,3 +777,63 @@ TEST_CASE("a dictionary binary cell naming a null entry is null, not empty", "[w
     CHECK(vgi::wire::get_optional_binary(batch->Slice(1, 1), "s") == std::string("bytes"));
     CHECK_FALSE(vgi::wire::get_optional_binary(batch->Slice(2, 1), "s"));
 }
+
+// PushdownFilters::describe writes what vgi-python's fixture worker writes for
+// the decoded filters (`_describe_filter`): ConstantFilter for column-op-literal
+// and bare BOOLEAN columns, IsNull / IsNotNull / In for a bare column,
+// And(...) / Or(...) over those, V2Expression (named by its first column) for
+// the rest, a literal-first comparison included. One line per predicate, sorted.
+TEST_CASE("Filter v2 describe matches the Python fixture description", "[filter-v2]") {
+    const auto column = [](int index, const std::string& name) {
+        return R"({"node":"column_ref","column_index":)" + std::to_string(index) +
+               R"(,"column_name":")" + name + R"("})";
+    };
+    const auto literal = [](int ref) {
+        return R"({"node":"literal","value_ref":)" + std::to_string(ref) + "}";
+    };
+    const auto compare = [](const std::string& op, const std::string& left,
+                            const std::string& right) {
+        return R"({"node":"comparison","op":")" + op + R"(","left":)" + left + R"(,"right":)" +
+               right + "}";
+    };
+    const auto is_null = [](const std::string& operand, bool negated) {
+        return R"({"node":"is_null","expression":)" + operand + R"(,"negated":)" +
+               (negated ? "true" : "false") + "}";
+    };
+    const std::string flag = column(0, "flag"), n = column(1, "n"), name = column(2, "name");
+    const std::vector<std::string> expressions = {
+        compare("ge", n, literal(0)),
+        compare("lt", literal(1), n),
+        R"({"node":"and","children":[)" + compare("ge", n, literal(2)) + "," +
+            compare("le", n, literal(3)) + "]}",
+        flag,
+        R"({"node":"not","expression":)" + flag + "}",
+        is_null(name, true),
+        R"({"node":"in","expression":)" + n +
+            R"(,"set":{"kind":"literal","value_ref":4},"negated":false})",
+        R"({"node":"or","children":[)" + compare("eq", n, literal(5)) + "," + is_null(name, false) +
+            "]}",
+    };
+    std::string document =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[)";
+    for (size_t i = 0; i < expressions.size(); ++i) {
+        document += (i ? "," : "") + std::string(R"({"id":"p)") + std::to_string(i) +
+                    R"(","revision":0,"mode":"required","source":"query","expression":)" +
+                    expressions[i] + "}";
+    }
+    document += "]}";
+    const auto filters = vgi::PushdownFilters::parse(
+        filter_batch_with_payloads(document, {{"value_0", int64_values({3})},
+                                              {"value_1", int64_values({9})},
+                                              {"value_2", int64_values({1})},
+                                              {"value_3", int64_values({4})},
+                                              {"value_4", int64_list({1, 2})},
+                                              {"value_5", int64_values({7})}}),
+        {},
+        arrow::schema({arrow::field("flag", arrow::boolean()), arrow::field("n", arrow::int64()),
+                       arrow::field("name", arrow::utf8())}));
+    CHECK(filters.describe() == std::vector<std::string>{"And(n GE, n LE)", "Or(n EQ, name IsNull)",
+                                                         "flag EQ", "flag EQ", "n GE", "n In",
+                                                         "n V2Expression", "name IsNotNull"});
+    CHECK(vgi::PushdownFilters::parse("").describe().empty());
+}
