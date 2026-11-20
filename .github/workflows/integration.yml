@@ -25,6 +25,13 @@ env:
   # Match the v3 suite and statically linked native runner exactly.
   VGI_REF: 91f8d6355e1d86d2c6168e4c3a93396108a209c0
   VGI_NATIVE_RUNNER_BRANCH: v2.0
+  # Build every vcpkg port with the CMake (and ninja) that vcpkg pins for
+  # this baseline, not whatever the runner image ships. The macOS image moved
+  # to CMake 4.5.0, which rejects boost-locale 1.90 at configure time
+  # (source_group: "include/boost/locale" is not a prefix of "locale.hpp").
+  # Linux runners already used vcpkg's own CMake 4.2.3 because theirs was too
+  # old; this makes that the rule on every runner.
+  VCPKG_FORCE_DOWNLOADED_BINARIES: "1"
   VCPKG_BINARY_SOURCES: "${{ secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_KEY_ID != '' && secrets.R2_ENDPOINT != '' && 'clear;x-aws,s3://query-farm-duckdb-vcpkg/,readwrite' || 'clear' }}"
   AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_KEY_ID }}
