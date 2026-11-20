@@ -114,3 +114,12 @@ add_executable(constraint_records_test constraint_records_test.cpp)
 target_link_libraries(constraint_records_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
 target_include_directories(constraint_records_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 catch_discover_tests(constraint_records_test)
+
+# Every result pointer this SDK publishes carries vgi_rpc.location.sha256:
+# vgi-rpc can publish one without (a conformance-tested option), and the vgi
+# extension refuses those. A Dispatcher behind vgi-rpc's HTTP transport with
+# externalization firing on every response, against in-process storage.
+add_executable(result_pointer_digest_test result_pointer_digest_test.cpp)
+target_link_libraries(result_pointer_digest_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(result_pointer_digest_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+catch_discover_tests(result_pointer_digest_test)
