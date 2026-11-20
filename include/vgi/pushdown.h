@@ -116,6 +116,14 @@ public:
     // when what it is checking is which shape the engine pushed.
     std::string format_repr() const;
 
+    // One stable line per pushed predicate, sorted: `col EQ` (EQ, NE, LT, LE,
+    // GT, GE) for a column-op-literal comparison or a bare BOOLEAN column,
+    // `col IsNull` / `col IsNotNull` / `col In`, `And(...)` / `Or(...)` over
+    // those, and `col V2Expression` for anything else (named by its first
+    // column). The same text vgi-python's fixture worker writes, so a test can
+    // assert which predicates reached the worker whichever SDK serves it.
+    std::vector<std::string> describe() const;
+
     // The filters as SQL-ish text, `(none)` when there are none.
     //
     // For diagnostics and for fixtures that report what they were told. The

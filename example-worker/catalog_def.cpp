@@ -6,15 +6,21 @@
 // `cacheable_numbers` function — the table has no storage of its own.
 
 #include <cstdlib>
+#include <stdexcept>
+#include <optional>
+#include <cstdio>
 #include <fstream>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_nested.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/type.h>
 #include <arrow/util/key_value_metadata.h>
+#include <nlohmann/json.hpp>
 
 #include <vgi/partition.h>
 #include <vgi/worker.h>
@@ -209,6 +215,105 @@ std::vector<vgi::CatalogBranch> plan_planned_days(const vgi::ScanPlanningRequest
     if (days.empty()) return {};
     std::vector<std::string> files;
     for (const auto& day : days) files.push_back(planned_day_file(day));
+    auto branch = read_parquet_branch(file_list_arg(files));
+    branch.row_count = static_cast<int64_t>(10 * days.size());
+    return {branch};
+}
+
+// planned_events: one file per day, ${VGI_TEST_BRANCH_DIR}/planned_events_<day>.parquet
+// (written by scan_planning_predicates*.test), 10 rows each, with the column
+// types real catalogs filter on. Statistics cover event_date and ts, so
+// predicates on either prune; every other column only reaches DuckDB.
+std::shared_ptr<arrow::Schema> planned_events_columns() {
+    return columns({{"event_date", arrow::date32()},
+                    {"ts", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")},
+                    {"series", arrow::utf8()},
+                    {"ticker", arrow::utf8()},
+                    {"n", arrow::int64()},
+                    {"price", arrow::float64()},
+                    {"flag", arrow::boolean()}});
+}
+
+// Days since 1970-01-01 of an ISO `YYYY-MM-DD` (Howard Hinnant's days_from_civil).
+int64_t days_from_civil(const std::string& iso) {
+    int64_t y = std::stoll(iso.substr(0, 4));
+    const int64_t m = std::stoll(iso.substr(5, 2));
+    const int64_t d = std::stoll(iso.substr(8, 2));
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+// event_date is the day; ts spans 00:00-09:00 UTC of it (hourly rows). The ts
+// bounds are epoch microseconds, cast to the column's TIMESTAMPTZ.
+std::vector<vgi::ColumnStatistics> planned_event_stats(const std::string& day) {
+    auto stats = planned_day_stats(day);
+    constexpr int64_t kMicrosPerHour = int64_t{3600} * 1000000;
+    const int64_t start = days_from_civil(day) * 24 * kMicrosPerHour;
+    vgi::ColumnStatistics ts;
+    ts.column_name = "ts";
+    ts.min = vgi::StatValue::integer(start);
+    ts.max = vgi::StatValue::integer(start + 9 * kMicrosPerHour);
+    ts.has_null = false;
+    stats.push_back(std::move(ts));
+    return stats;
+}
+
+std::string json_string(const std::string& text) {
+    return nlohmann::json(text).dump();
+}
+
+// Every planning call writes planned_events_last_plan.json:
+// {"days": [...], "filters": [PushdownFilters::describe() lines] | null}, null
+// when the client sent no predicates. A test reads it back to assert what
+// reached the worker, including that a predicate it cannot use (LIKE, most
+// functions) stayed with the client. Only scan_planning_predicates*.test query
+// this table, in one serial group, so the record is never overwritten
+// concurrently. Written to a temporary and renamed, so a reader never sees a
+// half-written record.
+void record_planned_events(const std::vector<std::string>& days,
+                           const std::optional<vgi::ScanPlanningFilters>& filters) {
+    std::string text = "{\"days\": [";
+    for (size_t i = 0; i < days.size(); ++i) text += (i ? ", " : "") + json_string(days[i]);
+    text += "], \"filters\": ";
+    if (!filters) {
+        text += "null";
+    } else {
+        const auto lines = filters->decode().describe();
+        text += "[";
+        for (size_t i = 0; i < lines.size(); ++i) text += (i ? ", " : "") + json_string(lines[i]);
+        text += "]";
+    }
+    text += "}";
+    const auto path = branch_path("planned_events_last_plan.json");
+    const auto temporary = path + "." + std::to_string(::getpid()) + ".tmp";
+    {
+        std::ofstream out(temporary, std::ios::trunc);
+        out << text;
+        if (!out.flush()) throw std::runtime_error("cannot write " + temporary);
+    }
+    if (std::rename(temporary.c_str(), path.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        throw std::runtime_error("cannot write " + path);
+    }
+}
+
+// planned_events: the day files the predicates may match, in one read_parquet
+// branch (none when every day is pruned).
+std::vector<vgi::CatalogBranch> plan_planned_events(const vgi::ScanPlanningRequest& request) {
+    std::vector<std::string> days;
+    for (const auto& day : kPlannedDays) {
+        if (!request.pushdown_filters ||
+            request.pushdown_filters->may_match(planned_event_stats(day)))
+            days.push_back(day);
+    }
+    record_planned_events(days, request.pushdown_filters);
+    if (days.empty()) return {};
+    std::vector<std::string> files;
+    for (const auto& day : days) files.push_back(branch_path("planned_events_" + day + ".parquet"));
     auto branch = read_parquet_branch(file_list_arg(files));
     branch.row_count = static_cast<int64_t>(10 * days.size());
     return {branch};
@@ -607,6 +712,23 @@ void declare_catalog(vgi::Worker& worker) {
             filtered.branches->push_back(std::move(branch));
         }
         data.tables.push_back(std::move(filtered));
+
+        // Filtered planning over a mixed-type table: the predicates a real
+        // catalog sees (string LIKE / functions / NULLs / timestamps / bools),
+        // most of which the worker cannot use and DuckDB must still apply.
+        {
+            vgi::CatalogTable events;
+            events.name = "planned_events";
+            events.columns = planned_events_columns();
+            events.comment =
+                "Protocol 3.2: filtered planning, non-prunable predicates — "
+                "scan_planning_predicates.test";
+            events.inline_scan = false;
+            events.required_extensions = {"parquet"};
+            events.scan_planning = vgi::kScanPlanningFiltered;
+            events.plan_scan_branches = plan_planned_events;
+            data.tables.push_back(std::move(events));
+        }
 
         // branch_filter must be ONE expression: "n < 5, n > 2" parses as two,
         // which 3.1 clients silently cut to the first and 3.2 rejects.

@@ -62,4 +62,9 @@ casts to the column's type, and which `may_match` casts the same way.
 
 The example worker's `data.planned_days`, `planned_days_stats` and
 `planned_days_bf` tables exercise worker-side pruning, statistics pruning and
-`branch_filter` contradiction respectively.
+`branch_filter` contradiction respectively. `data.planned_events` is a filtered
+table over mixed-type columns (DATE, TIMESTAMPTZ, VARCHAR, BIGINT, DOUBLE,
+BOOLEAN) that prunes on its `event_date` and `ts` statistics and records each
+planning call's days and `PushdownFilters::describe()` lines (`ts GE`,
+`And(n GE, n LE)`, ...; the text vgi-python's fixture writes) for the shared
+suite's `scan_planning_predicates*.test`.

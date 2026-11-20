@@ -30,11 +30,15 @@
 #include <set>
 #include <map>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
+#include <arrow/array/builder_binary.h>
+#include <arrow/array/builder_primitive.h>
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
+#include <arrow/util/key_value_metadata.h>
 
 #include <vgi_rpc/client.h>
 #include <vgi_rpc/http_client.h>
@@ -245,6 +249,48 @@ void require_raw_refuses(const std::function<vgi_rpc::RpcClient()>& connect) {
     } catch (const vgi_rpc::RpcException& refused) {
         CHECK(refused.error_kind() == vgi_rpc::ERROR_KIND_PROTOCOL_NOT_SUPPORTED);
     }
+}
+
+// A Filter Encoding v2 snapshot of `column op literal` conjuncts over
+// `columns`, one predicate per entry, each literal a one-value payload.
+std::string comparison_filters(
+    const std::shared_ptr<arrow::Schema>& columns,
+    const std::vector<std::tuple<std::string, std::string, std::shared_ptr<arrow::Array>>>&
+        predicates) {
+    std::string document =
+        R"({"encoding":"vgi.filters.v2","semantics":"vgi.duckdb.standard.v1","kind":"snapshot","predicates":[)";
+    arrow::FieldVector fields{arrow::field("filter_spec", arrow::utf8(), false)};
+    arrow::ArrayVector arrays{nullptr};
+    for (size_t i = 0; i < predicates.size(); ++i) {
+        const auto& [column, op, value] = predicates[i];
+        const auto index = std::to_string(i);
+        document += (i ? "," : "") + std::string(R"({"id":"p)") + index +
+                    R"(","revision":0,"mode":"required","source":"query","expression":)" +
+                    R"({"node":"comparison","op":")" + op +
+                    R"(","left":{"node":"column_ref","column_index":)" +
+                    std::to_string(columns->GetFieldIndex(column)) + R"(,"column_name":")" +
+                    column + R"("},"right":{"node":"literal","value_ref":)" + index + "}}}";
+        fields.push_back(arrow::field("value_" + index, value->type(), true));
+        arrays.push_back(value);
+    }
+    document += "]}";
+    arrow::StringBuilder spec;
+    REQUIRE(spec.Append(document).ok());
+    REQUIRE(spec.Finish(&arrays[0]).ok());
+    auto metadata = arrow::key_value_metadata(
+        {"vgi_filter_encoding", "vgi_filter_version", "vgi_evaluation_context"},
+        {"vgi.filters.v2", "2", "vgi.none.v1"});
+    return vgi::wire::encode_ipc(
+        arrow::RecordBatch::Make(arrow::schema(fields, metadata), 1, arrays));
+}
+
+template <class Builder, class Value>
+std::shared_ptr<arrow::Array> one_value(std::shared_ptr<arrow::DataType> type, Value value) {
+    Builder builder(std::move(type), arrow::default_memory_pool());
+    REQUIRE(builder.Append(value).ok());
+    std::shared_ptr<arrow::Array> result;
+    REQUIRE(builder.Finish(&result).ok());
+    return result;
 }
 
 }  // namespace
@@ -488,6 +534,80 @@ TEST_CASE("protocol 3.2 filtered scan planning", "[catalog][scan-planning][stdio
     CHECK(vgi::wire::get_optional_string(day_filtered[0], "branch_filter") ==
           "event_date = DATE '2026-10-01'");
     CHECK(vgi::wire::column(day_filtered[0], "row_count")->IsNull(0));
+
+    // planned_events (vgi-python 3cf1489): mixed-type columns, pruned on the
+    // event_date and ts statistics; every planning call records its days and
+    // PushdownFilters::describe() lines, null when no predicates arrived.
+    const auto events_plan = [&] {
+        std::ifstream input(dir / "planned_events_last_plan.json");
+        REQUIRE(input.good());
+        return nlohmann::json::parse(input);
+    };
+    const auto events = table_info("planned_events");
+    CHECK(vgi::wire::get_string(events, "scan_planning") == "filtered");
+    const auto event_columns =
+        arrow::schema({arrow::field("event_date", arrow::date32()),
+                       arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")),
+                       arrow::field("series", arrow::utf8()), arrow::field("ticker", arrow::utf8()),
+                       arrow::field("n", arrow::int64()), arrow::field("price", arrow::float64()),
+                       arrow::field("flag", arrow::boolean())});
+    const auto files_of = [](const std::shared_ptr<arrow::RecordBatch>& branch) {
+        const auto arguments = vgi::wire::decode_ipc(vgi::wire::get_binary(branch, "arguments"));
+        return arguments->column(0)->ToString();
+    };
+    const auto every_day = nlohmann::json::array(
+        {"2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"});
+
+    auto unfiltered = branches("planned_events", std::nullopt);
+    REQUIRE(unfiltered.size() == 1);
+    CHECK(vgi::wire::get_string(unfiltered[0], "function_name") == "read_parquet");
+    CHECK(vgi::wire::get_optional_int64(unfiltered[0], "row_count") == 50);
+    CHECK(events_plan() == nlohmann::json{{"days", every_day}, {"filters", nullptr}});
+
+    // ts >= 2026-10-04 05:00 UTC keeps the last two days.
+    const int64_t cutoff = (int64_t{20730} * 24 + 5) * 3600 * 1000000;  // 2026-10-04T05:00Z
+    auto by_ts = branches(
+        "planned_events",
+        comparison_filters(event_columns,
+                           {{"ts", "ge",
+                             one_value<arrow::TimestampBuilder>(
+                                 arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"), cutoff)}}));
+    REQUIRE(by_ts.size() == 1);
+    CHECK(vgi::wire::get_optional_int64(by_ts[0], "row_count") == 20);
+    CHECK(files_of(by_ts[0]).find("planned_events_2026-10-04.parquet") != std::string::npos);
+    CHECK(files_of(by_ts[0]).find("planned_events_2026-10-03.parquet") == std::string::npos);
+    CHECK(events_plan() ==
+          nlohmann::json{{"days", {"2026-10-04", "2026-10-05"}}, {"filters", {"ts GE"}}});
+
+    // A predicate on a column without statistics arrives but prunes nothing.
+    const auto n_lt_3 = std::make_tuple(std::string("n"), std::string("lt"),
+                                        one_value<arrow::Int64Builder>(arrow::int64(), 3));
+    auto by_day =
+        branches("planned_events",
+                 comparison_filters(
+                     event_columns,
+                     {{"event_date", "eq", one_value<arrow::Date32Builder>(arrow::date32(), 20728)},
+                      n_lt_3}));  // 2026-10-02
+    REQUIRE(by_day.size() == 1);
+    CHECK(vgi::wire::get_optional_int64(by_day[0], "row_count") == 10);
+    CHECK(events_plan() ==
+          nlohmann::json{{"days", {"2026-10-02"}}, {"filters", {"event_date EQ", "n LT"}}});
+    auto by_n = branches("planned_events", comparison_filters(event_columns, {n_lt_3}));
+    REQUIRE(by_n.size() == 1);
+    CHECK(vgi::wire::get_optional_int64(by_n[0], "row_count") == 50);
+    CHECK(events_plan() == nlohmann::json{{"days", every_day}, {"filters", {"n LT"}}});
+
+    // Contradictory dates prune every day: zero branches, still recorded.
+    const auto day_value = [](int32_t days) {
+        return one_value<arrow::Date32Builder>(arrow::date32(), days);
+    };
+    auto none =
+        branches("planned_events",
+                 comparison_filters(event_columns, {{"event_date", "eq", day_value(20727)},
+                                                    {"event_date", "eq", day_value(20728)}}));
+    CHECK(none.empty());
+    CHECK(events_plan() == nlohmann::json{{"days", nlohmann::json::array()},
+                                          {"filters", {"event_date EQ", "event_date EQ"}}});
 
     std::filesystem::remove_all(dir);
 }

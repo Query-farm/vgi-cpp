@@ -2,6 +2,7 @@
 #include "vgi/pushdown.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1527,6 +1528,61 @@ std::string PushdownFilters::format() const {
         if (!result.empty()) result += " AND ";
         result += render_predicate(spec);
     }
+    return result;
+}
+
+namespace {
+
+// The convenience-class name vgi-python projects a v2 predicate into, minus
+// its `Filter` suffix, and the description its fixtures write for it
+// (vgi/_test_fixtures/worker.py `_describe_filter`). Empty when the node names
+// no column, which Python projects to no filter at all.
+std::string describe_spec(const std::shared_ptr<Spec>& spec) {
+    // column-op-literal with one of the six ordered operators: ConstantFilter.
+    // A literal-first comparison, or distinct_from, stays a V2Expression.
+    if (spec->kind == "constant" && spec->children.size() == 2 &&
+        spec->children[0]->kind == "column" && spec->children[1]->kind == "literal" &&
+        (spec->op == "eq" || spec->op == "ne" || spec->op == "lt" || spec->op == "le" ||
+         spec->op == "gt" || spec->op == "ge")) {
+        std::string op = spec->op;
+        std::transform(op.begin(), op.end(), op.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        return spec->children[0]->column_name + " " + op;
+    }
+    // `WHERE flag` / `WHERE NOT flag`: ConstantFilter(flag = true/false).
+    if (auto leaf = boolean_column_leaf(spec)) return leaf->first + " EQ";
+    if ((spec->kind == "is_null" || spec->kind == "is_not_null") && !spec->children.empty() &&
+        spec->children[0]->kind == "column")
+        return spec->children[0]->column_name +
+               (spec->kind == "is_null" ? " IsNull" : " IsNotNull");
+    if (spec->kind == "in" && !spec->negated && !spec->children.empty() &&
+        spec->children[0]->kind == "column")
+        return spec->children[0]->column_name + " In";
+    if (spec->kind == "and" || spec->kind == "or") {
+        std::vector<std::string> children;
+        for (const auto& child : spec->children) children.push_back(describe_spec(child));
+        if (std::none_of(children.begin(), children.end(),
+                         [](const std::string& child) { return child.empty(); })) {
+            std::string result = spec->kind == "and" ? "And(" : "Or(";
+            for (size_t i = 0; i < children.size(); ++i) result += (i ? ", " : "") + children[i];
+            return result + ")";
+        }
+    }
+    std::vector<std::string> columns;
+    collect_columns(spec, columns);
+    return columns.empty() ? std::string() : columns.front() + " V2Expression";
+}
+
+}  // namespace
+
+std::vector<std::string> PushdownFilters::describe() const {
+    std::vector<std::string> result;
+    for (const auto& spec : specs_) {
+        if (spec->kind == "runtime_filter") continue;
+        auto line = describe_spec(spec);
+        if (!line.empty()) result.push_back(std::move(line));
+    }
+    std::sort(result.begin(), result.end());
     return result;
 }
 
