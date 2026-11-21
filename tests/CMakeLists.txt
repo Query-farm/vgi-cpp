@@ -123,3 +123,20 @@ add_executable(result_pointer_digest_test result_pointer_digest_test.cpp)
 target_link_libraries(result_pointer_digest_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
 target_include_directories(result_pointer_digest_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 catch_discover_tests(result_pointer_digest_test)
+
+# Orchard hosted mode: the Pass verifier against a fake JWKS with hand-moved
+# clocks (cache bound, fail-closed expiry, unknown-kid re-fetch limit), and the
+# environment switch. The HTTP contract is the extension repo test/hosted/.
+add_executable(hosted_test hosted_test.cpp)
+target_link_libraries(hosted_test PRIVATE vgi::vgi Catch2::Catch2WithMain jwt-cpp::jwt-cpp)
+catch_discover_tests(hosted_test)
+
+# The same end to end: the built example worker in hosted mode against a JWKS
+# served from the test, and every startup refusal.
+add_executable(hosted_e2e_test hosted_e2e_test.cpp)
+target_link_libraries(hosted_e2e_test PRIVATE vgi::vgi Catch2::Catch2WithMain jwt-cpp::jwt-cpp)
+target_include_directories(hosted_e2e_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(hosted_e2e_test PRIVATE
+    VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
+add_dependencies(hosted_e2e_test vgi-example-worker)
+catch_discover_tests(hosted_e2e_test)

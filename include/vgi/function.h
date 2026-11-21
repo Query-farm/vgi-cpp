@@ -9,6 +9,7 @@
 
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
+#include <vgi_rpc/identity.h>
 
 #include "vgi/arguments.h"
 #include "vgi/cache_control.h"
@@ -167,6 +168,12 @@ struct ProcessParams {
     // for an anonymous caller. Only the HTTP transport identifies callers; on
     // stdio and unix the OS vouches for them, and this is always absent.
     std::optional<std::string> auth_principal;
+    // The caller's whole authentication context: `domain` (`"bearer"`,
+    // `"grant"`, `"orchard"`, ...), `principal`, and the credential's claims
+    // exactly as presented -- a hosted-mode Pass's claims keep their JSON
+    // types, so `email_verified` is a boolean and `exp` an integer.
+    // Anonymous on stdio and unix, as above.
+    vgi_rpc::AuthContext auth = vgi_rpc::AuthContext::anonymous();
     // Where a message to the client goes. Always set, and a no-op on the
     // calls the transport gives no channel for, so a function may call it
     // without asking which call it is in.

@@ -1578,6 +1578,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
     params.bind_opaque_data =
         wire::get_optional_binary(init_request, "bind_opaque_data").value_or("");
     if (context.auth().authenticated) params.auth_principal = context.auth().principal;
+    params.auth = context.auth();
     // Constant arguments were evaluated at bind and ride along on every call,
     // which is why a const parameter never appears in the input batch.
     params.arguments = bind_params.arguments;

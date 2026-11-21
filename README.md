@@ -119,6 +119,15 @@ every table), and `catalog_table_create` answers `{created: bool}` — the
 in-memory DDL catalog reports `false` for `IF NOT EXISTS` over an existing
 table.
 
+### Orchard hosted mode
+
+With `VGI_ORCHARD_HOSTED=1` the worker runs as an Orchard Field Worker: only
+`--http` serves, every request except `HEAD /health` and CORS preflights needs
+a valid Pass (an RFC 9068 ES256 access token checked against
+`VGI_JWT_ISSUER`, `VGI_JWT_AUDIENCE` and the `VGI_JWT_JWKS_URI` keys), and any
+other way in refuses to start. Functions read the Pass claims from
+`ProcessParams::auth`. See [Orchard hosted mode](docs/orchard-hosted.md).
+
 See [Iroh operations](docs/iroh.md) for the in-process C ABI client and
 identity-preserving raw or HTTP worker bridge setup.
 

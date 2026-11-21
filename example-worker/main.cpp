@@ -133,6 +133,7 @@ int main(int argc, char** argv) {
 
     // The cross-SDK vgi-rpc fixtures, hosted beside vgi.v3 on every transport.
     example::register_conformance_fixtures(worker, argc, argv);
+    example::register_hosted_fixtures(worker);
 
     // Serves until the engine disconnects; does not return.
     worker.run(argc, argv);

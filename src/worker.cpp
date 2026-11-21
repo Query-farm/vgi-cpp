@@ -24,6 +24,7 @@
 #include "attach_ticket_service.h"
 #include "dispatcher.h"
 #include "landing.h"
+#include "vgi/hosted.h"
 #include "vgi/generated/vgi_protocol_names.hpp"
 #include "vgi/generated/vgi_protocol_version.hpp"
 
@@ -123,6 +124,69 @@ void configure_bearer_auth(vgi_rpc::HttpConfig& config) {
             if (token.rfind(vgi_rpc::kGrantTokenPrefix, 0) == 0) return std::nullopt;
             return vgi_rpc::AuthContext::anonymous();
         };
+    }
+}
+
+[[noreturn]] void refuse_hosted(const std::string& reason) {
+    std::fprintf(stderr, "Error: %s=1 (Orchard hosted mode): %s\n", hosted::kHostedEnv,
+                 reason.c_str());
+    std::exit(1);
+}
+
+bool env_present(const char* name) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) return false;
+    return std::string(value).find_first_not_of(" \t\r\n") != std::string::npos;
+}
+
+// The only way in: the Pass verifier, on every request but HEAD /health and
+// CORS preflights, before the body is read. CORS is open because the only
+// credential is the bearer, which a browser never sends on its own.
+void configure_hosted(vgi_rpc::HttpConfig& config,
+                      std::shared_ptr<const hosted::PassVerifier> verifier) {
+    config.bearer_authenticate = hosted::PassAuthenticator{std::move(verifier)};
+    config.bearer_optional = false;
+    config.identity_bearer = false;
+    config.authenticate_every_request = true;
+    config.www_authenticate = hosted::kChallenge;
+    config.cors_origin = "*";
+    // A hosted worker always has a request cap, advertised, so a body is
+    // bounded before anything is buffered: VGI_RPC_MAX_REQUEST_BYTES, else
+    // 32 MiB.
+    config.max_request_bytes = hosted::kDefaultMaxRequestBytes;
+    if (const char* raw = std::getenv("VGI_RPC_MAX_REQUEST_BYTES"); raw != nullptr && *raw) {
+        char* end = nullptr;
+        const long long parsed = std::strtoll(raw, &end, 10);
+        if (end == raw || *end != '\0' || parsed <= 0) {
+            refuse_hosted("VGI_RPC_MAX_REQUEST_BYTES must be a positive number of bytes.");
+        }
+        config.max_request_bytes = parsed;
+    }
+}
+
+// After a `configure_http` hook: refuse anything that admits a non-Pass caller.
+void check_hosted_http(const vgi_rpc::HttpConfig& config) {
+    if (config.bearer_authenticate.target<hosted::PassAuthenticator>() == nullptr) {
+        refuse_hosted(
+            "a configure_http hook replaced the Pass verifier (HttpConfig::bearer_authenticate); "
+            "hosted workers verify Passes only.");
+    }
+    if (config.bearer_optional || !config.authenticate_every_request ||
+        config.max_request_bytes < 0 || config.www_authenticate != hosted::kChallenge) {
+        refuse_hosted("a configure_http hook relaxed the hosted authentication.");
+    }
+    if (config.sticky_header_auth || config.honour_requested_auth_reason) {
+        refuse_hosted(
+            "a configure_http hook turned on the conformance fixture's header authentication; "
+            "hosted workers accept Passes only.");
+    }
+    if (config.proof_mode != vgi_rpc::ProofMode::OFF) {
+        refuse_hosted("a proxy proof is configured; hosted workers authenticate by Pass only.");
+    }
+    if (!config.peer_identity_providers.empty() || config.peer_authentication_policy) {
+        refuse_hosted(
+            "peer identity (Iroh, Tailscale, ...) is configured; hosted workers accept Passes "
+            "only.");
     }
 }
 
@@ -474,6 +538,97 @@ std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
     return builder.build();
 }
 
+std::shared_ptr<const hosted::PassVerifier> Worker::prepare_hosted(
+    const std::vector<std::string>& args) const {
+    // Transport: a Pass rides an HTTP Authorization header, so nothing else
+    // can carry one.
+    bool http = false;
+    for (const auto& arg : args) {
+        if (arg == "--http") http = true;
+        if (arg == "--unix") {
+            refuse_hosted("--unix carries no Pass; only --http serves in hosted mode.");
+        }
+        if (arg == "--iroh-raw-upstream" || arg == "--iroh-issuer" ||
+            arg == "--iroh-trusted-proxy" || arg == "--iroh-observe") {
+            refuse_hosted(arg +
+                          " (Iroh peer identity) carries no Pass; only --http serves in "
+                          "hosted mode.");
+        }
+        if (arg == "--grant-key") {
+            refuse_hosted(
+                "sealed-grant keys (--grant-key) are configured; the only credential a hosted "
+                "worker accepts is a Pass.");
+        }
+    }
+    if (!http) refuse_hosted("stdio carries no Pass; only --http serves in hosted mode.");
+
+    hosted::Config config;
+    try {
+        config = hosted::config_from_env();
+    } catch (const hosted::ConfigError& error) {
+        refuse_hosted(error.what());
+    }
+
+    // The key seals catalog opaque data and HTTP state tokens. A Field
+    // Worker's machines stop and start, and a deployment can run on several:
+    // a key minted per process makes every restart (and every other machine)
+    // reject the sessions DuckDB already holds.
+    const char* signing_key = std::getenv("VGI_SIGNING_KEY");
+    if (signing_key == nullptr || *signing_key == '\0' || env_present("VGI_SIGNING_KEY_MINTED")) {
+        refuse_hosted(
+            "VGI_SIGNING_KEY is not set; hosted workers need a stable key shared by every machine "
+            "of the deployment, or every restart breaks attached sessions.");
+    }
+    if (std::string(signing_key).size() < hosted::kMinSigningKeyBytes) {
+        refuse_hosted("VGI_SIGNING_KEY must be at least " +
+                      std::to_string(hosted::kMinSigningKeyBytes) + " bytes.");
+    }
+
+    for (const auto& [name, what] : std::vector<std::pair<const char*, const char*>>{
+             {"VGI_BEARER_TOKENS", "static bearer tokens"},
+             {"VGI_OPTIONAL_BEARER_TOKENS", "static bearer tokens"},
+             {vgi_rpc::kGrantKeysEnv, "sealed-grant keys"},
+             {"VGI_OAUTH_RESOURCE",
+              "OAuth resource metadata (a Field Worker never advertises resource_metadata)"}}) {
+        if (env_present(name)) {
+            refuse_hosted(std::string(name) + " is set (" + what +
+                          "); the only credential a hosted worker accepts is a Pass.");
+        }
+    }
+    if (const char* mode = std::getenv("VGI_PROXY_PROOF_MODE"); mode != nullptr) {
+        std::string value(mode);
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        const auto first = value.find_first_not_of(" \t");
+        const auto last = value.find_last_not_of(" \t");
+        value = first == std::string::npos ? "" : value.substr(first, last - first + 1);
+        if (!value.empty() && value != "off") {
+            refuse_hosted(
+                "VGI_PROXY_PROOF_MODE must be off; hosted workers authenticate by Pass "
+                "only.");
+        }
+    }
+    if (resolve_token_) {
+        refuse_hosted(
+            "this worker sets a resolve_token hook (Worker::set_resolve_token); hosted workers "
+            "verify Passes only.");
+    }
+    if (mint_grant_) {
+        refuse_hosted(
+            "this worker sets a mint_grant hook (Worker::set_mint_grant, issue_grant); hosted "
+            "workers verify Passes only.");
+    }
+    if (grant_keys_explicit_ && grant_keys_) {
+        refuse_hosted("sealed-grant keys (Worker::set_grant_keys) are configured.");
+    }
+
+    try {
+        return std::make_shared<const hosted::PassVerifier>(std::move(config));
+    } catch (const std::exception& error) {
+        refuse_hosted(error.what());
+    }
+}
+
 void Worker::run(int argc, char** argv) {
     // Arrow's compute kernels register themselves from a translation unit
     // nothing here references, so linking statically drops it and `add`,
@@ -487,6 +642,19 @@ void Worker::run(int argc, char** argv) {
     // Transport from argv, matching the Rust and Python workers so one
     // wrapper script can drive any of them.
     std::vector<std::string> args(argv + 1, argv + argc);
+
+    // Orchard hosted mode is decided first: an unrecognised value of the
+    // switch is an error, never "off", and every check runs before anything
+    // listens.
+    bool hosted_mode = false;
+    try {
+        hosted_mode = hosted::hosted_mode_enabled();
+    } catch (const hosted::ConfigError& error) {
+        std::fprintf(stderr, "Error: %s\n", error.what());
+        std::exit(1);
+    }
+    const std::shared_ptr<const hosted::PassVerifier> pass_verifier =
+        hosted_mode ? prepare_hosted(args) : nullptr;
     // A malformed transport argument is a startup error, not a reason to fall
     // through to stdio: `--unix` with no path served the pipe transport on a
     // socket the caller was already waiting on, which reads as a hang.
@@ -600,8 +768,13 @@ void Worker::run(int argc, char** argv) {
                 configure_landing(config, disp_->catalog().name, server->server_id(),
                                   disp_->catalog().comment.value_or(""));
                 configure_signing_key(config);
-                configure_bearer_auth(config);
+                if (pass_verifier) {
+                    configure_hosted(config, pass_verifier);
+                } else {
+                    configure_bearer_auth(config);
+                }
                 if (configure_http_) configure_http_(config);
+                if (pass_verifier) check_hosted_http(config);
                 disp_->set_split_token_signing_key(config.token_key);
                 // HTTP authenticates callers: attach and transaction values
                 // are sealed under the same key, bound to the caller.

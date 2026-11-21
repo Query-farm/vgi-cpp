@@ -4,7 +4,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # TODO(release-wave): drop protocol-3.4 once it merges into main.
+    branches: [main, protocol-3.4]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -71,9 +72,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          # TODO(release-wave): unreleased upload URLs v2 (protocol-3.4 branch);
+          # TODO(release-wave): unreleased hosted-mode auth hooks (protocol-3.4 branch);
           # back to a release tag once vgi-rpc-cpp is released.
-          ref: 178d6089f301e6cccc1bba181c21cc6137588382
+          ref: 35d1d453b3b0caa7cf7710d6ea54cc87e3cb8732
           path: vgi-rpc-c++
 
       - name: Clone and bootstrap vcpkg
@@ -169,6 +170,78 @@ jobs:
           vgi-rpc-test-hosted --url "http://127.0.0.1:$PORT" \
             --expect vgi.v3,conformance.Secondary.v1 --identity
           kill "$HTTP_PID"
+
+  # Orchard hosted mode (VGI_ORCHARD_HOSTED=1): the extension repo's SDK-neutral
+  # harness runs a fake Orchard issuer and checks every rule of the contract
+  # over HTTP against the example worker, plus a refusal to start on every
+  # transport that carries no Pass (stdio, --unix, the Iroh flags).
+  hosted-mode:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vgi-rpc-cpp
+        uses: actions/checkout@v4
+        with:
+          repository: Query-farm/vgi-rpc-cpp
+          # TODO(release-wave): unreleased hosted-mode auth hooks (protocol-3.4 branch);
+          # back to a release tag once vgi-rpc-cpp is released.
+          ref: 35d1d453b3b0caa7cf7710d6ea54cc87e3cb8732
+          path: vgi-rpc-c++
+
+      - name: Check out the hosted-mode harness
+        uses: actions/checkout@v4
+        with:
+          repository: Query-farm/vgi
+          # TODO(release-wave): vgi protocol-3.4; back to a v2.0 commit once it merges.
+          ref: fce57984a7e8ea35f9dcd4a034b5ed37c85ca5c5
+          path: vgi-upstream
+          sparse-checkout: test/hosted
+
+      - name: Clone and bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          git -C vcpkg checkout 2d32fae67c755b665794a0650f5d268979d7807f
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$(pwd)/vcpkg" >> $GITHUB_ENV
+
+      - name: Install autotools (libsodium)
+        run: sudo apt-get update && sudo apt-get install -y autoconf autoconf-archive automake libtool
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: hosted-ubuntu-24.04
+          max-size: 500M
+
+      - name: Build example worker
+        run: |
+          cmake --preset release \
+            -DVGI_RPC_SOURCE_DIR=${{ github.workspace }}/vgi-rpc-c++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build-release --target vgi-example-worker --parallel 2
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Hosted-mode conformance
+        run: |
+          W="$PWD/build-release/example-worker/vgi-example-worker"
+          vgi-upstream/test/hosted/run_hosted_conformance.py \
+            --worker-cmd "$W --http {port} --host 127.0.0.1" \
+            --refuse-cmd "$W" \
+            --refuse-cmd "$W --unix /tmp/vgi-hosted-refuse-{port}.sock" \
+            --refuse-cmd "$W --iroh-raw-upstream {port} --iroh-issuer x" \
+            --refuse-cmd "$W --http {port} --iroh-issuer x" \
+            --streaming-body \
+            --log-dir "$RUNNER_TEMP/hosted-logs"
+
+      - name: Upload worker logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-mode-logs
+          path: ${{ runner.temp }}/hosted-logs
 
   # The integration suite is the definition of done for this repo, and it needs
   # the DuckDB extension built from ~/Development/vgi — a large, separate build

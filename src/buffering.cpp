@@ -51,6 +51,7 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
                                            vgi_rpc::CallContext* context) const {
     ProcessParams params;
     params.client_log = client_log_sink(context);
+    if (context) params.auth = context->auth();
     const auto attachment = attachment_of(dto);
     params.catalog_name = attachment.catalog;
     params.attachment_id = attachment.id;

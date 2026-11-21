@@ -13,6 +13,7 @@
     "libsodium",
     "curl",
     "nlohmann-json",
+    "jwt-cpp",
     {
       "name": "cpp-httplib",
       "features": [

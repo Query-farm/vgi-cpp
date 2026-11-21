@@ -23,6 +23,9 @@
 namespace vgi {
 
 class Dispatcher;
+namespace hosted {
+class PassVerifier;
+}
 
 // A VGI worker: register functions, then run().
 //
@@ -31,6 +34,10 @@ class Dispatcher;
 // server, or `--iroh-raw-upstream <port> --iroh-issuer <namespace>` behind
 // `vgi-iroh-bridge`. `--http --iroh-issuer ...` enables the same trusted
 // bridge identity boundary for HTTP-over-Iroh. It does not return.
+//
+// With `VGI_ORCHARD_HOSTED=1` (Orchard hosted mode, `vgi/hosted.h`) only
+// `--http` serves, every request but `HEAD /health` and CORS preflights needs a
+// valid Pass, and any other way in refuses to start.
 class Worker {
 public:
     Worker();
@@ -210,7 +217,10 @@ public:
     void set_introspect_principals(std::vector<std::string> principals);
 
     // Adjust the HTTP configuration `run()` builds for `--http`, after its own
-    // settings (landing page, signing key, bearer auth) are applied.
+    // settings (landing page, signing key, bearer auth) are applied. In
+    // Orchard hosted mode a hook that changes the authentication (replaces the
+    // Pass verifier, turns on header or peer authentication or a proxy proof)
+    // refuses to start the worker.
     void configure_http(std::function<void(vgi_rpc::HttpConfig&)> hook);
 
     // Serve, selecting the transport from argv.  Never returns.
@@ -225,6 +235,11 @@ private:
     // set -- vgi_rpc.Identity.v2.  Reflection is hosted by vgi-rpc itself.
     std::unique_ptr<vgi_rpc::Server> build_server(Transport transport,
                                                   const std::vector<std::string>& args);
+
+    // Orchard hosted mode's startup checks: every refusal exits non-zero.
+    // Returns the Pass verifier `--http` installs.
+    std::shared_ptr<const hosted::PassVerifier> prepare_hosted(
+        const std::vector<std::string>& args) const;
 
     std::unique_ptr<Dispatcher> disp_;
     std::string server_id_;

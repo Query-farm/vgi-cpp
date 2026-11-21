@@ -58,9 +58,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          # TODO(release-wave): unreleased upload URLs v2 (protocol-3.4 branch);
+          # TODO(release-wave): unreleased hosted-mode auth hooks (protocol-3.4 branch);
           # back to a release tag once vgi-rpc-cpp is released.
-          ref: 178d6089f301e6cccc1bba181c21cc6137588382
+          ref: 35d1d453b3b0caa7cf7710d6ea54cc87e3cb8732
           path: vgi-rpc-c++
 
       - name: Check out the current vgi test suite

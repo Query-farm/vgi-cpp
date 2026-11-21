@@ -23,6 +23,9 @@ namespace example {
 // fixture's X-Conformance-Principal authentication (for sealed-grant tests
 // with --grant-key).  Test-only.
 void register_conformance_fixtures(vgi::Worker& worker, int argc, char** argv);
+// pass_claims, the Orchard hosted-mode fixture: registered only when
+// VGI_ORCHARD_HOSTED is on, so the integration suite never sees it.
+void register_hosted_fixtures(vgi::Worker& worker);
 // secret_cache_nonce / secret_cached_scalar / secret_cached_lateral: the
 // secret-dependent result-cache fixtures (cache/secret_scope.test).
 void register_secret_cache(vgi::Worker& worker);
