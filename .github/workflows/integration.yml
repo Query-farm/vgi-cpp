@@ -25,8 +25,8 @@ env:
   # Match the v3 suite and statically linked native runner exactly.
   # TODO(release-wave): vgi protocol-3.4 (3.4.0 suite); back to a v2.0 commit
   # once 3.4 merges and its native runner artifacts are published.
-  VGI_REF: 007edd820e32808d00116a3658349a69c0987354
-  VGI_NATIVE_RUNNER_BRANCH: v2.0
+  VGI_REF: 5b8b7a2a7e4e587e15573ddd62cf1dbcdf6b357e
+  VGI_NATIVE_RUNNER_BRANCH: protocol-3.4
   # Build every vcpkg port with the CMake (and ninja) that vcpkg pins for
   # this baseline, not whatever the runner image ships. The macOS image moved
   # to CMake 4.5.0, which rejects boost-locale 1.90 at configure time

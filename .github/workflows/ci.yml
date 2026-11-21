@@ -147,7 +147,8 @@ jobs:
         # vgi-rpc-cpp's CI uses: a reference change that breaks this SDK is
         # meant to turn it red the day it lands.
         run: |
-          git clone --depth 1 https://github.com/Query-farm/vgi-rpc-python.git ../vgi-rpc-ref
+          # TODO(release-wave): back to main (unpinned) once protocol-3.4 is merged.
+          git clone --depth 1 --branch protocol-3.4 https://github.com/Query-farm/vgi-rpc-python.git ../vgi-rpc-ref
           python -m venv ../hosted-venv
           ../hosted-venv/bin/python -m pip install --quiet '../vgi-rpc-ref[http,conformance]' pytest pytest-timeout
           export PATH="$PWD/../hosted-venv/bin:$PATH"
