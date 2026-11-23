@@ -30,12 +30,14 @@ set -uo pipefail
 : "${VGI_WORKER_BIN:?path to the built vgi-example-worker}"
 PYTHON="${PYTHON:-python3}"
 
-# run_tests.py runs <root>/build/release/test/unittest; point it at the runner
-# unless the checkout has a build of its own.
+# run_tests.py runs <root>/build/release/test/unittest; unless the checkout has
+# a build of its own, put a wrapper there that runs the native runner with
+# --test-dir (a prebuilt runner cannot change into the tree it was built in).
 UNITTEST="$VGI_SRC/build/release/test/unittest"
 if [ ! -e "$UNITTEST" ]; then
   mkdir -p "$(dirname "$UNITTEST")"
-  ln -s "$HAYBARN_UNITTEST" "$UNITTEST"
+  printf '#!/usr/bin/env bash\nexec %q --test-dir %q "$@"\n' "$HAYBARN_UNITTEST" "$VGI_SRC" > "$UNITTEST"
+  chmod +x "$UNITTEST"
 fi
 
 cd "$VGI_SRC" || exit 1

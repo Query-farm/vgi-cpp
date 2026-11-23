@@ -97,9 +97,9 @@ private:
 // The one row `(strlen(payload), sha256(payload))`.
 std::shared_ptr<arrow::RecordBatch> echo_row(const std::shared_ptr<arrow::Schema>& schema,
                                              const std::string& payload) {
-    return arrow::RecordBatch::Make(schema, 1,
-                                    {int64s({static_cast<int64_t>(payload.size())}),
-                                     strings({sha256_hex(payload)})});
+    return arrow::RecordBatch::Make(
+        schema, 1,
+        {int64s({static_cast<int64_t>(payload.size())}), strings({sha256_hex(payload)})});
 }
 
 // --- scalars ---------------------------------------------------------------
@@ -120,10 +120,10 @@ public:
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        const auto s = std::static_pointer_cast<arrow::StringArray>(
-            cast_to(batch->column(0), arrow::utf8()));
-        const auto n = std::static_pointer_cast<arrow::Int64Array>(
-            cast_to(batch->column(1), arrow::int64()));
+        const auto s =
+            std::static_pointer_cast<arrow::StringArray>(cast_to(batch->column(0), arrow::utf8()));
+        const auto n =
+            std::static_pointer_cast<arrow::Int64Array>(cast_to(batch->column(1), arrow::int64()));
         arrow::StringBuilder out;
         for (int64_t i = 0; i < batch->num_rows(); ++i) {
             if (s->IsNull(i) || n->IsNull(i)) {
@@ -156,8 +156,8 @@ public:
     std::shared_ptr<arrow::RecordBatch> process(
         const vgi::ProcessParams& params,
         const std::shared_ptr<arrow::RecordBatch>& batch) const override {
-        const auto s = std::static_pointer_cast<arrow::StringArray>(
-            cast_to(batch->column(0), arrow::utf8()));
+        const auto s =
+            std::static_pointer_cast<arrow::StringArray>(cast_to(batch->column(0), arrow::utf8()));
         arrow::Int64Builder out;
         for (int64_t i = 0; i < batch->num_rows(); ++i) {
             if (s->IsNull(i)) {
@@ -276,8 +276,8 @@ public:
     vgi::TableCardinality cardinality(const vgi::ProcessParams&) const override { return {1, 1}; }
     std::unique_ptr<vgi::TableProducer> init(const vgi::ProcessParams& params) const override {
         const auto payload = params.arguments.const_string(0).value_or("");
-        return std::make_unique<Batches>(
-            std::vector<std::shared_ptr<arrow::RecordBatch>>{echo_row(params.output_schema, payload)});
+        return std::make_unique<Batches>(std::vector<std::shared_ptr<arrow::RecordBatch>>{
+            echo_row(params.output_schema, payload)});
     }
 
 private:
@@ -295,7 +295,8 @@ public:
             "turns)");
     }
     std::vector<vgi::ArgSpec> argument_specs() const override {
-        auto batches = vgi::ArgSpec::constant_arg("batches", 1, "int64", "Number of one-row batches");
+        auto batches =
+            vgi::ArgSpec::constant_arg("batches", 1, "int64", "Number of one-row batches");
         batches.with_range(0, std::nullopt);
         return {vgi::ArgSpec::constant_arg("payload", 0, "varchar", "Parameter to measure"),
                 batches};
@@ -402,7 +403,9 @@ public:
     }
 };
 
-std::shared_ptr<arrow::Array> string_value(const std::string& value) { return strings({value}); }
+std::shared_ptr<arrow::Array> string_value(const std::string& value) {
+    return strings({value});
+}
 
 }  // namespace
 

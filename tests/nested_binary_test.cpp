@@ -42,7 +42,9 @@ std::string corpus(const std::string& name) {
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-nlohmann::json json_file(const std::string& name) { return nlohmann::json::parse(corpus(name)); }
+nlohmann::json json_file(const std::string& name) {
+    return nlohmann::json::parse(corpus(name));
+}
 
 std::string hex(const std::string& bytes) {
     return vgi_rpc::crypto::hex_encode(reinterpret_cast<const uint8_t*>(bytes.data()),
@@ -58,14 +60,12 @@ nlohmann::json value_json(const std::shared_ptr<arrow::Array>& array, int64_t ro
         case arrow::Type::BINARY:
             return {{"hex", hex(static_cast<const arrow::BinaryArray&>(*array).GetString(row))}};
         case arrow::Type::LARGE_BINARY:
-            return {{"hex",
-                     hex(static_cast<const arrow::LargeBinaryArray&>(*array).GetString(row))}};
+            return {
+                {"hex", hex(static_cast<const arrow::LargeBinaryArray&>(*array).GetString(row))}};
         case arrow::Type::STRING:
             return static_cast<const arrow::StringArray&>(*array).GetString(row);
-        case arrow::Type::BOOL:
-            return static_cast<const arrow::BooleanArray&>(*array).Value(row);
-        case arrow::Type::INT64:
-            return static_cast<const arrow::Int64Array&>(*array).Value(row);
+        case arrow::Type::BOOL: return static_cast<const arrow::BooleanArray&>(*array).Value(row);
+        case arrow::Type::INT64: return static_cast<const arrow::Int64Array&>(*array).Value(row);
         case arrow::Type::DICTIONARY: {
             const auto& dict = static_cast<const arrow::DictionaryArray&>(*array);
             return value_json(dict.dictionary(), dict.GetValueIndex(row));
@@ -85,8 +85,7 @@ nlohmann::json value_json(const std::shared_ptr<arrow::Array>& array, int64_t ro
                 out[type.field(i)->name()] = value_json(structs.field(i), row);
             return out;
         }
-        default:
-            FAIL("unexpected column type " << array->type()->ToString());
+        default: FAIL("unexpected column type " << array->type()->ToString());
     }
     return nullptr;
 }
@@ -192,7 +191,8 @@ TEST_CASE("nested-binary: null arguments with a location; both or neither refuse
             CHECK(vgi::wire::column(bind_call, "arguments")->IsNull(0));
             const auto location = vgi::arguments_ref::check(bind_call);
             REQUIRE(location.has_value());
-            CHECK(hex(location->ref) == entry["arguments_location"]["ref"]["hex"].get<std::string>());
+            CHECK(hex(location->ref) ==
+                  entry["arguments_location"]["ref"]["hex"].get<std::string>());
             CHECK(location->size == entry["arguments_location"]["size"].get<int64_t>());
             CHECK(location->sha256 == entry["arguments_location"]["sha256"].get<std::string>());
             CHECK(row_json(bind_call) == entry["fields"]);
@@ -230,17 +230,16 @@ TEST_CASE("nested-binary: opening opaque values never rewrites bind_call (rule 1
     const auto txn = opaque::seal_transaction(key, "txn-7", alice, attach);
 
     // A bind call carrying both sealed envelopes, inside an init request.
-    const auto bind_call = vgi::wire::encode_ipc(
-        vgi::wire::ResultBuilder(gen::BindRequestSchema())
-            .set_string("function_name", "probe")
-            .set_binary("arguments", "")
-            .set_enum("function_type", "TABLE")
-            .set_binary("attach_opaque_data", attach)
-            .set_binary("transaction_opaque_data", txn)
-            .set_bool("resolved_secrets_provided", false)
-            .set_string_list("schema_path", {"main"})
-            .fill_defaults()
-            .finish());
+    const auto bind_call = vgi::wire::encode_ipc(vgi::wire::ResultBuilder(gen::BindRequestSchema())
+                                                     .set_string("function_name", "probe")
+                                                     .set_binary("arguments", "")
+                                                     .set_enum("function_type", "TABLE")
+                                                     .set_binary("attach_opaque_data", attach)
+                                                     .set_binary("transaction_opaque_data", txn)
+                                                     .set_bool("resolved_secrets_provided", false)
+                                                     .set_string_list("schema_path", {"main"})
+                                                     .fill_defaults()
+                                                     .finish());
     const auto init = vgi::wire::ResultBuilder(gen::InitRequestSchema())
                           .set_binary("bind_call", bind_call)
                           .set_binary("output_schema", vgi::wire::encode_schema(arrow::schema({})))

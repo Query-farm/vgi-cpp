@@ -148,8 +148,8 @@ std::string resolve(const std::shared_ptr<arrow::RecordBatch>& bind_call,
     if (!location) return wire::get_optional_binary(bind_call, kArgumentsField).value_or("");
     if (!context) invalid_ref("argument references need the request's context to resolve");
     try {
-        const auto data = context->resolve_argument_ref(location->ref, location->size,
-                                                        location->sha256);
+        const auto data =
+            context->resolve_argument_ref(location->ref, location->size, location->sha256);
         return *data;
     } catch (const vgi_rpc::ArgumentsRefMissingError&) {
         throw vgi_rpc::KindedError(kMissingKind, "NotFoundError", kMissingMessage,

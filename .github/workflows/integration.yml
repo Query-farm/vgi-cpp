@@ -62,7 +62,7 @@ jobs:
           repository: Query-farm/vgi-rpc-cpp
           # TODO(release-wave): unreleased protocol 3.4 (StateRef, argument refs, blob vendor);
           # back to a release tag once vgi-rpc-cpp is released.
-          ref: 0939f3b7c7c986bfea4b71525035d9c7d9ad9ae1
+          ref: a710352420d6d699ce7ee9a1092308fb8aafd701
           path: vgi-rpc-c++
 
       - name: Check out the current vgi test suite
