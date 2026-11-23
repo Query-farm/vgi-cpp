@@ -72,9 +72,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          # TODO(release-wave): unreleased hosted-mode auth hooks (protocol-3.4 branch);
+          # TODO(release-wave): unreleased protocol 3.4 (StateRef, argument refs, blob vendor);
           # back to a release tag once vgi-rpc-cpp is released.
-          ref: 35d1d453b3b0caa7cf7710d6ea54cc87e3cb8732
+          ref: 0939f3b7c7c986bfea4b71525035d9c7d9ad9ae1
           path: vgi-rpc-c++
 
       - name: Clone and bootstrap vcpkg
@@ -184,9 +184,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          # TODO(release-wave): unreleased hosted-mode auth hooks (protocol-3.4 branch);
+          # TODO(release-wave): unreleased protocol 3.4 (StateRef, argument refs, blob vendor);
           # back to a release tag once vgi-rpc-cpp is released.
-          ref: 35d1d453b3b0caa7cf7710d6ea54cc87e3cb8732
+          ref: 0939f3b7c7c986bfea4b71525035d9c7d9ad9ae1
           path: vgi-rpc-c++
 
       - name: Check out the hosted-mode harness

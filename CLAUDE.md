@@ -252,6 +252,17 @@ Each of these cost real debugging time, and none is guessable from the code:
 - **`supports_time_travel` is answered once, at ATTACH, and DuckDB's binder
   refuses an AT clause outright when it is false** — before any per-table
   logic runs. Every way a table can say it travels has to be counted there.
+- **A bind call's arguments may arrive by reference** (protocol 3.4). Over
+  HTTP the engine uploads a large argument once and sends
+  `BindRequest.arguments = null` with `arguments_location {ref, size,
+  sha256}`. `read_bind_request` (the one reader, `src/arguments_ref.cpp`)
+  resolves it through vgi-rpc's object cache on each turn. Never rewrite or
+  re-serialize a received `bind_call`: what is stashed (buffering) or
+  compared is the reference form, and opened attach/transaction values live
+  in the per-call overlay (`opaque::opened`), not in the bind call's bytes.
+  The capability header `VGI-Arguments-Ref-Bytes` is sent only when the
+  server's storage can fetch an object by id; `ci/run-vendor-lane.sh` runs the
+  extension's `arguments_ref*.test` files against the example worker.
 - **A statistic with no bound must send null, not a default.** `[0, 0]` and
   "no nulls" are promises the optimizer acts on: it will fold `WHERE s > 10`
   to zero rows on the strength of them.

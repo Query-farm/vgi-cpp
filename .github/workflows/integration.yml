@@ -25,7 +25,7 @@ env:
   # Match the v3 suite and statically linked native runner exactly.
   # TODO(release-wave): vgi protocol-3.4 (3.4.0 suite); back to a v2.0 commit
   # once 3.4 merges and its native runner artifacts are published.
-  VGI_REF: 5b8b7a2a7e4e587e15573ddd62cf1dbcdf6b357e
+  VGI_REF: e99683f2af215c5a166697945e796c91d0cc66fe
   VGI_NATIVE_RUNNER_BRANCH: protocol-3.4
   # Build every vcpkg port with the CMake (and ninja) that vcpkg pins for
   # this baseline, not whatever the runner image ships. The macOS image moved
@@ -50,7 +50,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        transport: [stdio, launch, http]
+        # vendor: the extension's blob-vendor lane (test/sql/external_storage/,
+        # with protocol 3.4's argument references) over HTTP, ci/run-vendor-lane.sh.
+        transport: [stdio, launch, http, vendor]
     steps:
       - uses: actions/checkout@v4
 
@@ -58,9 +60,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          # TODO(release-wave): unreleased hosted-mode auth hooks (protocol-3.4 branch);
+          # TODO(release-wave): unreleased protocol 3.4 (StateRef, argument refs, blob vendor);
           # back to a release tag once vgi-rpc-cpp is released.
-          ref: 35d1d453b3b0caa7cf7710d6ea54cc87e3cb8732
+          ref: 0939f3b7c7c986bfea4b71525035d9c7d9ad9ae1
           path: vgi-rpc-c++
 
       - name: Check out the current vgi test suite
@@ -102,7 +104,25 @@ jobs:
           python3 "$VGI_SRC/scripts/ci_fetch_native_runner.py" \
             --source "$VGI_SRC" --output "$RUNNER_TEMP/vgi-native"
 
+      - name: Setup Python (run_tests.py and the fake vendor)
+        if: matrix.transport == 'vendor'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv (the fake blob vendor runs under uvx)
+        if: matrix.transport == 'vendor'
+        uses: astral-sh/setup-uv@v6
+
+      - name: Run the blob-vendor lane
+        if: matrix.transport == 'vendor'
+        run: ci/run-vendor-lane.sh
+        env:
+          VGI_SRC: ${{ github.workspace }}/vgi-upstream
+          VGI_WORKER_BIN: ${{ github.workspace }}/build-release/example-worker/vgi-example-worker
+
       - name: Run integration suite (${{ matrix.transport }})
+        if: matrix.transport != 'vendor'
         run: ci/run-integration.sh
         env:
           VGI_SRC: ${{ github.workspace }}/vgi-upstream
