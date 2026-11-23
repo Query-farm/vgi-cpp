@@ -175,17 +175,25 @@ std::shared_ptr<arrow::RecordBatch> Call::open_batch(
         if (is_binary_column(batch, i)) {
             const auto value = binary_at(batch, i);
             if (value && name == kAttachField) {
-                column = one_binary(open_attach(*key_, *value, auth_));
+                auto plaintext = open_attach(*key_, *value, auth_);
+                overlay_[*value] = plaintext;
+                column = one_binary(plaintext);
                 changed = true;
             } else if (value && name == kTransactionField) {
                 // A transaction with no attach beside it has nothing to be
                 // bound to, so it cannot be one this worker issued.
                 if (!attach_here) reject(kTransactionField);
-                column = one_binary(open_transaction(*key_, *value, auth_, *attach_here));
+                auto plaintext = open_transaction(*key_, *value, auth_, *attach_here);
+                overlay_[*value] = plaintext;
+                column = one_binary(plaintext);
                 changed = true;
-            } else if (value && (name == "request" || name == "bind_call")) {
-                // Records nested as IPC: the request dataclass, and the bind
-                // call an init / planning request carries.
+            } else if (value && name == "bind_call") {
+                // The bind call an init / planning request carries is opened
+                // (every envelope checked, plaintext into the overlay) but
+                // never rewritten: its bytes stay exactly as received.
+                (void)open_batch(wire::decode_ipc(*value), attach_here);
+            } else if (value && name == "request") {
+                // The request dataclass nested as IPC.
                 const auto inner = wire::decode_ipc(*value);
                 const auto opened = open_batch(inner, attach_here);
                 if (opened != inner) {
@@ -211,8 +219,22 @@ std::string Call::seal_transaction(const std::string& plaintext) const {
     return opaque::seal_transaction(*key_, plaintext, auth_, attach_as_sent_.value_or(""));
 }
 
+std::string Call::opened(const std::string& value) const {
+    const auto found = overlay_.find(value);
+    return found == overlay_.end() ? value : found->second;
+}
+
 const Call* current() {
     return g_current;
+}
+
+std::string opened(const std::string& value) {
+    return g_current ? g_current->opened(value) : value;
+}
+
+std::optional<std::string> opened(const std::optional<std::string>& value) {
+    if (!value) return value;
+    return opened(*value);
 }
 
 std::string seal_attach_out(const std::string& plaintext) {

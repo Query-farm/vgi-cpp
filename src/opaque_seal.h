@@ -29,6 +29,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -93,6 +94,10 @@ public:
     std::string seal_attach(const std::string& plaintext) const;
     std::string seal_transaction(const std::string& plaintext) const;
 
+    // The plaintext an envelope inside a nested `bind_call` opened to, or the
+    // value itself when it is not one this call opened.
+    std::string opened(const std::string& value) const;
+
 private:
     std::shared_ptr<arrow::RecordBatch> open_batch(const std::shared_ptr<arrow::RecordBatch>& batch,
                                                    const std::optional<std::string>& outer_attach);
@@ -100,6 +105,12 @@ private:
     std::optional<Key> key_;
     vgi_rpc::AuthContext auth_;
     std::optional<std::string> attach_as_sent_;
+    // Envelope -> plaintext for the values opened inside a nested `bind_call`.
+    // The bind call keeps its bytes exactly as received (protocol 3.4 wrapper
+    // rule 11): re-encoding it with plaintext in place would put the attach
+    // data in the clear wherever those bytes go next (worker storage, the
+    // engine's byte-identity checks), so the opened values live beside it.
+    std::map<std::string, std::string> overlay_;
     Call* previous_;
 };
 
@@ -109,6 +120,12 @@ const Call* current();
 // Seal an outgoing attach / transaction value for the current call.
 std::string seal_attach_out(const std::string& plaintext);
 std::string seal_transaction_out(const std::string& plaintext);
+
+// An `attach_opaque_data` / `transaction_opaque_data` value read from a bind
+// call: the current call's plaintext for it when the boundary opened it,
+// otherwise the value unchanged.
+std::string opened(const std::string& value);
+std::optional<std::string> opened(const std::optional<std::string>& value);
 
 // 32 hex characters from the OS CSPRNG, for ids that live inside an opaque
 // value.

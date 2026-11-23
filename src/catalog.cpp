@@ -1976,7 +1976,9 @@ Dispatcher::Attachment Dispatcher::attachment_of(
     attachment.catalog = catalog().name;
     if (!batch) return attachment;
 
-    const auto value = wire::get_optional_binary(batch, "attach_opaque_data");
+    // A bind call keeps the envelope as sent; the boundary's plaintext for it
+    // is in the call's overlay (opaque::opened).
+    const auto value = opaque::opened(wire::get_optional_binary(batch, "attach_opaque_data"));
     if (!value || value->empty()) return attachment;
 
     std::vector<std::string> fields;
