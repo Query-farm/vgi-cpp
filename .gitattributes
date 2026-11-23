@@ -10,3 +10,6 @@
 # Byte-exact, so nothing rewrites them.
 *.png binary
 *.arrow binary
+
+# The nested-binary conformance corpus (protocol 3.4) is byte-exact.
+conformance/nested-binary/** -text
