@@ -10,6 +10,7 @@
 #include <vgi_rpc/request.h>
 #include <vgi_rpc/result.h>
 
+#include "arguments_ref.h"
 #include "dispatcher.h"
 #include "methods.h"
 #include "vgi/settings.h"
@@ -65,13 +66,28 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
     const auto stashed = [&](const char* key) {
         return params.storage->kv_get(params.execution_id, key).value_or("");
     };
-    params.arguments = Arguments::parse(stashed("bind.arguments"));
-    params.settings = Settings::parse(stashed("bind.settings"));
-    params.secrets = Secrets::parse(stashed("bind.secrets"));
-    if (auto format = stashed("bind.copy_to_format"); !format.empty()) {
-        params.copy_to_format = format;
+    // The bind call init stashed, exactly as the client sent it. Its fields
+    // are read here, not through read_bind_request: the attachment comes from
+    // this call's own request, and the stashed envelopes belong to the init.
+    // Externalized arguments are resolved on this turn, through this call's
+    // context (the object cache makes that one fetch per process).
+    if (const auto stored = stashed("bind.call"); !stored.empty()) {
+        const auto bind_call = wire::decode_ipc(stored);
+        if (!bind_call) throw std::runtime_error("table_buffering: stashed bind call is empty");
+        params.arguments = Arguments::parse(arguments_ref::resolve(bind_call, context));
+        params.settings =
+            Settings::parse(wire::get_optional_binary(bind_call, "settings").value_or(""));
+        params.secrets =
+            Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
+        if (auto copy_to = wire::get_struct_fields(bind_call, "copy_to")) {
+            if (auto format = copy_to->find("format"); format != copy_to->end()) {
+                params.copy_to_format = format->second;
+            }
+            if (auto path = copy_to->find("file_path"); path != copy_to->end()) {
+                params.copy_to_path = path->second;
+            }
+        }
     }
-    if (auto path = stashed("bind.copy_to_path"); !path.empty()) params.copy_to_path = path;
     params.output_schema = wire::decode_schema(stashed("bind.schema"));
     // A buffering call carries no arguments or output schema of its own; both
     // were settled at bind and belong to the execution, not the batch.

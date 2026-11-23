@@ -20,7 +20,9 @@
 #include <vgi_rpc/iroh_identity.h>
 #include <vgi_rpc/server.h>
 #include <vgi_rpc/token_identity.h>
+#include <vgi_rpc/vendor.h>
 
+#include "arguments_ref.h"
 #include "attach_ticket_service.h"
 #include "dispatcher.h"
 #include "landing.h"
@@ -187,6 +189,33 @@ void check_hosted_http(const vgi_rpc::HttpConfig& config) {
         refuse_hosted(
             "peer identity (Iroh, Tailscale, ...) is configured; hosted workers accept Passes "
             "only.");
+    }
+}
+
+[[noreturn]] void refuse_startup(const std::string& message) {
+    std::fprintf(stderr, "vgi worker: %s\n", message.c_str());
+    std::exit(2);
+}
+
+// The environment the other SDKs' HTTP servers read (vgi-rpc
+// `configure_http_from_env`): the request cap, and with `VGI_BLOB_VENDOR_URL`
+// externalization, upload URLs and argument-reference resolution through the
+// blob vendor.
+void configure_env_or_refuse(vgi_rpc::HttpConfig& config) {
+    try {
+        vgi_rpc::configure_http_from_env(config);
+    } catch (const std::exception& error) {
+        refuse_startup(error.what());
+    }
+}
+
+// `VGI-Arguments-Ref-Bytes` (protocol 3.4), after every other configuration
+// step, so a `configure_http` hook's storage counts.
+void advertise_arguments_ref_or_refuse(vgi_rpc::HttpConfig& config) {
+    try {
+        arguments_ref::install_header(config);
+    } catch (const std::exception& error) {
+        refuse_startup(error.what());
     }
 }
 
@@ -768,12 +797,14 @@ void Worker::run(int argc, char** argv) {
                 configure_landing(config, disp_->catalog().name, server->server_id(),
                                   disp_->catalog().comment.value_or(""));
                 configure_signing_key(config);
+                configure_env_or_refuse(config);
                 if (pass_verifier) {
                     configure_hosted(config, pass_verifier);
                 } else {
                     configure_bearer_auth(config);
                 }
                 if (configure_http_) configure_http_(config);
+                advertise_arguments_ref_or_refuse(config);
                 if (pass_verifier) check_hosted_http(config);
                 disp_->set_split_token_signing_key(config.token_key);
                 // HTTP authenticates callers: attach and transaction values
@@ -799,12 +830,14 @@ void Worker::run(int argc, char** argv) {
                 configure_landing(config, disp_->catalog().name, server->server_id(),
                                   disp_->catalog().comment.value_or(""));
                 configure_signing_key(config);
+                configure_env_or_refuse(config);
                 config.peer_identity_providers.push_back(vgi_rpc::iroh_forwarded_header_provider(
                     {std::move(iroh_issuer), std::move(iroh_trusted_proxies)}));
                 config.peer_authentication_policy = iroh_observe
                                                         ? vgi_rpc::observe_peer_identity
                                                         : vgi_rpc::peer_identity_primary("iroh");
                 if (configure_http_) configure_http_(config);
+                advertise_arguments_ref_or_refuse(config);
                 disp_->set_split_token_signing_key(config.token_key);
                 // HTTP authenticates callers: attach and transaction values
                 // are sealed under the same key, bound to the caller.

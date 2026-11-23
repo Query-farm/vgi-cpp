@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <regex>
 #include <sstream>
 
@@ -38,12 +39,18 @@
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "vgi/storage.h"
 
+#include "arguments_ref.h"
+#include "opaque_seal.h"
 #include "split_token.h"
 #include "wire.h"
 
 namespace vgi {
 
 namespace gen = ::vgi::generated;
+
+// The projection proposal's bind result is a response this worker built; the
+// cap guards the decode, not a protocol limit.
+constexpr size_t kMaxProjectionBindResultBytes = 8 * 1024 * 1024;
 
 // `GlobalInitResponse` — the header batch every init stream leads with.
 //
@@ -998,12 +1005,14 @@ std::vector<ArgSpec> Dispatcher::argument_specs_of(const std::string& name,
     return {};
 }
 
-BindParams Dispatcher::read_bind_request(
-    const std::shared_ptr<arrow::RecordBatch>& bind_call) const {
+BindParams Dispatcher::read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call,
+                                         vgi_rpc::CallContext* context) const {
     BindParams params;
     params.input_schema = wire::get_schema(bind_call, "input_schema");
-    params.arguments =
-        Arguments::parse(wire::get_optional_binary(bind_call, "arguments").value_or(""));
+    // Inline, or resolved from `arguments_location` through the object cache
+    // (protocol 3.4). The bind call itself is never rewritten: whatever is
+    // persisted or compared later is the reference form the client sent.
+    params.arguments = Arguments::parse(arguments_ref::resolve(bind_call, context));
     params.settings =
         Settings::parse(wire::get_optional_binary(bind_call, "settings").value_or(""));
     params.secrets = Secrets::parse(wire::get_optional_binary(bind_call, "secrets").value_or(""));
@@ -1015,8 +1024,10 @@ BindParams Dispatcher::read_bind_request(
     params.catalog_name = attachment.catalog;
     params.attachment_id = attachment.id;
     params.attach_options = attachment.options;
+    // Opened at the RPC boundary into the call's overlay; the bind call keeps
+    // the envelope exactly as sent (wrapper rule 11).
     params.transaction_opaque_data =
-        wire::get_optional_binary(bind_call, "transaction_opaque_data");
+        opaque::opened(wire::get_optional_binary(bind_call, "transaction_opaque_data"));
     // Empty strings mean "no clause" on this wire, which is not the same as a
     // clause whose value happens to be empty.
     params.at_unit = wire::get_optional_string(bind_call, "at_unit");
@@ -1076,12 +1087,12 @@ static BindRepeatability read_repeatability(const std::shared_ptr<arrow::RecordB
     throw std::invalid_argument("invalid bind repeatability");
 }
 
-vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request, vgi_rpc::CallContext&) {
+vgi_rpc::Result Dispatcher::bind(const vgi_rpc::Request& request, vgi_rpc::CallContext& context) {
     auto bind_call = wire::get_ipc(request.batch(), "request");
     if (!bind_call) throw std::runtime_error("bind: empty request");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    const auto params = read_bind_request(bind_call);
+    const auto params = read_bind_request(bind_call, &context);
 
     // The request says which registry to use; consult it before guessing.
     //
@@ -1203,9 +1214,16 @@ std::string encode_scan_split(const ScanSplit& split, const std::string& token) 
 
 }  // namespace
 
+// `max_bytes` bounds the records a client sends for this call's own sake (the
+// bind result). The request envelope and the bind call it carries are not
+// capped here: the bind call already arrived, whole, at bind -- which has no
+// cap of its own -- and the transport's request cap bounds both. Since
+// protocol 3.4 a large argument rides by reference, so the bind call is small
+// wherever a request cap applies.
 static std::shared_ptr<arrow::RecordBatch> projection_record(
-    const std::string& bytes, const std::shared_ptr<arrow::Schema>& expected) {
-    if (bytes.empty() || bytes.size() > 8 * 1024 * 1024)
+    const std::string& bytes, const std::shared_ptr<arrow::Schema>& expected,
+    size_t max_bytes = std::numeric_limits<size_t>::max()) {
+    if (bytes.empty() || bytes.size() > max_bytes)
         throw std::invalid_argument("invalid projection record size");
     auto source = std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(bytes));
     auto opened = arrow::ipc::RecordBatchStreamReader::Open(source);
@@ -1225,17 +1243,16 @@ static std::shared_ptr<arrow::RecordBatch> projection_record(
 }
 
 vgi_rpc::Result Dispatcher::table_function_projection(const vgi_rpc::Request& request,
-                                                      vgi_rpc::CallContext&) {
-    if (wire::get_optional_binary(request.batch(), "request").value_or("").size() > 8 * 1024 * 1024)
-        throw std::invalid_argument("projection exceeds 8MiB");
+                                                      vgi_rpc::CallContext& call_context) {
     auto proposal =
         projection_record(wire::get_optional_binary(request.batch(), "request").value_or(""),
                           gen::TableFunctionProjectionRequestSchema());
     auto call = projection_record(wire::get_optional_binary(proposal, "bind_call").value_or(""),
                                   gen::BindRequestSchema());
-    auto original = projection_record(
-        wire::get_optional_binary(proposal, "bind_result").value_or(""), gen::BindResultSchema());
-    const auto params = read_bind_request(call);
+    auto original =
+        projection_record(wire::get_optional_binary(proposal, "bind_result").value_or(""),
+                          gen::BindResultSchema(), kMaxProjectionBindResultBytes);
+    const auto params = read_bind_request(call, &call_context);
     if ((wire::get_optional_enum(call, "function_type") != enums::function_type::kTable &&
          wire::get_optional_enum(call, "function_type") != "TABLE") ||
         params.input_schema || !wire::column(call, "schema_path") ||
@@ -1339,7 +1356,7 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request,
     if (!bind_call) throw std::runtime_error("plan: request carries no bind_call");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    const auto bind_params = read_bind_request(bind_call);
+    const auto bind_params = read_bind_request(bind_call, &context);
 
     PlanResult result;
     auto table = find_table(function_name, scope_of(bind_params), &bind_params);
@@ -1374,8 +1391,7 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request,
     // then forget the anchor or mis-bind the fingerprint, and the format stays
     // a framework detail that can change without touching a worker.
     const auto fingerprint = split_token::bind_fingerprint(
-        bind_params.schema_path, function_name,
-        wire::get_optional_binary(bind_call, "arguments").value_or(std::string{}),
+        bind_params.schema_path, function_name, arguments_ref::fingerprint_input(bind_call),
         wire::get_optional_binary(bind_call, "settings").value_or(std::string{}));
     const auto anchor = split_token::anchor_for(
         result.catalog_version ? result.catalog_version : current_catalog_version(request));
@@ -1428,7 +1444,7 @@ vgi_rpc::Result Dispatcher::table_function_plan(const vgi_rpc::Request& request,
 }
 
 vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& request,
-                                                       vgi_rpc::CallContext&) {
+                                                       vgi_rpc::CallContext& context) {
     auto cardinality_request = wire::get_ipc(request.batch(), "request");
     if (!cardinality_request) throw std::runtime_error("cardinality: empty request");
 
@@ -1436,7 +1452,7 @@ vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& r
     if (!bind_call) throw std::runtime_error("cardinality: request carries no bind_call");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    const auto bind_params = read_bind_request(bind_call);
+    const auto bind_params = read_bind_request(bind_call, &context);
 
     // Asked before init, so there is no execution and no output schema yet —
     // only the arguments the estimate can be derived from. `estimate` and
@@ -1472,7 +1488,7 @@ vgi_rpc::Result Dispatcher::table_function_cardinality(const vgi_rpc::Request& r
 }
 
 vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& request,
-                                                      vgi_rpc::CallContext&) {
+                                                      vgi_rpc::CallContext& context) {
     auto statistics_request = wire::get_ipc(request.batch(), "request");
     if (!statistics_request) throw std::runtime_error("statistics: empty request");
 
@@ -1480,7 +1496,7 @@ vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& re
     if (!bind_call) throw std::runtime_error("statistics: request carries no bind_call");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    const auto bind_params = read_bind_request(bind_call);
+    const auto bind_params = read_bind_request(bind_call, &context);
 
     std::optional<std::vector<ColumnStatistics>> statistics;
     if (auto table = find_table(function_name, scope_of(bind_params), &bind_params)) {
@@ -1507,7 +1523,7 @@ vgi_rpc::Result Dispatcher::table_function_statistics(const vgi_rpc::Request& re
 }
 
 vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Request& request,
-                                                             vgi_rpc::CallContext&) {
+                                                             vgi_rpc::CallContext& context) {
     auto profile_request = wire::get_ipc(request.batch(), "request");
     if (!profile_request) throw std::runtime_error("dynamic_to_string: empty request");
 
@@ -1515,7 +1531,7 @@ vgi_rpc::Result Dispatcher::table_function_dynamic_to_string(const vgi_rpc::Requ
     if (!bind_call) throw std::runtime_error("dynamic_to_string: request carries no bind_call");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    const auto bind_params = read_bind_request(bind_call);
+    const auto bind_params = read_bind_request(bind_call, &context);
     const auto execution_id =
         wire::get_optional_binary(profile_request, "global_execution_id").value_or(std::string{});
 
@@ -1547,7 +1563,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
     if (!bind_call) throw std::runtime_error("init: request carries no bind_call");
 
     const auto function_name = wire::get_string(bind_call, "function_name");
-    const auto bind_params = read_bind_request(bind_call);
+    const auto bind_params = read_bind_request(bind_call, &context);
 
     // The engine sends back the schema bind settled on rather than making the
     // worker re-derive it, so a function whose bind is expensive pays once.
@@ -1619,8 +1635,7 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
     // ordinary scan path, and it must stay untouched.
     if (auto tokens = wire::get_binary_list(init_request, "split_tokens"); !tokens.empty()) {
         const auto fingerprint = split_token::bind_fingerprint(
-            bind_params.schema_path, function_name,
-            wire::get_optional_binary(bind_call, "arguments").value_or(std::string{}),
+            bind_params.schema_path, function_name, arguments_ref::fingerprint_input(bind_call),
             wire::get_optional_binary(bind_call, "settings").value_or(std::string{}));
         const auto anchor = split_token::anchor_for(current_catalog_version(request));
 
@@ -1703,11 +1718,11 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
             const auto stash = [&](const char* key, const std::string& value) {
                 if (!value.empty()) params.storage->kv_put(execution_id, key, value);
             };
-            stash("bind.arguments", wire::get_optional_binary(bind_call, "arguments").value_or(""));
-            stash("bind.settings", wire::get_optional_binary(bind_call, "settings").value_or(""));
-            stash("bind.secrets", wire::get_optional_binary(bind_call, "secrets").value_or(""));
-            stash("bind.copy_to_format", params.copy_to_format.value_or(""));
-            stash("bind.copy_to_path", params.copy_to_path.value_or(""));
+            // The bind call exactly as received (the reference form: with
+            // argument references it holds the location, never the value),
+            // not fields lifted out of it or anything resolved from it. The
+            // buffering RPCs re-read and re-resolve it on their own turn.
+            stash("bind.call", wire::get_optional_binary(init_request, "bind_call").value_or(""));
             stash("bind.schema", wire::encode_schema(output_schema));
         }
         // Two shapes behind one name. The sink phase is header-only — the

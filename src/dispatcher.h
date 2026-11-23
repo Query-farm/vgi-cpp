@@ -387,7 +387,11 @@ private:
 
     std::vector<ArgSpec> argument_specs_of(const std::string& name, const BindParams& params) const;
 
-    BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call) const;
+    // Every bind-call reader goes through here: it resolves argument
+    // references (protocol 3.4) through `context`, which may be null only
+    // where the bind call is known to carry its arguments inline.
+    BindParams read_bind_request(const std::shared_ptr<arrow::RecordBatch>& bind_call,
+                                 vgi_rpc::CallContext* context) const;
 
     // The five fields `attach_opaque_data` seals, as sealed at ATTACH.
     //

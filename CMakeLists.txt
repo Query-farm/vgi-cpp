@@ -86,6 +86,7 @@ add_library(vgi
     src/memory_catalog.cpp
     src/arg_schema.cpp
     src/function_dispatch.cpp
+    src/arguments_ref.cpp
     src/arguments.cpp
     src/numeric.cpp
     src/table_in_out.cpp
