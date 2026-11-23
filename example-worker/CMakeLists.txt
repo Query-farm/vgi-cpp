@@ -46,6 +46,7 @@ add_executable(vgi-example-worker
     copy_from/lines.cpp
     catalog_def.cpp
     twin_catalogs.cpp
+    blob_catalog.cpp
     attach_options.cpp
     ticket_probe.cpp
     table_in_out/echo.cpp

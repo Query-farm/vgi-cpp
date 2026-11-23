@@ -33,6 +33,9 @@ void register_secret_cache(vgi::Worker& worker);
 // _memory, _reval, _hash): vgi-python's _test_fixtures/catalog_contents.py,
 // the cross-SDK contract the catalog_contents*.test files run against.
 void register_catalog_contents(vgi::Worker& worker);
+// The blob_test catalog: the blob-vendor fixtures (vgi docs/testing/blob-test-catalog.md),
+// including the protocol 3.4 argument-reference ones (blob_param_*).
+void register_blob_catalog(vgi::Worker& worker);
 // Fresh instances of example-catalog functions, for fixtures that home them in
 // another catalog.
 std::shared_ptr<vgi::ScalarFunction> make_double();

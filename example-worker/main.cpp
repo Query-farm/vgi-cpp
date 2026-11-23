@@ -127,6 +127,8 @@ int main(int argc, char** argv) {
         example::register_accumulate(worker);
         example::register_projection_repro(worker);
         example::register_extra_catalogs(worker);
+        // blob_test: blob-vendor externalization and argument references.
+        example::register_blob_catalog(worker);
         // The cross-SDK example.contract schema (visibility/example_table_only.test).
         example::register_contract(worker);
     }
