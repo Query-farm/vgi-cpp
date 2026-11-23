@@ -140,3 +140,14 @@ target_compile_definitions(hosted_e2e_test PRIVATE
     VGI_EXAMPLE_WORKER_PATH="$<TARGET_FILE:vgi-example-worker>")
 add_dependencies(hosted_e2e_test vgi-example-worker)
 catch_discover_tests(hosted_e2e_test)
+
+# The nested-binary conformance corpus (protocol 3.4, vgi
+# docs/large-values-3.4.md §3.4): bind_call byte identity in all six embedding
+# requests, null arguments with a location, both/neither refused, and the
+# opaque boundary leaving bind_call as received (rule 11).
+add_executable(nested_binary_test nested_binary_test.cpp)
+target_link_libraries(nested_binary_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(nested_binary_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(nested_binary_test PRIVATE
+    VGI_NESTED_BINARY_DIR="${CMAKE_SOURCE_DIR}/conformance/nested-binary")
+catch_discover_tests(nested_binary_test)
