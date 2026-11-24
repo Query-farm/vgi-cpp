@@ -198,9 +198,10 @@ void check_hosted_http(const vgi_rpc::HttpConfig& config) {
 }
 
 // The environment the other SDKs' HTTP servers read (vgi-rpc
-// `configure_http_from_env`): the request cap, and with `VGI_BLOB_VENDOR_URL`
-// externalization, upload URLs and argument-reference resolution through the
-// blob vendor.
+// `configure_http_from_env`): the request cap, and externalization, upload
+// URLs and argument-reference resolution through the blob vendor
+// (`VGI_BLOB_VENDOR_URL`) or the operator's own bucket (`VGI_STORAGE_*`,
+// docs/direct-storage.md).
 void configure_env_or_refuse(vgi_rpc::HttpConfig& config) {
     try {
         vgi_rpc::configure_http_from_env(config);

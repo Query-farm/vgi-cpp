@@ -24,5 +24,31 @@
       ]
     },
     "catch2"
-  ]
+  ],
+  "features": {
+    "s3": {
+      "description": "Direct S3 storage (VGI_STORAGE_BACKEND=s3, docs/direct-storage.md); configure with -DVGI_RPC_WITH_S3=ON.",
+      "dependencies": [
+        {
+          "name": "aws-sdk-cpp",
+          "default-features": false,
+          "features": [
+            "s3"
+          ]
+        }
+      ]
+    },
+    "gcs": {
+      "description": "Direct GCS storage (VGI_STORAGE_BACKEND=gcs); configure with -DVGI_RPC_WITH_GCS=ON.",
+      "dependencies": [
+        {
+          "name": "google-cloud-cpp",
+          "default-features": false,
+          "features": [
+            "storage"
+          ]
+        }
+      ]
+    }
+  }
 }

@@ -129,6 +129,14 @@ a valid Pass (an RFC 9068 ES256 access token checked against
 other way in refuses to start. Functions read the Pass claims from
 `ProcessParams::auth`. See [Orchard hosted mode](docs/orchard-hosted.md).
 
+### Large values in your own bucket
+
+With `VGI_STORAGE_BACKEND=s3` (or just `VGI_STORAGE_S3_BUCKET`), a
+self-hosted worker keeps externalized results, upload grants and stored
+objects in your own S3 or S3-compatible bucket instead of the blob vendor.
+GCS works the same way with `VGI_STORAGE_GCS_BUCKET`. Build with the `s3` or
+`gcs` vcpkg feature. See [Direct object storage](docs/direct-storage.md).
+
 See [Iroh operations](docs/iroh.md) for the in-process C ABI client and
 identity-preserving raw or HTTP worker bridge setup.
 

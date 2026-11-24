@@ -53,7 +53,9 @@ jobs:
       matrix:
         # vendor: the extension's blob-vendor lane (test/sql/external_storage/,
         # with protocol 3.4's argument references) over HTTP, ci/run-vendor-lane.sh.
-        transport: [stdio, launch, http, vendor]
+        # direct-s3: VGI_STORAGE_BACKEND=s3 against RustFS with the worker
+        # built with the s3 feature, ci/run-direct-s3-lane.sh.
+        transport: [stdio, launch, http, vendor, direct-s3]
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +63,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: 72310790c83a351eea1f8440137d7b003534813e
+          ref: 74aff805580540e633a65feb44e941d89ab2d6a0
           path: vgi-rpc-c++
 
       - name: Check out the current vgi test suite
@@ -91,6 +93,7 @@ jobs:
         run: |
           cmake --preset release \
             -DVGI_RPC_SOURCE_DIR=${{ github.workspace }}/vgi-rpc-c++ \
+            ${{ matrix.transport == 'direct-s3' && '-DVCPKG_MANIFEST_FEATURES=s3 -DVGI_RPC_WITH_S3=ON' || '' }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build-release --target vgi-example-worker --parallel 2
@@ -104,7 +107,7 @@ jobs:
             --source "$VGI_SRC" --output "$RUNNER_TEMP/vgi-native"
 
       - name: Setup Python (run_tests.py and the fake vendor)
-        if: matrix.transport == 'vendor'
+        if: matrix.transport == 'vendor' || matrix.transport == 'direct-s3'
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -120,8 +123,25 @@ jobs:
           VGI_SRC: ${{ github.workspace }}/vgi-upstream
           VGI_WORKER_BIN: ${{ github.workspace }}/build-release/example-worker/vgi-example-worker
 
+      # RustFS validates SigV4 and issues STS session tokens; the image is the
+      # one vgi-rpc-cpp's cloud-storage lane and vgi-rpc-java use.
+      - name: Run the direct-S3 lane (RustFS)
+        if: matrix.transport == 'direct-s3'
+        env:
+          RUSTFS_IMAGE: ghcr.io/rustfs/rustfs@sha256:29c02251c085cb04edce556304a9ec0f8fba0c40300266cf4f3d953783fe2450
+          VGI_WORKER_BIN: ${{ github.workspace }}/build-release/example-worker/vgi-example-worker
+          S3_ENDPOINT: http://127.0.0.1:9000
+          S3_ACCESS_KEY: vgicpplane
+          S3_SECRET_KEY: vgicpplanesecret
+        run: |
+          python -m pip install boto3
+          docker run -d --name rustfs -p 127.0.0.1:9000:9000 -e RUSTFS_ACCESS_KEY="$S3_ACCESS_KEY" \
+            -e RUSTFS_SECRET_KEY="$S3_SECRET_KEY" -e RUSTFS_CONSOLE_ENABLE=false "$RUSTFS_IMAGE"
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:9000/health >/dev/null && break; sleep 1; done
+          ci/run-direct-s3-lane.sh
+
       - name: Run integration suite (${{ matrix.transport }})
-        if: matrix.transport != 'vendor'
+        if: matrix.transport != 'vendor' && matrix.transport != 'direct-s3'
         run: ci/run-integration.sh
         env:
           VGI_SRC: ${{ github.workspace }}/vgi-upstream

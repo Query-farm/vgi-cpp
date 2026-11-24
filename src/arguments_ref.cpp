@@ -107,6 +107,8 @@ std::optional<int64_t> install_header(vgi_rpc::HttpConfig& config) {
         resolvable = dynamic_cast<vgi_rpc::ObjectStore*>(config.external_storage.get()) != nullptr;
     }
     if (!resolvable) return std::nullopt;
+    // VGI_STORAGE_S3_CHECKSUM=none: no grants, so no argument references.
+    if (!config.upload_grants) return std::nullopt;
     if (truthy(std::getenv(kDisableEnv))) return std::nullopt;
     const auto value = bytes_from_env();
     config.extra_capability_headers[kHeader] = std::to_string(value);

@@ -1,0 +1,24 @@
+# name: ci/direct-s3/test/results.test
+# description: A result over the threshold is stored in the worker's own bucket and fetched back
+# group: [direct_s3]
+#
+# Lane: ci/run-direct-s3-lane.sh (VGI_STORAGE_BACKEND=s3 against RustFS).
+# The lane checks separately that objects landed under <prefix>rpc/.
+
+require vgi
+
+require httpfs
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'blob_test' AS bt (TYPE vgi, LOCATION '{VGI_TEST_WORKER}');
+
+# One 5 MB scalar result: externalized (threshold 1 MiB) and fetched by URL.
+query II
+SELECT strlen(v), md5(v) = md5(repeat('0123456789', 500000)) FROM (SELECT bt.blob_repeat('0123456789', 500000) AS v);
+----
+5000000	true
+
+statement ok
+DETACH bt;

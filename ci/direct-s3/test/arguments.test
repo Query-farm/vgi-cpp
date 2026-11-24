@@ -1,0 +1,34 @@
+# name: ci/direct-s3/test/arguments.test
+# description: A 3 MB argument goes up through an upload grant to the worker's bucket and resolves by reference
+# group: [direct_s3]
+#
+# Lane: ci/run-direct-s3-lane.sh, VGI_STORAGE_S3_CHECKSUM=sha256 only (with
+# checksum none the worker issues no grants).
+
+require vgi
+
+require httpfs
+
+require-env VGI_TEST_WORKER
+
+statement ok
+SET VARIABLE payload = (SELECT string_agg(md5(i::VARCHAR), '' ORDER BY i) FROM range(93750) t(i));
+
+statement ok
+ATTACH 'blob_test' AS bt (TYPE vgi, LOCATION '{VGI_TEST_WORKER}');
+
+statement ok
+SELECT count(*) FROM vgi_http_request_stats(reset => true);
+
+query II
+SELECT payload_len, payload_sha256 = sha256(getvariable('payload')) FROM bt.blob_param_echo(getvariable('payload'));
+----
+3000000	true
+
+query II
+SELECT sum(arguments_ref_uploads), sum(request_uploads) FROM vgi_http_request_stats();
+----
+1	0
+
+statement ok
+DETACH bt;
