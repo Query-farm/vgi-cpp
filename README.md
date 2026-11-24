@@ -16,7 +16,7 @@ extension: peers must agree on major and minor, so keep 0.15.x for a `3.2.0`
 extension and 0.12.x for existing `vgi.v2` installations; upgrade the extension
 and worker SDKs together. The shared contract prepares for DuckDB 2.0 while
 remaining usable by the 1.5 adapter. Optional catalog and query capabilities
-still depend on the provider. This release uses vgi-rpc-cpp **0.11.1**.
+still depend on the provider. This release uses vgi-rpc-cpp **0.12.0**.
 
 The example worker passes the VGI integration suite in
 [`vgi`](https://github.com/Query-farm/vgi) over the subprocess transport. What

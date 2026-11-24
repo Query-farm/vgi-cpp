@@ -23,8 +23,8 @@ concurrency:
 
 env:
   # Match the v3 suite and statically linked native runner exactly.
-  # TODO(release-wave): vgi protocol-3.4 (3.4.0 suite); back to a v2.0 commit
-  # once 3.4 merges and its native runner artifacts are published.
+  # vgi protocol-3.4 (3.4.0 suite) and its native runner: the extension ships
+  # after the worker fleet, so v2.0 has neither yet.
   VGI_REF: e99683f2af215c5a166697945e796c91d0cc66fe
   VGI_NATIVE_RUNNER_BRANCH: protocol-3.4
   # Build every vcpkg port with the CMake (and ninja) that vcpkg pins for
@@ -60,9 +60,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          # TODO(release-wave): unreleased protocol 3.4 (StateRef, argument refs, blob vendor);
-          # back to a release tag once vgi-rpc-cpp is released.
-          ref: a710352420d6d699ce7ee9a1092308fb8aafd701
+          ref: v0.12.0
           path: vgi-rpc-c++
 
       - name: Check out the current vgi test suite
