@@ -109,7 +109,7 @@ grant. On a service that does not enforce `x-amz-checksum-sha256`, set
 |---|---|
 | `VGI_STORAGE_GCS_BUCKET` | bucket (required) |
 | `VGI_STORAGE_GCS_PREFIX` | key prefix; objects go under `<prefix>rpc/` |
-| `VGI_STORAGE_GCS_ENDPOINT` | custom endpoint (an emulator such as fake-gcs-server) |
+| `VGI_STORAGE_GCS_ENDPOINT` | custom API endpoint for the worker's own calls (e.g. a private endpoint). Signed URLs still name `storage.googleapis.com`, so an emulator cannot serve the engine's fetches |
 | `VGI_STORAGE_GCS_CREDENTIALS_FILE` | service-account key file; otherwise Application Default Credentials |
 | `VGI_STORAGE_GCS_VERIFY` | `1`: check the bucket before serving |
 
