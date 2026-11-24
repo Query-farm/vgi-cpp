@@ -16,12 +16,27 @@
 
 #include "dispatcher.h"
 #include "methods.h"
+#include "storage_seal.h"
 #include "vgi/storage.h"
 
 #include "wire.h"
 
 namespace vgi {
 namespace {
+
+// Framework context this file stores, sealed (storage_seal.h) in vgi-python's
+// slots: the constant arguments at aggregate_state/-2, the streaming session
+// in streaming_session.
+storage_seal::Slot aggregate_arguments_slot(const std::string& execution_id) {
+    return {"", execution_id, storage_seal::kAggregateStateNs, storage_seal::pack_int_key(-2)};
+}
+
+storage_seal::Slot streaming_slot(const std::string& execution_id, const std::string& key) {
+    const int64_t slot = key == "streaming.partition_keys" ? -1
+                         : key == "streaming.order_keys"   ? -2
+                                                           : -3;
+    return {"", execution_id, storage_seal::kStreamingSessionNs, storage_seal::pack_int_key(slot)};
+}
 
 // Split an aggregate input batch into its group-id column and the value
 // columns, which is every column except that one.
@@ -128,7 +143,8 @@ vgi_rpc::Result Dispatcher::aggregate_bind(const vgi_rpc::Request& request, vgi_
     auto execution_id = next_execution_id();
     // Stashed for finalize, which carries no arguments of its own.
     if (auto arguments = wire::get_optional_binary(dto, "arguments"); arguments) {
-        default_storage()->kv_put(execution_id, "aggregate.arguments", *arguments);
+        storage_seal::sealed_put(*default_storage(), execution_id, "aggregate.arguments",
+                                 aggregate_arguments_slot(execution_id), *arguments);
     }
 
     auto payload = wire::ResultBuilder(payload_schema_of("aggregate_bind"))
@@ -244,7 +260,9 @@ vgi_rpc::Result Dispatcher::aggregate_finalize(const vgi_rpc::Request& request,
     // Bind-time arguments come from the stash, since a finalize request
     // carries none and may run on a worker that never bound.
     auto arguments = Arguments::parse(
-        default_storage()->kv_get(execution_id, "aggregate.arguments").value_or(""));
+        storage_seal::sealed_get(*default_storage(), execution_id, "aggregate.arguments",
+                                 aggregate_arguments_slot(execution_id))
+            .value_or(""));
     auto result_batch = fn->finalize_with_arguments(output_schema, *group_ids, states, arguments);
     auto payload = wire::ResultBuilder(payload_schema_of("aggregate_finalize"))
                        .set_binary("result_batch", wire::encode_ipc(result_batch))
@@ -270,12 +288,16 @@ vgi_rpc::Result Dispatcher::aggregate_streaming_open(const vgi_rpc::Request& req
     // context here.
     auto execution_id = next_execution_id();
     auto* store = default_storage().get();
-    store->kv_put(execution_id, "streaming.partition_keys",
-                  std::to_string(wire::get_optional_int64(dto, "partition_key_count").value_or(0)));
-    store->kv_put(execution_id, "streaming.order_keys",
-                  std::to_string(wire::get_optional_int64(dto, "order_key_count").value_or(0)));
-    store->kv_put(execution_id, "streaming.output_schema",
-                  wire::get_optional_binary(dto, "output_schema").value_or(""));
+    // Sealed (storage_seal.h), like vgi-python's streaming session.
+    const auto put = [&](const char* key, const std::string& value) {
+        storage_seal::sealed_put(*store, execution_id, key, streaming_slot(execution_id, key),
+                                 value);
+    };
+    put("streaming.partition_keys",
+        std::to_string(wire::get_optional_int64(dto, "partition_key_count").value_or(0)));
+    put("streaming.order_keys",
+        std::to_string(wire::get_optional_int64(dto, "order_key_count").value_or(0)));
+    put("streaming.output_schema", wire::get_optional_binary(dto, "output_schema").value_or(""));
 
     auto payload = wire::ResultBuilder(payload_schema_of("aggregate_streaming_open"))
                        .set_binary("execution_id", execution_id)
@@ -298,12 +320,14 @@ vgi_rpc::Result Dispatcher::aggregate_streaming_chunk(const vgi_rpc::Request& re
     auto fn = require_aggregate(function_name, scope);
 
     auto* store = default_storage().get();
-    const auto count = [&](const char* key) -> size_t {
-        return static_cast<size_t>(
-            std::strtoull(store->kv_get(execution_id, key).value_or("0").c_str(), nullptr, 10));
+    const auto session = [&](const char* key) {
+        return storage_seal::sealed_get(*store, execution_id, key,
+                                        streaming_slot(execution_id, key));
     };
-    auto output_schema =
-        wire::decode_schema(store->kv_get(execution_id, "streaming.output_schema").value_or(""));
+    const auto count = [&](const char* key) -> size_t {
+        return static_cast<size_t>(std::strtoull(session(key).value_or("0").c_str(), nullptr, 10));
+    };
+    auto output_schema = wire::decode_schema(session("streaming.output_schema").value_or(""));
 
     auto chunk = wire::decode_ipc(wire::get_binary(dto, "input_batch"));
     if (!chunk) throw std::runtime_error("aggregate_streaming_chunk: empty chunk");

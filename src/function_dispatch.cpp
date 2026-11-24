@@ -42,6 +42,7 @@
 #include "arguments_ref.h"
 #include "opaque_seal.h"
 #include "split_token.h"
+#include "storage_seal.h"
 #include "wire.h"
 
 namespace vgi {
@@ -1715,15 +1716,23 @@ vgi_rpc::Stream Dispatcher::init(const vgi_rpc::Request& request, vgi_rpc::CallC
         // them here, scoped by execution id, is the only channel between the
         // two. Without it a COPY writer sees none of its options.
         if (primary) {
-            const auto stash = [&](const char* key, const std::string& value) {
-                if (!value.empty()) params.storage->kv_put(execution_id, key, value);
+            //
+            // Sealed (storage_seal.h): the bind call carries the resolved
+            // secrets and the attach and transaction values.
+            const auto stash = [&](const char* key, int64_t slot_key, const std::string& value) {
+                if (value.empty()) return;
+                storage_seal::sealed_put(*params.storage, execution_id, key,
+                                         {"", execution_id, storage_seal::kBufferingInitNs,
+                                          storage_seal::pack_int_key(slot_key)},
+                                         value);
             };
             // The bind call exactly as received (the reference form: with
             // argument references it holds the location, never the value),
             // not fields lifted out of it or anything resolved from it. The
             // buffering RPCs re-read and re-resolve it on their own turn.
-            stash("bind.call", wire::get_optional_binary(init_request, "bind_call").value_or(""));
-            stash("bind.schema", wire::encode_schema(output_schema));
+            stash("bind.call", -1,
+                  wire::get_optional_binary(init_request, "bind_call").value_or(""));
+            stash("bind.schema", -2, wire::encode_schema(output_schema));
         }
         // Two shapes behind one name. The sink phase is header-only — the
         // engine ships batches through table_buffering_process, not through

@@ -151,3 +151,11 @@ target_include_directories(nested_binary_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(nested_binary_test PRIVATE
     VGI_NESTED_BINARY_DIR="${CMAKE_SOURCE_DIR}/conformance/nested-binary")
 catch_discover_tests(nested_binary_test)
+
+# Sealed framework payload v1 (src/storage_seal.h): vgi-python's cross-SDK
+# vector byte for byte, tamper / move / wrong-key refusals, the host-local key
+# file, and framework storage holding no plaintext secret.
+add_executable(storage_seal_test storage_seal_test.cpp)
+target_link_libraries(storage_seal_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(storage_seal_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+catch_discover_tests(storage_seal_test)

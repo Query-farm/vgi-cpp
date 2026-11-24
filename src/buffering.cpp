@@ -13,6 +13,7 @@
 #include "arguments_ref.h"
 #include "dispatcher.h"
 #include "methods.h"
+#include "storage_seal.h"
 #include "vgi/settings.h"
 #include "vgi/storage.h"
 
@@ -63,15 +64,19 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
 
     // Reload what bind stashed. These calls carry no arguments, settings or
     // COPY destination of their own, and may run on a worker that never bound.
-    const auto stashed = [&](const char* key) {
-        return params.storage->kv_get(params.execution_id, key).value_or("");
+    // Sealed at init (storage_seal.h); one that fails to open is an error.
+    const auto stashed = [&](const char* key, int64_t slot_key) {
+        return storage_seal::sealed_get(*params.storage, params.execution_id, key,
+                                        {"", params.execution_id, storage_seal::kBufferingInitNs,
+                                         storage_seal::pack_int_key(slot_key)})
+            .value_or("");
     };
     // The bind call init stashed, exactly as the client sent it. Its fields
     // are read here, not through read_bind_request: the attachment comes from
     // this call's own request, and the stashed envelopes belong to the init.
     // Externalized arguments are resolved on this turn, through this call's
     // context (the object cache makes that one fetch per process).
-    if (const auto stored = stashed("bind.call"); !stored.empty()) {
+    if (const auto stored = stashed("bind.call", -1); !stored.empty()) {
         const auto bind_call = wire::decode_ipc(stored);
         if (!bind_call) throw std::runtime_error("table_buffering: stashed bind call is empty");
         params.arguments = Arguments::parse(arguments_ref::resolve(bind_call, context));
@@ -88,7 +93,7 @@ ProcessParams Dispatcher::buffering_params(const std::shared_ptr<arrow::RecordBa
             }
         }
     }
-    params.output_schema = wire::decode_schema(stashed("bind.schema"));
+    params.output_schema = wire::decode_schema(stashed("bind.schema", -2));
     // A buffering call carries no arguments or output schema of its own; both
     // were settled at bind and belong to the execution, not the batch.
     return params;

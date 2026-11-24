@@ -42,6 +42,7 @@
 #include <vgi_rpc/arrow_utils.h>
 
 #include "opaque_seal.h"
+#include "storage_seal.h"
 #include "wire.h"
 #include <arrow/array/concatenate.h>
 
@@ -1932,6 +1933,11 @@ namespace {
 // transports, where the value is not sealed.
 constexpr const char* kAttachSecretsScope = "vgi.attach_secrets";
 
+// Sealed there (storage_seal.h), bound to the attachment id.
+storage_seal::Slot attach_secrets_slot(const std::string& attachment_id) {
+    return {"", kAttachSecretsScope, storage_seal::kAttachSecretOptionsNs, attachment_id};
+}
+
 bool is_secret_option(const CatalogModel* model, const std::string& name) {
     if (!model) return false;
     for (const auto& option : model->attach_options) {
@@ -1956,8 +1962,9 @@ std::string Dispatcher::seal_attachment(const Attachment& attachment) const {
                 .push_back(i);
         }
         if (!secret.empty()) {
-            default_storage()->kv_put(
-                kAttachSecretsScope, attachment.id,
+            storage_seal::sealed_put(
+                *default_storage(), kAttachSecretsScope, attachment.id,
+                attach_secrets_slot(attachment.id),
                 wire::encode_ipc(vgi_rpc::unwrap(carried->SelectColumns(secret))));
             carried = vgi_rpc::unwrap(carried->SelectColumns(plain));
         }
@@ -2023,7 +2030,8 @@ void Dispatcher::restore_secret_options(Attachment& attachment) const {
         }
     }
     if (!wants) return;
-    const auto stored = default_storage()->kv_get(kAttachSecretsScope, attachment.id);
+    const auto stored = storage_seal::sealed_get(*default_storage(), kAttachSecretsScope,
+                                                 attachment.id, attach_secrets_slot(attachment.id));
     if (!stored) return;
     const auto secrets = wire::decode_ipc(*stored);
     // Back in declared order, as the merge produced them.

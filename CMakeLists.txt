@@ -51,6 +51,9 @@ find_package(nlohmann_json CONFIG REQUIRED)
 # RPC framework already links; libcurl fetches the JWKS.
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(CURL REQUIRED)
+# Sealed framework payloads (src/storage_seal.cpp): AES-256-GCM, which
+# libsodium offers only on CPUs with AES instructions.
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 # ── The SDK ───────────────────────────────────────────────────────────────
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -77,6 +80,7 @@ add_library(vgi
     src/portable.cpp
     src/split_token.cpp
     src/opaque_seal.cpp
+    src/storage_seal.cpp
     src/attach_ticket.cpp
     src/attach_ticket_service.cpp
     src/catalog.cpp
@@ -114,7 +118,7 @@ target_include_directories(vgi PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(vgi PRIVATE VGI_SDK_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(vgi PUBLIC vgi_rpc nlohmann_json::nlohmann_json)
-target_link_libraries(vgi PRIVATE jwt-cpp::jwt-cpp CURL::libcurl)
+target_link_libraries(vgi PRIVATE jwt-cpp::jwt-cpp CURL::libcurl OpenSSL::Crypto)
 if(TARGET Arrow::arrow_shared)
     target_link_libraries(vgi PUBLIC Arrow::arrow_shared)
 else()
