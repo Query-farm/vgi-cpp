@@ -62,6 +62,11 @@ void trace_line(const std::string& line);
 // A fresh execution id. Opaque to the engine, which only echoes it back.
 std::string next_execution_id();
 
+// A declared setting's default as the catalog descriptor's `default_value`:
+// the IPC of a one-row batch whose `value` column has the setting's type.
+// Throws when the default is not of that type.
+std::string encode_setting_default(const SettingSpec& setting);
+
 // Owns the function registries and the catalog identity, and turns them into
 // the RPC methods a VGI engine calls.
 //

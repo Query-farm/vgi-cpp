@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include <arrow/array/builder_binary.h>
+#include <arrow/scalar.h>
 #include <arrow/array/builder_nested.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/type.h>
@@ -481,12 +482,21 @@ void declare_catalog(vgi::Worker& worker) {
     // Settings the catalog introduces. `SET greeting = 'Bonjour'` only works
     // because they are declared here; a function then names the ones it reads
     // in `required_settings` to have the values forwarded.
+    //
+    // The defaults are the reference fixture's (vgi-python's ExampleWorker
+    // Settings): the engine registers them, and `RESET greeting` returns to
+    // them, so a function that requires the setting still binds.
     worker.catalog().settings = {
-        {"vgi_verbose_mode", "Enable verbose output", arrow::boolean()},
-        {"greeting", "Greeting prefix", arrow::utf8()},
-        {"multiplier", "Integer multiplier", arrow::int64()},
-        {"threshold", "Row-filter threshold", arrow::int64()},
-        {"scale_factor", "Floating-point scale factor", arrow::float64()},
+        {"vgi_verbose_mode", "Enable verbose output", arrow::boolean(),
+         std::make_shared<arrow::BooleanScalar>(false)},
+        {"greeting", "Greeting prefix", arrow::utf8(),
+         std::make_shared<arrow::StringScalar>("Hello")},
+        {"multiplier", "Integer multiplier", arrow::int64(),
+         std::make_shared<arrow::Int64Scalar>(1)},
+        {"threshold", "Row-filter threshold", arrow::int64(),
+         std::make_shared<arrow::Int64Scalar>(0)},
+        {"scale_factor", "Floating-point scale factor", arrow::float64(),
+         std::make_shared<arrow::DoubleScalar>(1.0)},
         // A struct setting, not a string: the whole point of `config` is that
         // a setting's type can be composite, and `struct_settings` reads its
         // three fields rather than parsing them out of text.

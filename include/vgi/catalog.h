@@ -369,6 +369,13 @@ struct SettingSpec {
     std::string name;
     std::string description;
     std::shared_ptr<arrow::DataType> type;
+    // The value the engine registers the setting with, and returns to after
+    // `RESET` (null: no default). Sent as the descriptor's `default_value`.
+    // A function that lists the setting in `required_settings` binds against
+    // it when the user never set one -- without it, `RESET greeting` leaves a
+    // required setting unset on a Haybarn 2.0.1 engine and binding refuses.
+    // Must be of `type`.
+    std::shared_ptr<arrow::Scalar> default_value = nullptr;
 };
 
 // A secret type this catalog introduces.

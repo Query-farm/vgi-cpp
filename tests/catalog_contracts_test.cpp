@@ -5,6 +5,8 @@
 #include "vgi/generated/vgi_protocol_schemas.hpp"
 #include "vgi/scan_planning.h"
 #include "wire.h"
+#include "dispatcher.h"
+#include <arrow/api.h>
 
 TEST_CASE("Python catalog records survive the C++ worker codec", "[catalog-contracts]") {
     std::ifstream input(VGI_CATALOG_CONTRACT_VECTORS);
@@ -460,4 +462,20 @@ TEST_CASE("protocol 3.2 scan planning records decode", "[catalog-contracts][scan
     other.min = vgi::StatValue::integer(0);
     other.max = vgi::StatValue::integer(0);
     CHECK(filters.may_match({other}));
+}
+
+TEST_CASE("a setting default rides the descriptor as a one-row value batch",
+          "[catalog-contracts]") {
+    vgi::SettingSpec greeting{"greeting", "Greeting prefix", arrow::utf8(),
+                              std::make_shared<arrow::StringScalar>("Hello")};
+    const auto batch = vgi::wire::decode_ipc(vgi::encode_setting_default(greeting));
+    REQUIRE(batch);
+    REQUIRE(batch->num_rows() == 1);
+    REQUIRE(batch->schema()->field(0)->name() == "value");
+    CHECK(batch->schema()->field(0)->type()->Equals(*arrow::utf8()));
+    CHECK(std::static_pointer_cast<arrow::StringArray>(batch->column(0))->GetString(0) == "Hello");
+
+    vgi::SettingSpec wrong{"multiplier", "x", arrow::int64(),
+                           std::make_shared<arrow::StringScalar>("1")};
+    CHECK_THROWS_AS(vgi::encode_setting_default(wrong), std::invalid_argument);
 }

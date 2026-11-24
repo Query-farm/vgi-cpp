@@ -430,15 +430,32 @@ std::vector<std::string> Dispatcher::encode_settings(const CatalogModel& model) 
     entries.reserve(model.settings.size());
     for (const auto& setting : model.settings) {
         auto value_schema = arrow::schema({arrow::field("value", setting.type, /*nullable=*/true)});
-        entries.push_back(
-            wire::encode_ipc(wire::ResultBuilder(schema)
-                                 .set_string("name", setting.name)
-                                 .set_string("description", setting.description)
-                                 .set_binary("type", wire::encode_schema(value_schema))
-                                 .set_null("default_value")
-                                 .finish()));
+        wire::ResultBuilder entry(schema);
+        entry.set_string("name", setting.name)
+            .set_string("description", setting.description)
+            .set_binary("type", wire::encode_schema(value_schema));
+        if (setting.default_value) {
+            entry.set_binary("default_value", encode_setting_default(setting));
+        } else {
+            entry.set_null("default_value");
+        }
+        entries.push_back(wire::encode_ipc(entry.finish()));
     }
     return entries;
+}
+
+// A setting's default as the wire carries it: the IPC of a one-row batch
+// whose single `value` column is of the setting's type (as vgi-python's
+// SettingSpec serializes it).
+std::string encode_setting_default(const SettingSpec& setting) {
+    if (!setting.default_value->type->Equals(*setting.type)) {
+        throw std::invalid_argument("setting '" + setting.name + "' declares a default of type " +
+                                    setting.default_value->type->ToString() + ", not its type " +
+                                    setting.type->ToString());
+    }
+    auto value_schema = arrow::schema({arrow::field("value", setting.type, /*nullable=*/true)});
+    auto column = vgi_rpc::unwrap(arrow::MakeArrayFromScalar(*setting.default_value, 1));
+    return wire::encode_ipc(arrow::RecordBatch::Make(value_schema, 1, {column}));
 }
 
 // The `required_secrets` list, as the struct entries the wire carries.
