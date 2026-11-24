@@ -45,6 +45,8 @@
 #include <vgi_rpc/client.h>
 #include <vgi_rpc/http_client.h>
 #include <vgi_rpc/metadata.h>
+#include <vgi_rpc/protocol_versions.h>
+#include <httplib.h>
 #include <nlohmann/json.hpp>
 
 #include "methods.h"
@@ -351,6 +353,48 @@ TEST_CASE("http: the worker serves {prefix}/vgi.v3/{method}", "[protocol][http]"
     } catch (const vgi_rpc::HttpClientError& refused) {
         CHECK(refused.http_status() == 404);
     }
+}
+
+TEST_CASE("http: the worker advertises its protocol windows", "[protocol][http][versions]") {
+    // PROTOCOL_VERSIONS_V1.md §4.1: every response names the window of every
+    // protocol the worker gates -- here exactly vgi.v3 at its declared
+    // major.minor.
+    const auto mm = vgi_rpc::parse_major_minor(kVersion);
+    const std::string window =
+        vgi_rpc::format_major_minor(mm) + "-" + vgi_rpc::format_major_minor(mm);
+    {
+        ServedWorker worker({"--http", "0"}, "PORT:");
+        httplib::Client http("127.0.0.1", std::stoi(worker.ready()));
+        const auto head = http.Head("/health");
+        REQUIRE(head);
+        CHECK(head->get_header_value("VGI-Protocol-Versions") == kProtocol + "=" + window);
+    }
+
+    // The fixture switch narrows the window, so an engine at the declared
+    // version is refused naming both windows, then fails before sending.
+    ::setenv("VGI_TEST_PROTOCOL_RANGE", "3.3-3.3", 1);
+    ServedWorker older({"--http", "0"}, "PORT:");
+    ::unsetenv("VGI_TEST_PROTOCOL_RANGE");
+    const auto base_url = "http://127.0.0.1:" + older.ready();
+    httplib::Client http("127.0.0.1", std::stoi(older.ready()));
+    const auto head = http.Head("/health");
+    REQUIRE(head);
+    CHECK(head->get_header_value("VGI-Protocol-Versions") == kProtocol + "=3.3-3.3");
+    const auto client = vgi_rpc::HttpClient::builder(base_url)
+                            .protocol(kProtocol)
+                            .protocol_version(kVersion)
+                            .build();
+    try {
+        client.call("catalog_catalogs", vgi_rpc::AnnotatedBatch::data(no_params()));
+        FAIL("a " << kVersion << " request was served by a 3.3-3.3 worker");
+    } catch (const vgi_rpc::RpcRemoteError& refused) {
+        CHECK(refused.error_kind() == vgi_rpc::ERROR_KIND_PROTOCOL_VERSION_UNSUPPORTED);
+        const std::string message = refused.what();
+        CHECK(message.find("3.3-3.3") != std::string::npos);
+        CHECK(message.find("too old") != std::string::npos);
+    }
+    CHECK_THROWS_AS(client.call("catalog_catalogs", vgi_rpc::AnnotatedBatch::data(no_params())),
+                    vgi_rpc::NoCommonVersionError);
 }
 
 TEST_CASE("example constraint discovery preserves validated immutable snapshots",

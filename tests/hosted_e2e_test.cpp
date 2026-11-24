@@ -263,6 +263,11 @@ void check_401(const httplib::Result& res, const std::string& reason) {
     CHECK(res->get_header_value("WWW-Authenticate") == kChallenge);
     CHECK(res->get_header_value("VGI-Auth-Reason") == reason);
     CHECK(res->has_header("VGI-Supported-Encodings"));
+    // Hosted 401s advertise the protocol windows too (PROTOCOL_VERSIONS_V1.md
+    // §4.1), and expose them to a browser.
+    CHECK(res->get_header_value("VGI-Protocol-Versions").rfind("vgi.v3=", 0) == 0);
+    CHECK(res->get_header_value("Access-Control-Expose-Headers").find("vgi-protocol-versions") !=
+          std::string::npos);
     CHECK(res->get_header_value("Access-Control-Allow-Origin") == "*");
 }
 
@@ -286,6 +291,7 @@ TEST_CASE("a hosted worker serves Pass holders only", "[hosted][http]") {
     REQUIRE(head);
     CHECK(head->status == 200);
     CHECK(head->has_header("VGI-Supported-Encodings"));
+    CHECK(head->get_header_value("VGI-Protocol-Versions").rfind("vgi.v3=", 0) == 0);
 
     for (const auto& [method, path] : std::vector<std::pair<std::string, std::string>>{
              {"GET", "/health"}, {"OPTIONS", "/health"}, {"GET", "/"}, {"POST", kRpcPath}}) {

@@ -437,6 +437,13 @@ std::unique_ptr<vgi_rpc::Server> Worker::build_server(Transport transport,
                               ? std::string(override_version)
                               : std::string(gen::VGI_PROTOCOL_VERSION));
     if (!server_id_.empty()) builder.server_id(server_id_);
+    // Protocol version negotiation (vgi-rpc PROTOCOL_VERSIONS_V1.md §9): a
+    // fixture switch that overrides the vgi.v3 window the worker advertises
+    // and accepts (e.g. "3.3-3.3"), so the engine's ATTACH can be shown
+    // failing with both windows named.  A malformed value refuses to start.
+    if (const char* range = std::getenv("VGI_TEST_PROTOCOL_RANGE"); range && *range) {
+        builder.protocol_version_range(primary_name, range);
+    }
     disp_->install(builder);
 
     // The worker's hosted protocols: the same set on every transport, so the

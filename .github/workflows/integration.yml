@@ -24,8 +24,9 @@ concurrency:
 env:
   # Match the v3 suite and statically linked native runner exactly.
   # vgi protocol-3.4 (3.4.0 suite) and its native runner: the extension ships
-  # after the worker fleet, so v2.0 has neither yet.
-  VGI_REF: e99683f2af215c5a166697945e796c91d0cc66fe
+  # after the worker fleet, so v2.0 has neither yet. c0b6307 is the first suite
+  # expecting PROTOCOL_VERSIONS_V1 refusals (protocol_version/version_mismatch).
+  VGI_REF: c0b63077bd219bd796ebadc790aae206a60291da
   VGI_NATIVE_RUNNER_BRANCH: protocol-3.4
   # Build every vcpkg port with the CMake (and ninja) that vcpkg pins for
   # this baseline, not whatever the runner image ships. The macOS image moved
@@ -60,7 +61,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: 067fb6e619c90193a071e007856964b477d2c709
+          ref: 72310790c83a351eea1f8440137d7b003534813e
           path: vgi-rpc-c++
 
       - name: Check out the current vgi test suite
