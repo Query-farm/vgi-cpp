@@ -65,13 +65,14 @@ jobs:
       # copy: the two move together, and an installed one goes stale silently.
       # CMakeLists.txt looks for it beside this repo by default.
       #
-      # Pinned to a release: this SDK uses ProtocolBuilder/add_protocol, the
-      # error model and AuthUnavailableError, which first shipped in v0.6.0.
+      # Pinned to vgi-rpc-cpp protocol-3.4 067fb6e: v0.12.0 plus storage stall
+      # timeouts (repin to the next release). This SDK needs at least v0.6.0
+      # for ProtocolBuilder/add_protocol, the error model and AuthUnavailableError.
       - name: Check out vgi-rpc-cpp
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: v0.12.0
+          ref: 067fb6e619c90193a071e007856964b477d2c709
           path: vgi-rpc-c++
 
       - name: Clone and bootstrap vcpkg
@@ -180,7 +181,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: v0.12.0
+          ref: 067fb6e619c90193a071e007856964b477d2c709
           path: vgi-rpc-c++
 
       - name: Check out the hosted-mode harness
