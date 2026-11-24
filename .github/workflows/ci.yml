@@ -65,7 +65,7 @@ jobs:
       # copy: the two move together, and an installed one goes stale silently.
       # CMakeLists.txt looks for it beside this repo by default.
       #
-      # Pinned to vgi-rpc-cpp protocol-3.4 74aff80: v0.12.0 plus storage stall
+      # Pinned to vgi-rpc-cpp protocol-3.4 0937030: v0.12.0 plus storage stall
       # timeouts, protocol version negotiation and direct S3/GCS storage
       # (repin to the next release).
       # This SDK needs at least v0.6.0
@@ -74,7 +74,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: 74aff805580540e633a65feb44e941d89ab2d6a0
+          ref: 09370302f5fba2dfd125b63ab47b99ca32f3a128
           path: vgi-rpc-c++
 
       - name: Clone and bootstrap vcpkg
@@ -183,7 +183,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: 74aff805580540e633a65feb44e941d89ab2d6a0
+          ref: 09370302f5fba2dfd125b63ab47b99ca32f3a128
           path: vgi-rpc-c++
 
       - name: Check out the hosted-mode harness
