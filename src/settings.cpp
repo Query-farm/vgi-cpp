@@ -31,7 +31,32 @@ std::string render(const std::shared_ptr<arrow::Array>& array, int64_t row) {
     return scalar.ok() ? scalar.ValueUnsafe()->ToString() : std::string{};
 }
 
+// The URI authority of `text`, or ""; DuckDB's StringUtil::GetURIAuthority.
+// `text` counts as a URI only if it contains `://` after a non-empty scheme and
+// its first `/` or `\` is the one that starts that `://`. The authority runs
+// from after `://` to the first `/`, `\`, `?` or `#` (or the end).
+std::string uri_authority(const std::string& text) {
+    auto scheme_end = text.find("://");
+    bool has_uri_scheme = scheme_end != std::string::npos && scheme_end > 0 &&
+                          text.find_first_of("/\\") == scheme_end + 1;
+    if (!has_uri_scheme) return {};
+    auto authority_start = scheme_end + 3;
+    auto authority_end = text.find_first_of("/\\?#", authority_start);
+    return text.substr(authority_start, authority_end == std::string::npos
+                                            ? std::string::npos
+                                            : authority_end - authority_start);
+}
+
 }  // namespace
+
+bool scope_matches(const std::string& prefix, const std::string& path) {
+    if (prefix.empty() || path.compare(0, prefix.size(), prefix) != 0) return false;
+    auto authority = uri_authority(prefix);
+    bool authority_only =
+        !authority.empty() && prefix.size() == prefix.find("://") + 3 + authority.size();
+    if (!authority_only) return true;
+    return path.size() == prefix.size() || path[prefix.size()] == '/';
+}
 
 Settings Settings::parse(const std::string& ipc_bytes) {
     Settings settings;
@@ -134,26 +159,38 @@ std::optional<std::string> Secrets::typed_field(const std::string& type,
 const std::map<std::string, std::string>* Secrets::for_scope_of_type(
     const std::string& path, const std::string& type) const {
     const std::map<std::string, std::string>* best = nullptr;
+    const std::map<std::string, std::string>* fallback = nullptr;
     size_t best_length = 0;
     for (const auto& [name, fields] : by_name_) {
         (void)name;
         auto kind = fields.find("type");
         if (kind == fields.end() || kind->second != type) continue;
         auto scope = fields.find("scope");
-        // An unscoped secret of the right type is a candidate of length 0: it
-        // matches anything, and loses to any scoped secret that also matches.
-        const std::string prefix = scope == fields.end() ? "" : scope->second;
-        // Plain prefix matching, which is DuckDB's own rule for secret scopes:
-        // `s3://bucket` covers `s3://bucket/key` and, deliberately, also
+        // An unscoped secret of the right type is the fallback: it matches
+        // anything, and loses to any scoped secret that also matches.
+        const std::string scope_text = scope == fields.end() ? "" : scope->second;
+        if (scope_text.empty()) {
+            if (!fallback) fallback = &fields;
+            continue;
+        }
+        // The connector joins a secret's scope prefixes with newlines. Each is
+        // matched by DuckDB's own rule (scope_matches): a plain prefix, except
+        // that `s3://bucket` stops at the authority and does not cover
         // `s3://bucket-two`. Longest prefix wins, and the first registration
         // wins a tie so the answer does not depend on map iteration order.
-        if (!prefix.empty() && path.compare(0, prefix.size(), prefix) != 0) continue;
-        if (!best || prefix.size() > best_length) {
-            best = &fields;
-            best_length = prefix.size();
+        size_t start = 0;
+        while (start <= scope_text.size()) {
+            auto end = scope_text.find('\n', start);
+            if (end == std::string::npos) end = scope_text.size();
+            std::string prefix = scope_text.substr(start, end - start);
+            if (scope_matches(prefix, path) && (!best || prefix.size() > best_length)) {
+                best = &fields;
+                best_length = prefix.size();
+            }
+            start = end + 1;
         }
     }
-    return best;
+    return best ? best : fallback;
 }
 
 }  // namespace vgi

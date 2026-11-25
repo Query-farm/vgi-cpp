@@ -64,7 +64,10 @@ public:
     std::optional<std::string> typed_field(const std::string& type,
                                            const std::string& field_name) const;
 
-    // The secret of `type` whose scope is the longest prefix of `path`.
+    // The secret of `type` whose scope is the longest prefix of `path`, matched
+    // by `scope_matches` (DuckDB's own rule, authority boundary included). A
+    // scope is a newline-joined list of prefixes; an unscoped secret of `type`
+    // is the fallback when no scoped one matches.
     //
     // Longest-prefix, not first-match: two secrets may both cover a path — one
     // scoped to a bucket and one to a prefix within it — and the more specific
@@ -77,5 +80,18 @@ public:
 private:
     std::map<std::string, std::map<std::string, std::string>> by_name_;
 };
+
+// Whether the secret scope `prefix` covers `path`, exactly as DuckDB decides
+// (BaseSecret::MatchScore as of the Haybarn 2.0.1 engine, duckdb#28684).
+//
+// A scope matches when it is a string prefix of `path`, except that an
+// authority-only URI scope (`scheme://authority` with nothing after the
+// authority) has an implicit trailing `/`: `snmp://10.0.0.1` covers
+// `snmp://10.0.0.1` and `snmp://10.0.0.1/x` but not `snmp://10.0.0.15` or
+// `snmp://10.0.0.1:161`, and `s3://bucket` does not cover `s3://bucket-evil/`.
+// Matching DuckDB keeps a worker from choosing a secret DuckDB itself would not
+// resolve for that path. An empty `prefix` is not a scope and never matches;
+// callers treat unscoped secrets as the fallback separately.
+bool scope_matches(const std::string& prefix, const std::string& path);
 
 }  // namespace vgi

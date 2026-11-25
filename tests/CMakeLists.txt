@@ -159,3 +159,13 @@ add_executable(storage_seal_test storage_seal_test.cpp)
 target_link_libraries(storage_seal_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
 target_include_directories(storage_seal_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 catch_discover_tests(storage_seal_test)
+
+# Secret scope matching (Secrets::for_scope_of_type, vgi::scope_matches)
+# against DuckDB's own rule: 3025 shared vectors generated from the engine's
+# C++ (duckdb#28684, authority boundary), vendored verbatim from vgi-python.
+add_executable(secret_scope_test secret_scope_test.cpp)
+target_link_libraries(secret_scope_test PRIVATE vgi::vgi Catch2::Catch2WithMain)
+target_include_directories(secret_scope_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(secret_scope_test PRIVATE
+    VGI_SCOPE_MATCH_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/data/scope_match_vectors.json")
+catch_discover_tests(secret_scope_test)
