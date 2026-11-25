@@ -37,31 +37,31 @@ struct Case {
 
 // The first 25 cases of the vector file, inline so they read as documentation.
 const Case kCurated[] = {
-        {"snmp://10.0.0.1", "snmp://10.0.0.1", true},
-        {"snmp://10.0.0.1", "snmp://10.0.0.1/x", true},
-        {"snmp://10.0.0.1", "snmp://10.0.0.15", false},
-        {"snmp://10.0.0.1", "snmp://10.0.0.1:161", false},
-        {"s3://bucket", "s3://bucket/key", true},
-        {"s3://bucket", "s3://bucket-evil/key", false},
-        {"s3://bucket", "s3://bucket?x=1", false},
-        {"dlt://vgi_dlt_fixture", "dlt://vgi_dlt_fixture:shop", false},
-        {"dlt://vgi_dlt_fixture", "dlt://vgi_dlt_fixture/shop", true},
-        {"s3://bucket/", "s3://bucket/key", true},
-        {"s3://bucket/pre", "s3://bucket/prefix/x", true},
-        {"s3://bucket/pre", "s3://bucket/other", false},
-        {"https://h?a", "https://h?ab", true},
-        {"https://h#f", "https://h#fx", true},
-        {"a://b\\c", "a://b\\cd", true},
-        {"snmp://", "snmp://anything", true},
-        {"snmp://10.0.0.", "snmp://10.0.0.15:161", false},
-        {"foo", "foobar", true},
-        {"c:\\data", "c:\\data2\\x", true},
-        {"x:/y://z", "x:/y://zz", true},
-        {"s3://bucket", "s3://buck", false},
-        {"s3://bucket", "s3://bucket", true},
-        {"vgi-conformance://host1", "vgi-conformance://host1/data", true},
-        {"vgi-conformance://host1", "vgi-conformance://host10/data", false},
-        {"vgi-conformance://host1", "vgi-conformance://host1:9000", false},
+    {"snmp://10.0.0.1", "snmp://10.0.0.1", true},
+    {"snmp://10.0.0.1", "snmp://10.0.0.1/x", true},
+    {"snmp://10.0.0.1", "snmp://10.0.0.15", false},
+    {"snmp://10.0.0.1", "snmp://10.0.0.1:161", false},
+    {"s3://bucket", "s3://bucket/key", true},
+    {"s3://bucket", "s3://bucket-evil/key", false},
+    {"s3://bucket", "s3://bucket?x=1", false},
+    {"dlt://vgi_dlt_fixture", "dlt://vgi_dlt_fixture:shop", false},
+    {"dlt://vgi_dlt_fixture", "dlt://vgi_dlt_fixture/shop", true},
+    {"s3://bucket/", "s3://bucket/key", true},
+    {"s3://bucket/pre", "s3://bucket/prefix/x", true},
+    {"s3://bucket/pre", "s3://bucket/other", false},
+    {"https://h?a", "https://h?ab", true},
+    {"https://h#f", "https://h#fx", true},
+    {"a://b\\c", "a://b\\cd", true},
+    {"snmp://", "snmp://anything", true},
+    {"snmp://10.0.0.", "snmp://10.0.0.15:161", false},
+    {"foo", "foobar", true},
+    {"c:\\data", "c:\\data2\\x", true},
+    {"x:/y://z", "x:/y://zz", true},
+    {"s3://bucket", "s3://buck", false},
+    {"s3://bucket", "s3://bucket", true},
+    {"vgi-conformance://host1", "vgi-conformance://host1/data", true},
+    {"vgi-conformance://host1", "vgi-conformance://host10/data", false},
+    {"vgi-conformance://host1", "vgi-conformance://host1:9000", false},
 };
 
 std::shared_ptr<arrow::Array> one_string(const std::string& value) {
@@ -73,9 +73,9 @@ std::shared_ptr<arrow::Array> one_string(const std::string& value) {
 // One secret column the way the extension ships it: a one-row struct of
 // string fields.
 std::shared_ptr<arrow::Array> secret(const std::string& scope, const std::string& api_key) {
-    return vgi_rpc::unwrap(arrow::StructArray::Make(
-        {one_string("snmp"), one_string(scope), one_string(api_key)},
-        std::vector<std::string>{"type", "scope", "api_key"}));
+    return vgi_rpc::unwrap(
+        arrow::StructArray::Make({one_string("snmp"), one_string(scope), one_string(api_key)},
+                                 std::vector<std::string>{"type", "scope", "api_key"}));
 }
 
 }  // namespace
@@ -116,10 +116,10 @@ TEST_CASE("for_scope_of_type stops at the authority boundary", "[secrets]") {
         arrow::field("host15", secret("", "")->type()),
         arrow::field("fallback", secret("", "")->type()),
     });
-    auto batch = arrow::RecordBatch::Make(schema, 1,
-                                          {secret("snmp://10.0.0.1", "host1"),
-                                           secret("snmp://10.0.0.15", "host15"),
-                                           secret("", "default")});
+    auto batch =
+        arrow::RecordBatch::Make(schema, 1,
+                                 {secret("snmp://10.0.0.1", "host1"),
+                                  secret("snmp://10.0.0.15", "host15"), secret("", "default")});
     const auto secrets = vgi::Secrets::parse(vgi::wire::encode_ipc(batch));
 
     const std::pair<const char*, const char*> expectations[] = {
@@ -137,8 +137,8 @@ TEST_CASE("for_scope_of_type stops at the authority boundary", "[secrets]") {
 
 TEST_CASE("for_scope_of_type matches each newline-joined prefix", "[secrets]") {
     auto schema = arrow::schema({arrow::field("multi", secret("", "")->type())});
-    auto batch = arrow::RecordBatch::Make(
-        schema, 1, {secret("snmp://10.0.0.9\nsnmp://10.0.0.1", "multi")});
+    auto batch =
+        arrow::RecordBatch::Make(schema, 1, {secret("snmp://10.0.0.9\nsnmp://10.0.0.1", "multi")});
     const auto secrets = vgi::Secrets::parse(vgi::wire::encode_ipc(batch));
     const auto* found = secrets.for_scope_of_type("snmp://10.0.0.1/sys", "snmp");
     REQUIRE(found != nullptr);
