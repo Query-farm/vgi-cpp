@@ -65,16 +65,14 @@ jobs:
       # copy: the two move together, and an installed one goes stale silently.
       # CMakeLists.txt looks for it beside this repo by default.
       #
-      # Pinned to vgi-rpc-cpp protocol-3.4 0937030: v0.12.0 plus storage stall
-      # timeouts, protocol version negotiation and direct S3/GCS storage
-      # (repin to the next release).
+      # Pinned to the vgi-rpc-cpp release this SDK release uses (v0.12.1).
       # This SDK needs at least v0.6.0
       # for ProtocolBuilder/add_protocol, the error model and AuthUnavailableError.
       - name: Check out vgi-rpc-cpp
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: 09370302f5fba2dfd125b63ab47b99ca32f3a128
+          ref: v0.12.1
           path: vgi-rpc-c++
 
       - name: Clone and bootstrap vcpkg
@@ -183,15 +181,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: 09370302f5fba2dfd125b63ab47b99ca32f3a128
+          ref: v0.12.1
           path: vgi-rpc-c++
 
       - name: Check out the hosted-mode harness
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi
-          # vgi protocol-3.4: the extension ships after the worker fleet, so
-          # v2.0 has no 3.4 harness yet.
+          # The 3.4 hosted-mode harness (on vgi v2.0; the 3.4 extension is
+          # published).
           ref: fce57984a7e8ea35f9dcd4a034b5ed37c85ca5c5
           path: vgi-upstream
           sparse-checkout: test/hosted

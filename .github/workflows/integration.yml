@@ -23,10 +23,9 @@ concurrency:
 
 env:
   # Match the v3 suite and statically linked native runner exactly.
-  # vgi protocol-3.4 (3.4.0 suite) and its native runner: the extension ships
-  # after the worker fleet, so v2.0 has neither yet. ebf28ea (= the published
-  # v2.0) carries the PROTOCOL_VERSIONS_V1 suite and, unlike c0b6307, a
-  # vgi-native-runner artifact (vgi uploads it only on v2.0 or dispatch).
+  # The 3.4.0 suite and its native runner. ebf28ea is the published v2.0 (the
+  # 3.4 extension is published); it carries the PROTOCOL_VERSIONS_V1 suite and
+  # a vgi-native-runner artifact from its protocol-3.4 run.
   VGI_REF: ebf28ead2703ab2b0f3ec818aa9a63a99bd8863f
   VGI_NATIVE_RUNNER_BRANCH: protocol-3.4
   # Build every vcpkg port with the CMake (and ninja) that vcpkg pins for
@@ -64,7 +63,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Query-farm/vgi-rpc-cpp
-          ref: 09370302f5fba2dfd125b63ab47b99ca32f3a128
+          ref: v0.12.1
           path: vgi-rpc-c++
 
       - name: Check out the current vgi test suite
